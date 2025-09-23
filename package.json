@@ -1,0 +1,96 @@
+{
+    "name": "modernpdf",
+    "version": "1.0.0",
+    "description": "A complete, production-ready PDF processing library with first-class support for streaming, AI systems, and modern features like theme toggle",
+    "main": "modernpdf.ts",
+    "types": "modernpdf.ts",
+    "type": "module",
+    "scripts": {
+        "build": "tsc --declaration --emitDeclarationOnly --outDir dist",
+        "build:clean": "rimraf dist && npm run build",
+        "test": "jest",
+        "test:watch": "jest --watch",
+        "test:coverage": "jest --coverage",
+        "test:unit": "jest tests/unit",
+        "test:integration": "jest tests/integration",
+        "test:verbose": "jest --verbose",
+        "test:silent": "jest --silent",
+        "lint": "eslint modernpdf.ts",
+        "lint:fix": "eslint modernpdf.ts --fix",
+        "typecheck": "tsc --noEmit",
+        "dev": "npm run test:watch",
+        "ci": "npm run typecheck && npm run lint && npm run test:coverage",
+        "prepublishOnly": "npm run ci && npm run build",
+        "prepare": "husky install || true",
+        "examples": "npx tsx run-examples-simple.ts",
+        "examples:interactive": "npx tsx run-examples-simple.ts",
+        "examples:demo": "echo \"Open demos/examples-demo.html in your browser to run interactive examples\"",
+        "examples:simple": "echo \"Open demos/simple-demo.html in your browser for a basic demo\"",
+        "examples:help": "npx tsx run-examples-simple.ts -- --help"
+    },
+    "keywords": [
+        "pdf",
+        "typescript",
+        "streaming",
+        "ai",
+        "extraction",
+        "parsing",
+        "semantic",
+        "embedding",
+        "llm",
+        "rag",
+        "machine-learning",
+        "document-processing",
+        "web-workers",
+        "single-file",
+        "theme-toggle",
+        "dark-mode",
+        "viewer",
+        "browser",
+        "zero-dependencies"
+    ],
+    "author": "ModernPDF Team",
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/nervosys/modernpdf.git"
+    },
+    "bugs": {
+        "url": "https://github.com/nervosys/modernpdf/issues"
+    },
+    "homepage": "https://github.com/nervosys/modernpdf#readme",
+    "funding": [
+        {
+            "type": "github",
+            "url": "https://github.com/sponsors/nervosys"
+        }
+    ],
+    "devDependencies": {
+        "@jest/globals": "^29.7.0",
+        "@types/jest": "^29.5.8",
+        "@types/node": "^20.9.0",
+        "@typescript-eslint/eslint-plugin": "^6.12.0",
+        "@typescript-eslint/parser": "^6.12.0",
+        "eslint": "^8.54.0",
+        "husky": "^8.0.3",
+        "jest": "^29.7.0",
+        "jest-environment-node": "^29.7.0",
+        "rimraf": "^5.0.5",
+        "ts-jest": "^29.1.1",
+        "tsx": "^4.20.5",
+        "typescript": "^5.3.2"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "files": [
+        "modernpdf.ts",
+        "dist/",
+        "README.md",
+        "LICENSE",
+        "CHANGELOG.md"
+    ]
+}

@@ -1,0 +1,87 @@
+name: Question
+description: Ask a question about ModernPDF
+title: "[Question]: "
+labels: ["question", "triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about ModernPDF? We're here to help!
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Prerequisites
+      description: Please confirm the following before asking
+      options:
+        - label: I have searched existing issues and discussions
+          required: true
+        - label: I have read the [documentation](../README.md)
+          required: true
+        - label: I have checked the [examples](../examples/)
+          required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Question Category
+      description: What is your question about?
+      options:
+        - Getting Started
+        - API Usage
+        - Text Extraction
+        - Image Processing
+        - Streaming & Performance
+        - AI & ML Integration
+        - Browser Compatibility
+        - Error Handling
+        - Best Practices
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your Question
+      description: What would you like to know?
+      placeholder: I'm trying to... but I'm not sure how to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Provide any relevant context about what you're trying to achieve
+      placeholder: I'm building an application that...
+
+  - type: textarea
+    id: code-sample
+    attributes:
+      label: Code Sample (if applicable)
+      description: Show us what you've tried so far
+      render: typescript
+      placeholder: |
+        import ModernPDF from './modernpdf';
+        
+        // Your code here...
+
+  - type: input
+    id: version
+    attributes:
+      label: ModernPDF Version
+      placeholder: "1.0.0"
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      description: Where are you using ModernPDF?
+      options:
+        - Node.js
+        - Browser
+        - Both
+        - Not sure

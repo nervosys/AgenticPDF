@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Viewer - sample.pdf</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            height: 100vh;
+        }
+
+        .viewer-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .toolbar {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #2d2d2d;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 1000;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .toolbar button {
+            background: #404040;
+            border: 1px solid #666;
+            color: white;
+            border-radius: 3px;
+            padding: 6px 10px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+        }
+
+        .toolbar button:hover:not(:disabled) {
+            background: #505050;
+        }
+
+        .toolbar button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .page-info {
+            color: white;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .zoom-info {
+            color: white;
+            font-size: 12px;
+            min-width: 40px;
+            text-align: center;
+        }
+
+        .pdf-viewer {
+            flex: 1;
+            overflow: auto;
+            padding: 60px 20px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            background: #111;
+        }
+
+        .pdf-page {
+            background: white;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            border: 1px solid #444;
+            max-width: 100%;
+        }
+
+        .pdf-page canvas {
+            display: block;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: white;
+        }
+
+        .loading-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #444;
+            border-left: 2px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #ff6b6b;
+            background: #2d2d2d;
+            padding: 20px;
+            border: 1px solid #555;
+            border-radius: 4px;
+        }
+
+        .page-number-input {
+            background: #404040;
+            border: 1px solid #666;
+            color: white;
+            border-radius: 3px;
+            padding: 4px 6px;
+            width: 40px;
+            text-align: center;
+            font-size: 12px;
+        }
+
+        .page-number-input:focus {
+            outline: none;
+            border-color: #888;
+        }
+
+        /* Dark scrollbar styling */
+        .pdf-viewer::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .pdf-viewer::-webkit-scrollbar-track {
+            background: #2d2d2d;
+        }
+
+        .pdf-viewer::-webkit-scrollbar-thumb {
+            background: #555;
+            border-radius: 3px;
+        }
+
+        .pdf-viewer::-webkit-scrollbar-thumb:hover {
+            background: #777;
+        }
+
+        .page-number-input:focus {
+            outline: none;
+            border-color: #000;
+        }
+
+        /* Light mode styles */
+        body.light-mode {
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        body.light-mode .toolbar {
+            background: #ffffff;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        body.light-mode .toolbar button {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            color: #333;
+        }
+
+        body.light-mode .toolbar button:hover:not(:disabled) {
+            background: #e9ecef;
+            border-color: #adb5bd;
+        }
+
+        body.light-mode .toolbar button:disabled {
+            background: #e9ecef;
+            color: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        body.light-mode .zoom-info {
+            color: #333;
+        }
+
+        body.light-mode .pdf-viewer {
+            background: #e9ecef;
+        }
+
+        body.light-mode .pdf-page {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            border: 1px solid #ddd;
+        }
+
+        body.light-mode .page-number-input {
+            background: #ffffff;
+            border: 1px solid #ddd;
+            color: #333;
+        }
+
+        body.light-mode .page-number-input:focus {
+            border-color: #007bff;
+        }
+
+        /* Light mode scrollbar styling */
+        body.light-mode .pdf-viewer::-webkit-scrollbar-track {
+            background: #f8f9fa;
+        }
+
+        body.light-mode .pdf-viewer::-webkit-scrollbar-thumb {
+            background: #dee2e6;
+            border-radius: 3px;
+        }
+
+        body.light-mode .pdf-viewer::-webkit-scrollbar-thumb:hover {
+            background: #adb5bd;
+        }
+
+        /* Theme toggle button styling */
+        #themeToggle {
+            font-size: 14px;
+            min-width: 32px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="viewer-container">
+        <!-- Simple Toolbar -->
+        <div class="toolbar">
+            <button id="prevPage" title="Previous Page">Previous</button>
+            <div class="page-info">
+                <input type="number" id="pageInput" class="page-number-input" min="1" value="1">
+                <span>of <span id="totalPages">-</span></span>
+            </div>
+            <button id="nextPage" title="Next Page">Next</button>
+            <button id="zoomOut" title="Zoom Out">-</button>
+            <div class="zoom-info">
+                <span id="zoomLevel">100%</span>
+            </div>
+            <button id="zoomIn" title="Zoom In">+</button>
+            <button id="fitWidth" title="Fit Width">Fit</button>
+            <button id="themeToggle" title="Toggle Dark/Light Mode">🌙</button>
+        </div>
+
+        <!-- PDF Viewer Area -->
+        <div class="pdf-viewer" id="pdfViewer">
+            <div class="loading" id="loadingIndicator">
+                <div class="loading-spinner"></div>
+                <div>Loading PDF...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configure PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        class PDFViewer {
+            constructor() {
+                this.currentPage = 1;
+                this.totalPages = 0;
+                this.zoomLevel = 1.0;
+                this.pdfDocument = null;
+                this.renderScale = 2.0; // Higher quality rendering
+
+                this.initializeElements();
+                this.setupEventListeners();
+                this.loadPDF();
+            }
+
+            initializeElements() {
+                this.viewer = document.getElementById('pdfViewer');
+                this.loadingIndicator = document.getElementById('loadingIndicator');
+                this.pageInput = document.getElementById('pageInput');
+                this.totalPagesSpan = document.getElementById('totalPages');
+                this.zoomLevelSpan = document.getElementById('zoomLevel');
+
+                this.prevPageBtn = document.getElementById('prevPage');
+                this.nextPageBtn = document.getElementById('nextPage');
+                this.zoomInBtn = document.getElementById('zoomIn');
+                this.zoomOutBtn = document.getElementById('zoomOut');
+                this.fitWidthBtn = document.getElementById('fitWidth');
+                this.themeToggleBtn = document.getElementById('themeToggle');
+
+                // Initialize theme state
+                this.isDarkMode = localStorage.getItem('pdfViewerTheme') !== 'light';
+                this.updateTheme();
+            }
+
+            setupEventListeners() {
+                // Page navigation
+                this.prevPageBtn.addEventListener('click', () => this.previousPage());
+                this.nextPageBtn.addEventListener('click', () => this.nextPage());
+                this.pageInput.addEventListener('change', (e) => this.goToPage(parseInt(e.target.value)));
+                this.pageInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        this.goToPage(parseInt(e.target.value));
+                    }
+                });
+
+                // Zoom controls
+                this.zoomInBtn.addEventListener('click', () => this.zoomIn());
+                this.zoomOutBtn.addEventListener('click', () => this.zoomOut());
+                this.fitWidthBtn.addEventListener('click', () => this.fitToWidth());
+
+                // Theme toggle
+                this.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
+
+                // Basic keyboard shortcuts
+                document.addEventListener('keydown', (e) => this.handleKeyboard(e));
+
+                // Handle window resize to maintain fit-to-width
+                window.addEventListener('resize', () => {
+                    clearTimeout(this.resizeTimeout);
+                    this.resizeTimeout = setTimeout(() => {
+                        this.fitToWidth();
+                    }, 200);
+                });
+            }
+
+            async loadPDF() {
+                try {
+                    console.log('Starting PDF load...');
+
+                    // Try to load the actual sample.pdf file
+                    const loadingTask = pdfjsLib.getDocument({
+                        url: './sample.pdf',
+                        verbosity: 0 // Reduce console spam
+                    });
+
+                    // Add progress handling
+                    loadingTask.onProgress = (progress) => {
+                        console.log(`Loading progress: ${progress.loaded}/${progress.total}`);
+                    };
+
+                    this.pdfDocument = await loadingTask.promise;
+                    console.log('PDF loaded successfully');
+
+                    this.totalPages = this.pdfDocument.numPages;
+                    this.totalPagesSpan.textContent = this.totalPages;
+
+                    // Hide loading indicator
+                    this.loadingIndicator.style.display = 'none';
+
+                    // Wait a moment for layout to settle, then auto-fit to width
+                    setTimeout(async () => {
+                        // Render all pages with fit-to-width
+                        await this.fitToWidth();
+                        await this.renderAllPages();
+                    }, 200);
+
+                    this.updateUI();
+                } catch (error) {
+                    console.error('PDF loading failed:', error);
+
+                    // Fallback to mock content if real PDF fails
+                    this.loadMockPDF();
+                }
+            }
+
+            loadMockPDF() {
+                console.log('Loading mock PDF content...');
+
+                // Simulate a PDF with mock content
+                this.totalPages = 3;
+                this.totalPagesSpan.textContent = this.totalPages;
+                this.pdfDocument = null; // Mark as mock
+
+                // Hide loading indicator
+                this.loadingIndicator.style.display = 'none';
+
+                // Wait a moment for layout to settle, then auto-fit to width
+                setTimeout(() => {
+                    // Fit to width then render pages
+                    this.fitToWidth();
+                    this.renderMockPages();
+                }, 200);
+
+                this.updateUI();
+            }
+
+            renderMockPages() {
+                this.viewer.innerHTML = '';
+
+                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
+                    const pageContainer = document.createElement('div');
+                    pageContainer.className = 'pdf-page';
+                    pageContainer.id = `page-${pageNum}`;
+
+                    const canvas = document.createElement('canvas');
+                    pageContainer.appendChild(canvas);
+                    this.viewer.appendChild(pageContainer);
+
+                    // Render mock page
+                    this.renderMockPage(canvas, pageNum);
+                }
+            }
+
+            async renderAllPages() {
+                this.viewer.innerHTML = '';
+
+                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
+                    const pageContainer = document.createElement('div');
+                    pageContainer.className = 'pdf-page';
+                    pageContainer.id = `page-${pageNum}`;
+
+                    const canvas = document.createElement('canvas');
+                    pageContainer.appendChild(canvas);
+                    this.viewer.appendChild(pageContainer);
+
+                    // Render page asynchronously
+                    await this.renderPage(canvas, pageNum);
+                }
+            }
+
+            async renderPage(canvas, pageNumber) {
+                if (!this.pdfDocument) {
+                    // Render mock page if no real PDF loaded
+                    this.renderMockPage(canvas, pageNumber);
+                    return;
+                }
+
+                try {
+                    const page = await this.pdfDocument.getPage(pageNumber);
+                    const viewport = page.getViewport({ scale: this.zoomLevel * this.renderScale });
+
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    canvas.style.width = `${viewport.width / this.renderScale}px`;
+                    canvas.style.height = `${viewport.height / this.renderScale}px`;
+
+                    const renderContext = {
+                        canvasContext: canvas.getContext('2d'),
+                        viewport: viewport
+                    };
+
+                    await page.render(renderContext).promise;
+                } catch (error) {
+                    console.error(`Error rendering page ${pageNumber}:`, error);
+                    // Fallback to show error on canvas
+                    const ctx = canvas.getContext('2d');
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = 'red';
+                    ctx.font = '20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`Error loading page ${pageNumber}`, canvas.width / 2, canvas.height / 2);
+                }
+            }
+
+            renderMockPage(canvas, pageNumber) {
+                const ctx = canvas.getContext('2d');
+
+                // Calculate dimensions based on zoom
+                const baseWidth = 600;
+                const baseHeight = 800;
+                const width = baseWidth * this.zoomLevel * this.renderScale;
+                const height = baseHeight * this.zoomLevel * this.renderScale;
+
+                canvas.width = width;
+                canvas.height = height;
+                canvas.style.width = `${baseWidth * this.zoomLevel}px`;
+                canvas.style.height = `${baseHeight * this.zoomLevel}px`;
+
+                // White background
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, width, height);
+
+                // Add simple header
+                ctx.fillStyle = '#000';
+                ctx.font = `${Math.floor(width * 0.06)}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.fillText(`sample.pdf (demo)`, width / 2, height * 0.12);
+
+                ctx.font = `${Math.floor(width * 0.04)}px Arial`;
+                ctx.fillText(`Page ${pageNumber}`, width / 2, height * 0.20);
+
+                // Add simple text content
+                ctx.font = `${Math.floor(width * 0.025)}px Arial`;
+                ctx.textAlign = 'left';
+                const lineHeight = width * 0.035;
+                const startY = height * 0.30;
+                const margin = width * 0.08;
+
+                const mockText = [
+                    'This is a demo version of the PDF viewer.',
+                    'The actual sample.pdf could not be loaded due to browser security restrictions.',
+                    '',
+                    'To view the real PDF:',
+                    '• Serve this file from a web server (not file://)',
+                    '• Or use a local development server',
+                    '',
+                    'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
+                    'Sed do eiusmod tempor incididunt ut labore et dolore magna',
+                    'aliqua. Ut enim ad minim veniam, quis nostrud exercitation',
+                    'ullamco laboris nisi ut aliquip ex ea commodo consequat.'
+                ];
+
+                mockText.forEach((line, index) => {
+                    if (line) {
+                        ctx.fillText(line, margin, startY + (index * lineHeight));
+                    }
+                });
+
+                // Simple border
+                ctx.strokeStyle = '#ccc';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(0, 0, width, height);
+
+                // Page number at bottom
+                ctx.font = `${Math.floor(width * 0.02)}px Arial`;
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#888';
+                ctx.fillText(`${pageNumber}`, width / 2, height * 0.95);
+            }
+
+            previousPage() {
+                if (this.currentPage > 1) {
+                    this.currentPage--;
+                    this.scrollToPage(this.currentPage);
+                    this.updateUI();
+                }
+            }
+
+            nextPage() {
+                if (this.currentPage < this.totalPages) {
+                    this.currentPage++;
+                    this.scrollToPage(this.currentPage);
+                    this.updateUI();
+                }
+            }
+
+            goToPage(pageNumber) {
+                if (pageNumber >= 1 && pageNumber <= this.totalPages) {
+                    this.currentPage = pageNumber;
+                    this.scrollToPage(this.currentPage);
+                    this.updateUI();
+                }
+            }
+
+            scrollToPage(pageNumber) {
+                const pageElement = document.getElementById(`page-${pageNumber}`);
+                if (pageElement) {
+                    pageElement.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start',
+                        inline: 'center'
+                    });
+                }
+            }
+
+            zoomIn() {
+                this.zoomLevel = Math.min(this.zoomLevel * 1.25, 5.0);
+                this.rerenderPages();
+                this.updateUI();
+            }
+
+            zoomOut() {
+                this.zoomLevel = Math.max(this.zoomLevel / 1.25, 0.25);
+                this.rerenderPages();
+                this.updateUI();
+            }
+
+            async fitToWidth() {
+                if (!this.pdfDocument) {
+                    // For mock PDFs, use default dimensions
+                    const viewerWidth = this.viewer.clientWidth - 40;
+                    const pageWidth = 600; // Base page width for mock
+                    this.zoomLevel = viewerWidth / pageWidth;
+                    console.log(`Mock PDF fit-to-width: viewer=${viewerWidth}, page=${pageWidth}, zoom=${this.zoomLevel}`);
+                    this.rerenderPages();
+                    this.updateUI();
+                    return;
+                }
+
+                try {
+                    const page = await this.pdfDocument.getPage(1);
+                    const viewport = page.getViewport({ scale: 1.0 });
+                    const viewerWidth = this.viewer.clientWidth - 40;
+                    // Calculate zoom level to fit page width to viewer width
+                    this.zoomLevel = viewerWidth / viewport.width;
+                    console.log(`Real PDF fit-to-width: viewer=${viewerWidth}, page=${viewport.width}, zoom=${this.zoomLevel}`);
+                    this.rerenderPages();
+                    this.updateUI();
+                } catch (error) {
+                    console.error('Error in fitToWidth:', error);
+                }
+            }
+
+            async rerenderPages() {
+                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
+                    const pageElement = document.getElementById(`page-${pageNum}`);
+                    if (pageElement) {
+                        const canvas = pageElement.querySelector('canvas');
+                        if (this.pdfDocument) {
+                            await this.renderPage(canvas, pageNum);
+                        } else {
+                            this.renderMockPage(canvas, pageNum);
+                        }
+                    }
+                }
+            }
+
+            updateUI() {
+                this.pageInput.value = this.currentPage;
+                this.zoomLevelSpan.textContent = Math.round(this.zoomLevel * 100) + '%';
+
+                this.prevPageBtn.disabled = this.currentPage <= 1;
+                this.nextPageBtn.disabled = this.currentPage >= this.totalPages;
+
+                this.zoomOutBtn.disabled = this.zoomLevel <= 0.25;
+                this.zoomInBtn.disabled = this.zoomLevel >= 5.0;
+            }
+
+            toggleTheme() {
+                this.isDarkMode = !this.isDarkMode;
+                this.updateTheme();
+
+                // Save theme preference
+                localStorage.setItem('pdfViewerTheme', this.isDarkMode ? 'dark' : 'light');
+            }
+
+            updateTheme() {
+                if (this.isDarkMode) {
+                    document.body.classList.remove('light-mode');
+                    this.themeToggleBtn.textContent = '🌙';
+                    this.themeToggleBtn.title = 'Switch to Light Mode';
+                } else {
+                    document.body.classList.add('light-mode');
+                    this.themeToggleBtn.textContent = '☀️';
+                    this.themeToggleBtn.title = 'Switch to Dark Mode';
+                }
+            }
+
+            handleKeyboard(e) {
+                switch (e.key) {
+                    case 'ArrowUp':
+                    case 'ArrowLeft':
+                        e.preventDefault();
+                        this.previousPage();
+                        break;
+                    case 'ArrowDown':
+                    case 'ArrowRight':
+                        e.preventDefault();
+                        this.nextPage();
+                        break;
+                    case '+':
+                    case '=':
+                        e.preventDefault();
+                        this.zoomIn();
+                        break;
+                    case '-':
+                        e.preventDefault();
+                        this.zoomOut();
+                        break;
+                    case 't':
+                    case 'T':
+                        if (e.ctrlKey || e.metaKey) {
+                            e.preventDefault();
+                            this.toggleTheme();
+                        }
+                        break;
+                }
+            }
+
+            showError(message) {
+                this.loadingIndicator.style.display = 'none';
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error';
+                errorDiv.innerHTML = `
+                    <h3>Error</h3>
+                    <p>${message}</p>
+                    <p>This is a demo viewer with mock content.</p>
+                `;
+                this.viewer.appendChild(errorDiv);
+            }
+
+            // Detect current page while scrolling
+            detectCurrentPage() {
+                const viewerRect = this.viewer.getBoundingClientRect();
+                const viewerCenter = viewerRect.top + viewerRect.height / 2;
+
+                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
+                    const pageElement = document.getElementById(`page-${pageNum}`);
+                    if (pageElement) {
+                        const pageRect = pageElement.getBoundingClientRect();
+                        if (pageRect.top <= viewerCenter && pageRect.bottom >= viewerCenter) {
+                            if (this.currentPage !== pageNum) {
+                                this.currentPage = pageNum;
+                                this.updateUI();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Initialize the PDF viewer when the page loads
+        window.addEventListener('load', () => {
+            const viewer = new PDFViewer();
+
+            // Update current page indicator while scrolling
+            let scrollTimeout;
+            viewer.viewer.addEventListener('scroll', () => {
+                clearTimeout(scrollTimeout);
+                scrollTimeout = setTimeout(() => {
+                    viewer.detectCurrentPage();
+                }, 100);
+            });
+        });
+    </script>
+</body>
+
+</html>

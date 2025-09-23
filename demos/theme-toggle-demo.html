@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ModernPDF Theme Toggle Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+            transition: background-color 0.3s ease;
+        }
+
+        body.light-mode {
+            background-color: #f5f5f5;
+            color: #333;
+        }
+
+        body:not(.light-mode) {
+            background-color: #1a1a1a;
+            color: white;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        body:not(.light-mode) .container {
+            background: #2d2d2d;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .demo-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            transition: all 0.3s ease;
+        }
+
+        body:not(.light-mode) .demo-section {
+            border-color: #555;
+            background: #333;
+        }
+
+        .demo-result {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        body:not(.light-mode) .success {
+            background-color: #1e3a1e;
+            border-color: #2a4a2a;
+            color: #4caf50;
+        }
+
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+
+        body:not(.light-mode) .info {
+            background-color: #1e2a3a;
+            border-color: #2a3a4a;
+            color: #64b5f6;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        body:not(.light-mode) button {
+            background-color: #404040;
+            border: 1px solid #666;
+        }
+
+        body:not(.light-mode) button:hover {
+            background-color: #555;
+        }
+
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            transition: all 0.3s ease;
+        }
+
+        body:not(.light-mode) pre {
+            background-color: #2d2d2d;
+            color: #f8f9fa;
+        }
+
+        .feature-list {
+            list-style-type: none;
+            padding: 0;
+        }
+
+        .feature-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        body:not(.light-mode) .feature-list li {
+            border-bottom-color: #444;
+        }
+
+        .feature-list li:before {
+            content: "✓ ";
+            color: #28a745;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>ModernPDF Theme Toggle Configuration</h1>
+        <p>The theme toggle functionality is now built into the ModernPDF library as part of the optimal configuration.
+        </p>
+
+        <div class="demo-section">
+            <h2>✨ New Features in ModernPDF</h2>
+            <ul class="feature-list">
+                <li><strong>Theme Toggle Support</strong> - Built-in dark/light mode switching</li>
+                <li><strong>Theme Persistence</strong> - Remembers user preference across sessions</li>
+                <li><strong>Auto System Detection</strong> - Detects system theme preference</li>
+                <li><strong>Easy Integration</strong> - Simple API for adding theme controls</li>
+                <li><strong>Customizable Storage</strong> - Configurable localStorage key</li>
+                <li><strong>Observer Pattern</strong> - Subscribe to theme change events</li>
+            </ul>
+        </div>
+
+        <div class="demo-section">
+            <h2>🎛️ Enhanced RenderOptions</h2>
+            <p>New theme-related options added to the RenderOptions interface:</p>
+            <pre><code>interface RenderOptions {
+  // ... existing options
+  
+  // Theme toggle options
+  enableThemeToggle?: boolean;     // Enable theme switching
+  persistTheme?: boolean;          // Save theme to localStorage
+  defaultTheme?: 'dark' | 'light' | 'auto';  // Default theme
+  themeStorageKey?: string;        // Custom storage key
+}</code></pre>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔧 Usage Examples</h2>
+
+            <h3>1. Automatic Optimal Configuration</h3>
+            <pre><code>// Theme toggle is now enabled by default
+const pdf = await ModernPDF.fromFile(file);
+// Automatically includes theme toggle functionality!</code></pre>
+
+            <h3>2. Create Complete Themed Viewer</h3>
+            <pre><code>const pdf = await ModernPDF.fromFile(file);
+const container = document.getElementById('pdf-container');
+
+// Creates viewer with theme toggle button
+const viewer = pdf.createOptimalViewer(container, {
+  enableThemeToggle: true,
+  defaultTheme: 'dark',
+  persistTheme: true
+});
+
+// Access theme manager
+console.log('Current theme:', viewer.themeManager.getCurrentTheme());</code></pre>
+
+            <h3>3. Manual Theme Management</h3>
+            <pre><code>// Initialize theme globally
+const themeManager = ModernPDF.initializeTheme({
+  defaultTheme: 'auto',      // Detect system preference
+  storageKey: 'my-app-theme',
+  persistTheme: true
+});
+
+// Add theme change listener
+themeManager.addObserver((theme) => {
+  console.log('Theme changed to:', theme);
+});
+
+// Programmatically change theme
+themeManager.setTheme('light');</code></pre>
+
+            <h3>4. Create Standalone Theme Toggle Button</h3>
+            <pre><code>// Create theme toggle button anywhere
+const themeButton = ThemeManager.createThemeToggleButton({
+  size: 'large',
+  position: 'fixed',
+  className: 'my-theme-btn'
+});
+
+document.body.appendChild(themeButton);</code></pre>
+        </div>
+
+        <div class="demo-section">
+            <h2>📊 Default Configuration</h2>
+            <p>The optimal viewer configuration now includes:</p>
+            <div class="demo-result info">
+                <strong>Theme Settings:</strong><br>
+                • enableThemeToggle: <code>true</code><br>
+                • persistTheme: <code>true</code><br>
+                • defaultTheme: <code>'dark'</code><br>
+                • themeStorageKey: <code>'modernpdf-theme'</code>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>🎨 CSS Integration</h2>
+            <p>The ThemeManager automatically applies classes to the body element:</p>
+            <pre><code>/* Dark mode (default) */
+body { /* No class added */ }
+
+/* Light mode */
+body.light-mode {
+  background: #f5f5f5;
+  color: #333;
+}
+
+/* Your CSS can respond to theme changes */
+.pdf-viewer {
+  background: var(--viewer-bg, #111);
+  transition: background-color 0.3s ease;
+}
+
+body.light-mode .pdf-viewer {
+  --viewer-bg: #e9ecef;
+}</code></pre>
+        </div>
+
+        <div class="demo-section">
+            <h2>🔄 Migration Guide</h2>
+            <p>Existing ModernPDF code will continue to work unchanged:</p>
+            <div class="demo-result success">
+                ✅ <strong>Fully Backward Compatible</strong><br>
+                No breaking changes to existing APIs or functionality.
+            </div>
+
+            <h3>To Enable Theme Toggle in Existing Projects:</h3>
+            <ol>
+                <li>No changes needed - theme toggle is enabled by default</li>
+                <li>Add CSS for <code>.light-mode</code> class (optional)</li>
+                <li>Use <code>pdf.createOptimalViewer()</code> for complete themed viewer</li>
+                <li>Access theme manager with <code>ModernPDF.getThemeManager()</code></li>
+            </ol>
+        </div>
+
+        <div class="demo-section">
+            <h2>💡 Best Practices</h2>
+            <ul class="feature-list">
+                <li>Use <code>enableThemeToggle: true</code> for interactive applications</li>
+                <li>Set <code>defaultTheme: 'auto'</code> to respect system preferences</li>
+                <li>Always include CSS for both light and dark modes</li>
+                <li>Use theme observers for complex UI updates</li>
+                <li>Test theme switching with your specific content</li>
+                <li>Consider accessibility when designing theme styles</li>
+            </ul>
+        </div>
+
+        <div class="demo-section">
+            <h2>🚀 What's Included</h2>
+            <div class="demo-result success">
+                <strong>ModernPDF now ships with:</strong><br>
+                ✓ ThemeManager class for theme control<br>
+                ✓ Enhanced RenderOptions with theme settings<br>
+                ✓ Automatic theme toggle in optimal configuration<br>
+                ✓ Theme persistence and system detection<br>
+                ✓ Easy-to-use viewer creation methods<br>
+                ✓ Complete TypeScript support
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Mock ThemeManager for demonstration
+        class MockThemeManager {
+            constructor() {
+                this.currentTheme = localStorage.getItem('demo-theme') || 'dark';
+                this.applyTheme();
+            }
+
+            toggleTheme() {
+                this.currentTheme = this.currentTheme === 'dark' ? 'light' : 'dark';
+                this.applyTheme();
+                localStorage.setItem('demo-theme', this.currentTheme);
+            }
+
+            applyTheme() {
+                if (this.currentTheme === 'light') {
+                    document.body.classList.add('light-mode');
+                } else {
+                    document.body.classList.remove('light-mode');
+                }
+            }
+        }
+
+        // Initialize demo theme manager
+        const demoThemeManager = new MockThemeManager();
+
+        // Add theme toggle for demo
+        const themeBtn = document.createElement('button');
+        themeBtn.textContent = demoThemeManager.currentTheme === 'dark' ? '🌙' : '☀️';
+        themeBtn.title = 'Toggle Theme (Demo)';
+        themeBtn.style.position = 'fixed';
+        themeBtn.style.top = '10px';
+        themeBtn.style.right = '10px';
+        themeBtn.style.zIndex = '1000';
+        themeBtn.style.fontSize = '18px';
+        themeBtn.style.minWidth = '40px';
+
+        themeBtn.addEventListener('click', () => {
+            demoThemeManager.toggleTheme();
+            themeBtn.textContent = demoThemeManager.currentTheme === 'dark' ? '🌙' : '☀️';
+        });
+
+        document.body.appendChild(themeBtn);
+    </script>
+</body>
+
+</html>

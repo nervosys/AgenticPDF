@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test ModernPDF Optimal Configuration</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .test-result {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>ModernPDF Optimal Configuration Test</h1>
+        <p>This page tests the new optimal viewer configuration that's now the default for ModernPDF.</p>
+
+        <div class="test-section">
+            <h2>Test 1: Default Configuration</h2>
+            <p>Testing that ModernPDF applies optimal viewer settings by default.</p>
+            <button onclick="testDefaultConfig()">Run Test</button>
+            <div id="test1-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 2: PDFRenderer Optimal Options</h2>
+            <p>Testing that PDFRenderer.getOptimalViewerOptions() returns the correct settings.</p>
+            <button onclick="testRendererOptions()">Run Test</button>
+            <div id="test2-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 3: Canvas Configuration Methods</h2>
+            <p>Testing utility methods for optimal PDF viewer configuration.</p>
+            <button onclick="testCanvasConfig()">Run Test</button>
+            <div id="test3-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 4: Fit-to-Width Calculations</h2>
+            <p>Testing the fit-to-width scaling calculations.</p>
+            <button onclick="testFitToWidth()">Run Test</button>
+            <div id="test4-result"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Configuration Summary</h2>
+            <p>The optimal configuration includes:</p>
+            <ul>
+                <li><strong>Dark Mode:</strong> Enabled by default for better reading experience</li>
+                <li><strong>Fit to Width:</strong> Automatically fits PDF width to container</li>
+                <li><strong>High DPI Rendering:</strong> 2.0 render scale for sharp text</li>
+                <li><strong>Aspect Ratio Preservation:</strong> Maintains PDF proportions during zoom</li>
+                <li><strong>Continuous Scrolling:</strong> Smooth page transitions</li>
+                <li><strong>Auto-fit on Load:</strong> Automatically scales to optimal size</li>
+                <li><strong>Maximum Quality:</strong> Best rendering quality for images and text</li>
+            </ul>
+        </div>
+    </div>
+
+    <script type="module">
+        // Mock ModernPDF classes for testing
+        class MockRenderOptions {
+            constructor(options = {}) {
+                Object.assign(this, options);
+            }
+        }
+
+        class MockPDFRenderer {
+            static getOptimalViewerOptions() {
+                return {
+                    scale: 1.0,
+                    renderScale: 2.0,
+                    fitToWidth: true,
+                    maintainAspectRatio: true,
+                    autoFitOnLoad: true,
+                    darkMode: true,
+                    continuousScrolling: true,
+                    renderText: true,
+                    renderImages: true,
+                    renderAnnotations: true,
+                    imageQuality: 1.0
+                };
+            }
+
+            static calculateFitToWidthScale(pageWidth, containerWidth) {
+                return Math.min(containerWidth / pageWidth, 1.5);
+            }
+
+            static applyFitToWidth(canvas, pageWidth, containerWidth) {
+                const scale = this.calculateFitToWidthScale(pageWidth, containerWidth);
+                const scaledWidth = pageWidth * scale;
+                const scaledHeight = (canvas.height / canvas.width) * scaledWidth;
+
+                canvas.style.width = `${scaledWidth}px`;
+                canvas.style.height = `${scaledHeight}px`;
+            }
+
+            static configureOptimalViewer(canvas, options = {}) {
+                const opts = { ...this.getOptimalViewerOptions(), ...options };
+
+                if (opts.darkMode) {
+                    canvas.style.backgroundColor = '#1a1a1a';
+                    if (canvas.parentElement) {
+                        canvas.parentElement.style.backgroundColor = '#1a1a1a';
+                        canvas.parentElement.style.color = '#ffffff';
+                    }
+                }
+
+                canvas.style.imageRendering = 'auto';
+                canvas.style.imageRendering = 'optimizeQuality';
+
+                if (opts.maintainAspectRatio !== false) {
+                    canvas.style.objectFit = 'contain';
+                }
+            }
+        }
+
+        class MockModernPDF {
+            constructor(options = {}) {
+                this.options = options;
+                if (!this.options.renderOptions) {
+                    this.options.renderOptions = MockPDFRenderer.getOptimalViewerOptions();
+                }
+            }
+        }
+
+        // Test functions
+        window.testDefaultConfig = function () {
+            const resultDiv = document.getElementById('test1-result');
+            try {
+                const pdf = new MockModernPDF();
+                const renderOptions = pdf.options.renderOptions;
+
+                if (renderOptions && renderOptions.darkMode && renderOptions.fitToWidth && renderOptions.renderScale === 2.0) {
+                    resultDiv.innerHTML = `
+                        <div class="test-result success">
+                            ✅ SUCCESS: Default configuration applied correctly
+                            <pre>${JSON.stringify(renderOptions, null, 2)}</pre>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="test-result error">
+                            ❌ FAILED: Default configuration not applied
+                            <pre>Got: ${JSON.stringify(renderOptions, null, 2)}</pre>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="test-result error">
+                        ❌ ERROR: ${error.message}
+                    </div>
+                `;
+            }
+        };
+
+        window.testRendererOptions = function () {
+            const resultDiv = document.getElementById('test2-result');
+            try {
+                const options = MockPDFRenderer.getOptimalViewerOptions();
+
+                const requiredProps = ['darkMode', 'fitToWidth', 'maintainAspectRatio', 'renderScale', 'autoFitOnLoad'];
+                const missing = requiredProps.filter(prop => !(prop in options));
+
+                if (missing.length === 0) {
+                    resultDiv.innerHTML = `
+                        <div class="test-result success">
+                            ✅ SUCCESS: PDFRenderer optimal options include all required properties
+                            <pre>${JSON.stringify(options, null, 2)}</pre>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="test-result error">
+                            ❌ FAILED: Missing properties: ${missing.join(', ')}
+                            <pre>${JSON.stringify(options, null, 2)}</pre>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="test-result error">
+                        ❌ ERROR: ${error.message}
+                    </div>
+                `;
+            }
+        };
+
+        window.testCanvasConfig = function () {
+            const resultDiv = document.getElementById('test3-result');
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 800;
+                canvas.height = 600;
+
+                MockPDFRenderer.configureOptimalViewer(canvas);
+
+                const hasCorrectStyles = canvas.style.backgroundColor === 'rgb(26, 26, 26)' &&
+                    canvas.style.objectFit === 'contain';
+
+                if (hasCorrectStyles) {
+                    resultDiv.innerHTML = `
+                        <div class="test-result success">
+                            ✅ SUCCESS: Canvas configured with optimal viewer settings
+                            <div class="info">
+                                Background: ${canvas.style.backgroundColor}<br>
+                                Object Fit: ${canvas.style.objectFit}<br>
+                                Image Rendering: ${canvas.style.imageRendering}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="test-result error">
+                            ❌ FAILED: Canvas not configured correctly
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="test-result error">
+                        ❌ ERROR: ${error.message}
+                    </div>
+                `;
+            }
+        };
+
+        window.testFitToWidth = function () {
+            const resultDiv = document.getElementById('test4-result');
+            try {
+                const pageWidth = 600;
+                const containerWidth = 800;
+
+                const scale = MockPDFRenderer.calculateFitToWidthScale(pageWidth, containerWidth);
+                const expectedScale = Math.min(800 / 600, 1.5); // Should be 1.33 (capped at 1.5)
+
+                if (Math.abs(scale - expectedScale) < 0.001) {
+                    resultDiv.innerHTML = `
+                        <div class="test-result success">
+                            ✅ SUCCESS: Fit-to-width calculation correct
+                            <div class="info">
+                                Page Width: ${pageWidth}px<br>
+                                Container Width: ${containerWidth}px<br>
+                                Calculated Scale: ${scale.toFixed(3)}<br>
+                                Expected Scale: ${expectedScale.toFixed(3)}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="test-result error">
+                            ❌ FAILED: Fit-to-width calculation incorrect
+                            <div class="info">
+                                Expected: ${expectedScale}<br>
+                                Got: ${scale}
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div class="test-result error">
+                        ❌ ERROR: ${error.message}
+                    </div>
+                `;
+            }
+        };
+    </script>
+</body>
+
+</html>

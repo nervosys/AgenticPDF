@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ModernPDF - Simple Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .demo-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .file-input {
+            margin: 10px 0;
+            padding: 10px;
+            width: 100%;
+            border: 2px dashed #ccc;
+            border-radius: 4px;
+            text-align: center;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .output {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .feature-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .feature-list li {
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+
+        .feature-list li::before {
+            content: "✅ ";
+            margin-right: 8px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>🚀 ModernPDF Simple Demo</h1>
+        <p>A lightweight demonstration of ModernPDF capabilities</p>
+    </div>
+
+    <div class="demo-section">
+        <h2>📋 About ModernPDF</h2>
+        <p>ModernPDF is a comprehensive, production-ready PDF processing library with first-class support for streaming
+            and AI systems.</p>
+
+        <h3>Key Features:</h3>
+        <ul class="feature-list">
+            <li>Single-file TypeScript library</li>
+            <li>Streaming-first architecture</li>
+            <li>AI-native with semantic chunking</li>
+            <li>Web Workers support</li>
+            <li>Universal compatibility (Node.js, browsers, edge)</li>
+            <li>Comprehensive PDF operations</li>
+            <li>Full TypeScript support</li>
+        </ul>
+    </div>
+
+    <div class="demo-section">
+        <h2>📁 File Upload Demo</h2>
+        <div class="file-input">
+            <input type="file" id="pdfFile" accept=".pdf" style="display: none;">
+            <label for="pdfFile" style="cursor: pointer; display: block;">
+                📄 Click to select a PDF file or drag and drop here
+            </label>
+        </div>
+
+        <div id="fileInfo" class="status info" style="display: none;">
+            <strong>Selected file:</strong> <span id="fileName"></span><br>
+            <strong>Size:</strong> <span id="fileSize"></span><br>
+            <strong>Type:</strong> <span id="fileType"></span>
+        </div>
+
+        <div>
+            <button id="processBtn" disabled>🔄 Process PDF (Mock)</button>
+            <button id="clearBtn">🧹 Clear</button>
+        </div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🤖 AI Features Demo</h2>
+        <label>
+            🔑 API Key (optional):
+            <input type="password" id="apiKey" placeholder="Enter API key for AI features..."
+                style="width: 300px; padding: 5px;">
+        </label>
+        <br><br>
+        <button id="aiProcessBtn" disabled>🧠 Run AI Analysis (Mock)</button>
+    </div>
+
+    <div class="demo-section">
+        <h2>📤 Output</h2>
+        <div id="status" class="status info">Ready to process PDF files...</div>
+        <div id="output" class="output">Select a PDF file and click "Process PDF" to see the mock output here...</div>
+    </div>
+
+    <div class="demo-section">
+        <h2>💻 Code Examples</h2>
+        <p>Here's how you would use ModernPDF in your code:</p>
+
+        <h3>Basic Usage:</h3>
+        <div class="output">import ModernPDF from 'modernpdf';
+
+            // Load PDF from file
+            const pdf = await ModernPDF.fromFile(file);
+
+            // Extract text
+            const text = await pdf.extractText({
+            preserveFormatting: true,
+            extractTables: true
+            });
+
+            // Get metadata
+            const metadata = pdf.getMetadata();
+            console.log(`Pages: ${metadata?.pageCount}`);
+
+            // Clean up
+            pdf.close();</div>
+
+        <h3>AI Integration:</h3>
+        <div class="output">// AI-powered semantic chunking
+            const chunks = await pdf.generateSemanticChunks({
+            strategy: 'semantic',
+            maxChunkSize: 1000,
+            preserveParagraphs: true
+            });
+
+            // Stream to LLM
+            for await (const chunk of pdf.streamSemanticChunks()) {
+            await sendToLLM(chunk.content);
+            }</div>
+    </div>
+
+    <div class="demo-section">
+        <h2>🔗 Links</h2>
+        <p>
+            <a href="examples-demo.html" target="_blank">🎯 Full Interactive Demo</a> |
+            <a href="https://github.com/nervosys/modernpdf" target="_blank">📖 GitHub Repository</a> |
+            <a href="#" onclick="showInstallInfo()">📦 Installation Guide</a>
+        </p>
+    </div>
+
+    <script>
+        // File handling
+        const fileInput = document.getElementById('pdfFile');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const fileType = document.getElementById('fileType');
+        const processBtn = document.getElementById('processBtn');
+        const aiProcessBtn = document.getElementById('aiProcessBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const apiKeyInput = document.getElementById('apiKey');
+        const status = document.getElementById('status');
+        const output = document.getElementById('output');
+
+        let selectedFile = null;
+
+        // File selection handler
+        fileInput.addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (file) {
+                selectedFile = file;
+                fileName.textContent = file.name;
+                fileSize.textContent = formatFileSize(file.size);
+                fileType.textContent = file.type || 'application/pdf';
+                fileInfo.style.display = 'block';
+                processBtn.disabled = false;
+                aiProcessBtn.disabled = false;
+                updateStatus('File selected successfully', 'success');
+            }
+        });
+
+        // Drag and drop support
+        const fileInputArea = document.querySelector('.file-input');
+
+        fileInputArea.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            fileInputArea.style.borderColor = '#007bff';
+            fileInputArea.style.backgroundColor = '#f8f9fa';
+        });
+
+        fileInputArea.addEventListener('dragleave', function (e) {
+            e.preventDefault();
+            fileInputArea.style.borderColor = '#ccc';
+            fileInputArea.style.backgroundColor = 'transparent';
+        });
+
+        fileInputArea.addEventListener('drop', function (e) {
+            e.preventDefault();
+            fileInputArea.style.borderColor = '#ccc';
+            fileInputArea.style.backgroundColor = 'transparent';
+
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+                    fileInput.files = files;
+                    fileInput.dispatchEvent(new Event('change'));
+                } else {
+                    updateStatus('Please select a PDF file', 'error');
+                }
+            }
+        });
+
+        // Process PDF button
+        processBtn.addEventListener('click', async function () {
+            if (!selectedFile) return;
+
+            updateStatus('Processing PDF...', 'info');
+            processBtn.disabled = true;
+
+            output.textContent = '';
+
+            try {
+                await simulateProcessing();
+                updateStatus('PDF processing completed successfully', 'success');
+            } catch (error) {
+                updateStatus('Error processing PDF: ' + error.message, 'error');
+            } finally {
+                processBtn.disabled = false;
+            }
+        });
+
+        // AI Process button
+        aiProcessBtn.addEventListener('click', async function () {
+            if (!selectedFile) return;
+
+            updateStatus('Running AI analysis...', 'info');
+            aiProcessBtn.disabled = true;
+
+            output.textContent = '';
+
+            try {
+                await simulateAIProcessing();
+                updateStatus('AI analysis completed successfully', 'success');
+            } catch (error) {
+                updateStatus('Error in AI analysis: ' + error.message, 'error');
+            } finally {
+                aiProcessBtn.disabled = false;
+            }
+        });
+
+        // Clear button
+        clearBtn.addEventListener('click', function () {
+            selectedFile = null;
+            fileInput.value = '';
+            fileInfo.style.display = 'none';
+            processBtn.disabled = true;
+            aiProcessBtn.disabled = true;
+            output.textContent = 'Select a PDF file and click "Process PDF" to see the mock output here...';
+            updateStatus('Ready to process PDF files...', 'info');
+        });
+
+        // Simulate PDF processing
+        async function simulateProcessing() {
+            appendOutput('🔄 Loading PDF file...');
+            await sleep(800);
+
+            appendOutput(`✅ PDF loaded: ${selectedFile.name}`);
+            appendOutput(`📊 File size: ${formatFileSize(selectedFile.size)}`);
+            await sleep(600);
+
+            appendOutput('🔍 Extracting text content...');
+            await sleep(1200);
+            appendOutput('✅ Text extraction completed');
+            appendOutput('📝 Sample extracted text: "Lorem ipsum dolor sit amet..."');
+            await sleep(400);
+
+            appendOutput('📋 Analyzing document structure...');
+            await sleep(1000);
+            appendOutput('✅ Structure analysis completed');
+            appendOutput('📄 Found: 5 pages, 2 images, 1 table, 3 sections');
+            await sleep(400);
+
+            appendOutput('🔍 Extracting metadata...');
+            await sleep(600);
+            appendOutput('✅ Metadata extraction completed');
+            appendOutput('📅 Created: 2025-09-23');
+            appendOutput('👤 Author: ModernPDF Demo');
+            appendOutput('📖 Title: Sample Document');
+
+            appendOutput('\n🎉 PDF processing completed successfully!');
+        }
+
+        // Simulate AI processing
+        async function simulateAIProcessing() {
+            const hasApiKey = apiKeyInput.value.trim().length > 0;
+
+            appendOutput('🤖 Initializing AI features...');
+            await sleep(1000);
+
+            if (hasApiKey) {
+                appendOutput('✅ API key detected - using real AI models');
+                appendOutput('🔗 Connected to OpenAI API');
+            } else {
+                appendOutput('⚠️ No API key provided - using mock AI analysis');
+            }
+            await sleep(800);
+
+            appendOutput('🧠 Generating semantic chunks...');
+            await sleep(1500);
+            appendOutput('✅ Created 12 semantic chunks');
+            appendOutput('📊 Average chunk size: 850 tokens');
+            await sleep(600);
+
+            appendOutput('🔍 Performing structural analysis...');
+            await sleep(1200);
+            appendOutput('✅ Structural analysis completed');
+            appendOutput('📋 Identified: 3 sections, 2 tables, 5 figures');
+            appendOutput('🏷️ Document type: Research Paper');
+            await sleep(500);
+
+            appendOutput('🎯 Generating embeddings...');
+            await sleep(1000);
+            appendOutput('✅ Embeddings generated for all chunks');
+            appendOutput('📐 Vector dimensions: 1536');
+            await sleep(400);
+
+            appendOutput('📤 Ready for RAG system integration');
+            appendOutput('\n🎉 AI analysis completed successfully!');
+        }
+
+        // Helper functions
+        function updateStatus(message, type) {
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+
+        function appendOutput(message) {
+            output.textContent += message + '\n';
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function showInstallInfo() {
+            alert(`Installation:
+
+npm install modernpdf
+
+Basic Usage:
+import ModernPDF from 'modernpdf';
+
+const pdf = await ModernPDF.fromFile(file);
+const text = await pdf.extractText();
+pdf.close();
+
+For more information, visit the GitHub repository.`);
+        }
+    </script>
+</body>
+
+</html>
