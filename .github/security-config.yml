@@ -1,0 +1,53 @@
+# Security Configuration for ModernPDF
+
+# This file contains security scanning configurations and policies
+
+# Trivy Configuration
+severity: CRITICAL,HIGH,MEDIUM
+ignore-unfixed: true
+format: sarif
+output: trivy-results.sarif
+
+# npm audit configuration
+audit-level: moderate
+
+# Dependencies to ignore (if they are false positives)
+ignore-dependencies: []
+
+# File patterns to exclude from security scanning
+exclude-patterns:
+  - "*.test.ts"
+  - "*.spec.ts" 
+  - "tests/**/*"
+  - "node_modules/**/*"
+  - "dist/**/*"
+  - "demos/**/*.html"
+
+# Allowed license types for dependencies
+allowed-licenses:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - 0BSD
+  - Unlicense
+  - CC0-1.0
+
+# Security policies
+policies:
+  # Require security reviews for certain file changes
+  security-review-required:
+    - "*.ts"
+    - "package.json"
+    - "package-lock.json"
+    - ".github/workflows/**"
+    
+  # Files that should never contain secrets
+  secret-exclusions:
+    - "README.md"
+    - "CHANGELOG.md" 
+    - "LICENSE"
+    - "*.yml"
+    - "*.yaml"
+    - "*.json"

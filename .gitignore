@@ -149,3 +149,19 @@ ehthumbs_vista.db
 # Temporary files
 .tmp/
 .temp/
+
+# Security scanning artifacts
+*.sarif
+trivy-results.*
+security-report.*
+dependency-report.*
+gitleaks-report.*
+semgrep-results.*
+codeql-results.*
+
+# Security tools cache
+.semgrep/
+.codeql/
+
+# Utility scripts (keep in repo for team use)
+# validate-workflows.cjs

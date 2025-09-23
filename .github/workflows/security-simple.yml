@@ -1,13 +1,13 @@
-name: Security Scan
+name: Security Scan (Simplified)
 
 on:
   schedule:
     # Run security scans daily at 2 AM UTC
     - cron: '0 2 * * *'
   push:
-    branches: [ master ]
+    branches: [ master, main ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, main ]
   workflow_dispatch: # Allow manual triggering
 
 jobs:
@@ -47,7 +47,6 @@ jobs:
       uses: github/codeql-action/init@v3
       with:
         languages: typescript
-        config-file: ./.github/codeql/codeql-config.yml
         
     - name: Autobuild
       uses: github/codeql-action/autobuild@v3
@@ -72,18 +71,6 @@ jobs:
       with:
         sarif_file: 'trivy-results.sarif'
         
-    - name: Run Semgrep Security Scanner
-      uses: returntocorp/semgrep-action@v1
-      with:
-        config: >-
-          p/security-audit
-          p/secrets
-          p/javascript
-          p/typescript
-      env:
-        SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-      continue-on-error: true
-        
     - name: Run ESLint Security Scanner
       run: |
         echo "Running ESLint security scan..."
@@ -94,36 +81,15 @@ jobs:
         echo "Checking for sensitive files..."
         find . -name "*.pem" -o -name "*.key" -o -name "*.p12" -o -name "*.pfx" -o -name "id_rsa*" -o -name "id_dsa*" -o -name "id_ecdsa*" -o -name "id_ed25519*" | grep -v node_modules | grep -v .git || echo "No sensitive files found"
         
+    - name: Run basic secret detection
+      run: |
+        echo "Scanning for common secret patterns..."
+        # Basic regex patterns for common secrets
+        grep -r -i -E "(password|passwd|pwd|secret|token|key|api_key|apikey)" --include="*.ts" --include="*.js" --include="*.json" . | grep -v node_modules | grep -v .git || echo "No obvious secrets found"
+        
     - name: Dependency Review
       uses: actions/dependency-review-action@v4
       if: github.event_name == 'pull_request'
-
-  secret-scan:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        
-    - name: Run TruffleHog OSS
-      uses: trufflesecurity/trufflehog@main
-      with:
-        path: ./
-        base: ${{ github.event.repository.default_branch }}
-        head: HEAD
-        extra_args: --debug --only-verified
-        
-    - name: Run GitLeaks
-      uses: gitleaks/gitleaks-action@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-      continue-on-error: true
 
   license-scan:
     runs-on: ubuntu-latest

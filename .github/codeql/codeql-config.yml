@@ -1,0 +1,21 @@
+name: "ModernPDF CodeQL Config"
+
+disable-default-queries: false
+
+queries:
+  - name: security-and-quality
+    uses: security-and-quality
+  - name: security-extended
+    uses: security-extended
+
+paths-ignore:
+  - "node_modules"
+  - "dist"
+  - "tests/mocks"
+  - "**/*.test.ts"
+  - "**/*.spec.ts"
+
+paths:
+  - "modernpdf.ts"
+  - "examples"
+  - "demos"

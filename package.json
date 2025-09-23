@@ -26,7 +26,10 @@
         "examples:interactive": "npx tsx run-examples-simple.ts",
         "examples:demo": "echo \"Open demos/examples-demo.html in your browser to run interactive examples\"",
         "examples:simple": "echo \"Open demos/simple-demo.html in your browser for a basic demo\"",
-        "examples:help": "npx tsx run-examples-simple.ts -- --help"
+        "examples:help": "npx tsx run-examples-simple.ts -- --help",
+        "validate:workflows": "node validate-workflows.cjs",
+        "security:audit": "npm audit --audit-level moderate",
+        "security:fix": "npm audit fix"
     },
     "keywords": [
         "pdf",
