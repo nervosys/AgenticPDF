@@ -2815,8 +2815,198 @@ class FormExtractor {
   }
 
   private async extractPageFormFields(page: PDFPage): Promise<FormField[]> {
-    // Implementation would parse AcroForm fields
-    return [];
+    const fields: FormField[] = [];
+
+    try {
+      // Parse page dictionary to find Annots array
+      const pageDict = await this.getPageDictionary(page.pageNumber);
+      const annotsRef = pageDict?.entries.get('Annots');
+
+      if (annotsRef && annotsRef.type === PDFObjectType.Array) {
+        const annots = annotsRef.value as PDFObject[];
+
+        for (let i = 0; i < annots.length; i++) {
+          const annotRef = annots[i];
+          if (annotRef.type === PDFObjectType.Reference) {
+            const ref = annotRef.value as PDFReference;
+
+            // Get annotation dictionary from PDF objects
+            const annotDict = await this.getObjectFromReference(ref);
+
+            if (annotDict && annotDict.type === PDFObjectType.Dictionary) {
+              const dict = annotDict.value as PDFDictionary;
+              const subtype = dict.entries.get('Subtype');
+
+              // Check if it's a Widget annotation (form field)
+              if (subtype && subtype.type === PDFObjectType.Name && subtype.value === 'Widget') {
+                const field = this.parseFormField(dict, page.pageNumber, i);
+                if (field) fields.push(field);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error extracting form fields from page:', error);
+    }
+
+    return fields;
+  }
+
+  private async getPageDictionary(pageNumber: number): Promise<PDFDictionary | undefined> {
+    // Get the page dictionary from the page tree
+    const pageTree = (this.pdf as any).pageTree;
+    return pageTree?.getPage(pageNumber);
+  }
+
+  private async getObjectFromReference(ref: PDFReference): Promise<PDFObject | undefined> {
+    // Get object from the PDF's object cache
+    const objects = (this.pdf as any).objects;
+    const key = `${ref.objectNumber}_${ref.generationNumber}`;
+    return objects?.get(key);
+  }
+
+  private parseFormField(annotDict: PDFDictionary, pageNumber: number, fieldIndex: number): FormField | null {
+    try {
+      // Extract field properties
+      const rect = this.parseRectFromDict(annotDict, 'Rect');
+      if (!rect) return null;
+
+      const fieldName = this.getStringFromDict(annotDict, 'T') || `field_${pageNumber}_${fieldIndex}`;
+      const fieldType = this.getFormFieldType(annotDict);
+      const flags = this.getNumberFromDict(annotDict, 'Ff') || 0;
+
+      const field: FormField = {
+        id: `${pageNumber}_${fieldIndex}_${fieldName}`,
+        name: fieldName,
+        type: fieldType,
+        value: this.getFieldValue(annotDict),
+        defaultValue: this.getFieldValue(annotDict, 'DV'),
+        rect,
+        pageNumber,
+        flags,
+        required: !!(flags & 2), // Bit 1: Required
+        readOnly: !!(flags & 1), // Bit 0: ReadOnly
+        noExport: !!(flags & 4), // Bit 2: NoExport
+        multiline: !!(flags & 4096), // Bit 12: Multiline (for text fields)
+        password: !!(flags & 8192), // Bit 13: Password (for text fields)
+        maxLength: this.getNumberFromDict(annotDict, 'MaxLen')
+      };
+
+      // Handle specific field types
+      if (field.type === FormFieldType.Choice) {
+        field.options = this.getChoiceOptions(annotDict);
+      }
+
+      return field;
+    } catch (error) {
+      console.warn('Error parsing form field:', error);
+      return null;
+    }
+  }
+
+  private getFormFieldType(dict: PDFDictionary): FormFieldType {
+    const ft = dict.entries.get('FT');
+    if (ft && ft.type === PDFObjectType.Name) {
+      switch (ft.value) {
+        case 'Tx': return FormFieldType.Text;
+        case 'Btn': return FormFieldType.Button;
+        case 'Ch': return FormFieldType.Choice;
+        case 'Sig': return FormFieldType.Signature;
+        default: return FormFieldType.Text;
+      }
+    }
+    return FormFieldType.Text;
+  }
+
+  private getFieldValue(dict: PDFDictionary, key: string = 'V'): any {
+    const v = dict.entries.get(key);
+    if (!v) return null;
+
+    switch (v.type) {
+      case PDFObjectType.String:
+      case PDFObjectType.Name:
+        return v.value;
+      case PDFObjectType.Boolean:
+        return v.value;
+      case PDFObjectType.Number:
+        return v.value;
+      case PDFObjectType.Array:
+        return (v.value as PDFObject[]).map(obj => obj.value);
+      default:
+        return null;
+    }
+  }
+
+  private getChoiceOptions(dict: PDFDictionary): FormFieldOption[] {
+    const opt = dict.entries.get('Opt');
+    if (!opt || opt.type !== PDFObjectType.Array) return [];
+
+    const options: FormFieldOption[] = [];
+    const optArray = opt.value as PDFObject[];
+
+    // Get selected values
+    const selectedValues = new Set<string>();
+    const value = this.getFieldValue(dict);
+    if (Array.isArray(value)) {
+      value.forEach(v => selectedValues.add(String(v)));
+    } else if (value !== null) {
+      selectedValues.add(String(value));
+    }
+
+    for (let i = 0; i < optArray.length; i++) {
+      const option = optArray[i];
+      if (option.type === PDFObjectType.String) {
+        const optValue = option.value as string;
+        options.push({
+          value: optValue,
+          label: optValue,
+          selected: selectedValues.has(optValue)
+        });
+      } else if (option.type === PDFObjectType.Array) {
+        const pair = option.value as PDFObject[];
+        if (pair.length >= 2) {
+          const optValue = pair[0].value as string;
+          options.push({
+            value: optValue,
+            label: pair[1].value as string,
+            selected: selectedValues.has(optValue)
+          });
+        }
+      }
+    }
+
+    return options;
+  }
+
+  private parseRectFromDict(dict: PDFDictionary, key: string): Rectangle | null {
+    const rectObj = dict.entries.get(key);
+    if (!rectObj || rectObj.type !== PDFObjectType.Array) return null;
+
+    const arr = rectObj.value as PDFObject[];
+    if (arr.length !== 4) return null;
+
+    return {
+      x: arr[0].value as number,
+      y: arr[1].value as number,
+      width: (arr[2].value as number) - (arr[0].value as number),
+      height: (arr[3].value as number) - (arr[1].value as number)
+    };
+  }
+
+  private getStringFromDict(dict: PDFDictionary, key: string): string | undefined {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.String ? obj.value as string : undefined;
+  }
+
+  private getNumberFromDict(dict: PDFDictionary, key: string): number | undefined {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.Number ? obj.value as number : undefined;
+  }
+
+  private getBooleanFromDict(dict: PDFDictionary, key: string): boolean {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.Boolean ? obj.value as boolean : false;
   }
 }
 
@@ -2859,8 +3049,253 @@ class AnnotationExtractor {
   }
 
   private async extractPageAnnotations(page: PDFPage): Promise<Annotation[]> {
-    // Parse annotations from page dictionary
-    return [];
+    const annotations: Annotation[] = [];
+
+    try {
+      // Parse page dictionary to find Annots array
+      const pageDict = await this.getPageDictionary(page.pageNumber);
+      const annotsRef = pageDict?.entries.get('Annots');
+
+      if (annotsRef && annotsRef.type === PDFObjectType.Array) {
+        const annots = annotsRef.value as PDFObject[];
+
+        for (let i = 0; i < annots.length; i++) {
+          const annotRef = annots[i];
+          if (annotRef.type === PDFObjectType.Reference) {
+            const ref = annotRef.value as PDFReference;
+
+            // Get annotation dictionary from PDF objects
+            const annotObj = await this.getObjectFromReference(ref);
+
+            if (annotObj && annotObj.type === PDFObjectType.Dictionary) {
+              const annotDict = annotObj.value as PDFDictionary;
+              const annotation = this.parseAnnotation(annotDict, page.pageNumber, i);
+              if (annotation) annotations.push(annotation);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('Error extracting annotations from page:', error);
+    }
+
+    return annotations;
+  }
+
+  private async getPageDictionary(pageNumber: number): Promise<PDFDictionary | undefined> {
+    // Get the page dictionary from the page tree
+    const pageTree = (this.pdf as any).pageTree;
+    return pageTree?.getPage(pageNumber);
+  }
+
+  private async getObjectFromReference(ref: PDFReference): Promise<PDFObject | undefined> {
+    // Get object from the PDF's object cache
+    const objects = (this.pdf as any).objects;
+    const key = `${ref.objectNumber}_${ref.generationNumber}`;
+    return objects?.get(key);
+  }
+
+  private parseAnnotation(dict: PDFDictionary, pageNumber: number, index: number): Annotation | null {
+    try {
+      // Get annotation subtype
+      const subtype = dict.entries.get('Subtype');
+      if (!subtype || subtype.type !== PDFObjectType.Name) return null;
+
+      const annotationType = this.mapSubtypeToAnnotationType(subtype.value as string);
+      if (!annotationType) return null;
+
+      // Extract common annotation properties
+      const rect = this.parseRectFromDict(dict, 'Rect');
+      if (!rect) return null;
+
+      const annotation: Annotation = {
+        id: `annotation_${pageNumber}_${index}`,
+        type: annotationType,
+        rect,
+        pageNumber,
+        contents: this.getStringFromDict(dict, 'Contents'),
+        author: this.getStringFromDict(dict, 'T'),
+        modificationDate: this.parseDateFromDict(dict, 'M'),
+        flags: this.getNumberFromDict(dict, 'F') || 0,
+        opacity: this.getNumberFromDict(dict, 'CA'),
+        color: this.parseColorFromDict(dict, 'C')
+      };
+
+      // Parse type-specific properties
+      this.parseTypeSpecificProperties(annotation, dict);
+
+      return annotation;
+    } catch (error) {
+      console.warn('Error parsing annotation:', error);
+      return null;
+    }
+  }
+
+  private mapSubtypeToAnnotationType(subtype: string): AnnotationType | null {
+    switch (subtype) {
+      case 'Text': return AnnotationType.Text;
+      case 'Link': return AnnotationType.Link;
+      case 'FreeText': return AnnotationType.FreeText;
+      case 'Line': return AnnotationType.Line;
+      case 'Square': return AnnotationType.Square;
+      case 'Circle': return AnnotationType.Circle;
+      case 'Polygon': return AnnotationType.Polygon;
+      case 'PolyLine': return AnnotationType.PolyLine;
+      case 'Highlight': return AnnotationType.Highlight;
+      case 'Underline': return AnnotationType.Underline;
+      case 'Squiggly': return AnnotationType.Squiggly;
+      case 'StrikeOut': return AnnotationType.StrikeOut;
+      case 'Stamp': return AnnotationType.Stamp;
+      case 'Caret': return AnnotationType.Caret;
+      case 'Ink': return AnnotationType.Ink;
+      case 'Popup': return AnnotationType.Popup;
+      case 'FileAttachment': return AnnotationType.FileAttachment;
+      case 'Sound': return AnnotationType.Sound;
+      case 'Movie': return AnnotationType.Movie;
+      case 'Widget': return AnnotationType.Widget;
+      case 'Screen': return AnnotationType.Screen;
+      case 'PrinterMark': return AnnotationType.PrinterMark;
+      case 'TrapNet': return AnnotationType.TrapNet;
+      case 'Watermark': return AnnotationType.Watermark;
+      case 'Redact': return AnnotationType.Redact;
+      default: return null;
+    }
+  }
+
+  private parseTypeSpecificProperties(annotation: Annotation, dict: PDFDictionary): void {
+    // Parse destination for link annotations
+    if (annotation.type === AnnotationType.Link) {
+      const action = dict.entries.get('A');
+      if (action && action.type === PDFObjectType.Dictionary) {
+        const actionDict = action.value as PDFDictionary;
+        const actionType = actionDict.entries.get('S');
+
+        if (actionType && actionType.type === PDFObjectType.Name) {
+          if (actionType.value === 'URI') {
+            const uri = actionDict.entries.get('URI');
+            if (uri && uri.type === PDFObjectType.String) {
+              annotation.destination = uri.value as string;
+            }
+          } else if (actionType.value === 'GoTo') {
+            const dest = actionDict.entries.get('D');
+            if (dest) {
+              if (dest.type === PDFObjectType.String) {
+                annotation.destination = dest.value as string;
+              } else if (dest.type === PDFObjectType.Array) {
+                annotation.destination = (dest.value as PDFObject[]).map(obj => obj.value as number);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Parse border style if present
+    const borderStyle = dict.entries.get('BS');
+    if (borderStyle && borderStyle.type === PDFObjectType.Dictionary) {
+      const bsDict = borderStyle.value as PDFDictionary;
+      const width = this.getNumberFromDict(bsDict, 'W');
+      const style = this.getStringFromDict(bsDict, 'S');
+
+      if (width !== undefined && style) {
+        annotation.borderStyle = {
+          width,
+          style: style as 'Solid' | 'Dashed' | 'Beveled' | 'Inset' | 'Underline'
+        };
+      }
+    }
+  }
+
+  private parseColor(colorArray: PDFObject[]): Color | undefined {
+    if (colorArray.length === 1) {
+      // Grayscale
+      const gray = colorArray[0].value as number;
+      return { r: gray, g: gray, b: gray };
+    } else if (colorArray.length === 3) {
+      // RGB
+      return {
+        r: colorArray[0].value as number,
+        g: colorArray[1].value as number,
+        b: colorArray[2].value as number
+      };
+    } else if (colorArray.length === 4) {
+      // CMYK - convert to RGB approximation
+      const c = colorArray[0].value as number;
+      const m = colorArray[1].value as number;
+      const y = colorArray[2].value as number;
+      const k = colorArray[3].value as number;
+
+      return {
+        r: 1 - Math.min(1, c * (1 - k) + k),
+        g: 1 - Math.min(1, m * (1 - k) + k),
+        b: 1 - Math.min(1, y * (1 - k) + k)
+      };
+    }
+
+    return undefined;
+  }
+
+  private parseRectFromDict(dict: PDFDictionary, key: string): Rectangle | null {
+    const rectObj = dict.entries.get(key);
+    if (!rectObj || rectObj.type !== PDFObjectType.Array) return null;
+
+    const arr = rectObj.value as PDFObject[];
+    if (arr.length !== 4) return null;
+
+    return {
+      x: arr[0].value as number,
+      y: arr[1].value as number,
+      width: (arr[2].value as number) - (arr[0].value as number),
+      height: (arr[3].value as number) - (arr[1].value as number)
+    };
+  }
+
+  private getStringFromDict(dict: PDFDictionary, key: string): string | undefined {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.String ? obj.value as string : undefined;
+  }
+
+  private getNumberFromDict(dict: PDFDictionary, key: string): number | undefined {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.Number ? obj.value as number : undefined;
+  }
+
+  private getBooleanFromDict(dict: PDFDictionary, key: string): boolean {
+    const obj = dict.entries.get(key);
+    return obj && obj.type === PDFObjectType.Boolean ? obj.value as boolean : false;
+  }
+
+  private parseDateFromDict(dict: PDFDictionary, key: string): Date | undefined {
+    const dateStr = this.getStringFromDict(dict, key);
+    if (!dateStr) return undefined;
+
+    try {
+      // PDF date format: D:YYYYMMDDHHmmSSOHH'mm
+      if (dateStr.startsWith('D:')) {
+        const year = parseInt(dateStr.substr(2, 4), 10);
+        const month = parseInt(dateStr.substr(6, 2), 10) - 1;
+        const day = parseInt(dateStr.substr(8, 2), 10);
+        const hour = parseInt(dateStr.substr(10, 2), 10) || 0;
+        const minute = parseInt(dateStr.substr(12, 2), 10) || 0;
+        const second = parseInt(dateStr.substr(14, 2), 10) || 0;
+
+        return new Date(year, month, day, hour, minute, second);
+      }
+
+      // Fallback to standard Date parsing
+      return new Date(dateStr);
+    } catch (error) {
+      console.warn('Error parsing date:', dateStr, error);
+      return undefined;
+    }
+  }
+
+  private parseColorFromDict(dict: PDFDictionary, key: string): Color | undefined {
+    const colorObj = dict.entries.get(key);
+    if (!colorObj || colorObj.type !== PDFObjectType.Array) return undefined;
+
+    const colorArray = colorObj.value as PDFObject[];
+    return this.parseColor(colorArray);
   }
 }
 
@@ -4002,9 +4437,129 @@ class PDFWriter {
   }
 
   private async collectObjects(): Promise<PDFObject[]> {
-    // Collect all objects from the PDF
-    // Including modified objects
-    return [];
+    const objects: PDFObject[] = [];
+
+    try {
+      // Get the original xref table and objects
+      const xrefTable = (this.pdf as any).xrefTable as XRefTable;
+      const pdfObjects = (this.pdf as any).objects as Map<string, PDFObject>;
+
+      if (!xrefTable) {
+        console.warn('No xref table available for PDF writing');
+        return objects;
+      }
+
+      // Collect objects from the xref table
+      const objectNumbers = new Set<number>();
+
+      // Get all object numbers from xref
+      for (let i = 1; i <= 1000; i++) { // Arbitrary limit to prevent infinite loops
+        const entry = xrefTable.getEntry(i);
+        if (entry && entry.type === 'n') { // Only include in-use objects
+          objectNumbers.add(i);
+        }
+      }
+
+      // Collect objects in order
+      for (const objNum of Array.from(objectNumbers).sort((a, b) => a - b)) {
+        const entry = xrefTable.getEntry(objNum);
+        if (!entry) continue;
+
+        // Check if we have a modified version
+        const modifiedKey = `${objNum}_${entry.generation}`;
+        if (this.modifiedObjects.has(modifiedKey)) {
+          const modifiedObj = this.modifiedObjects.get(modifiedKey)!;
+          objects.push({
+            ...modifiedObj,
+            objectNumber: objNum,
+            generationNumber: entry.generation
+          });
+        } else if (pdfObjects && pdfObjects.has(modifiedKey)) {
+          // Use original object
+          const originalObj = pdfObjects.get(modifiedKey)!;
+          objects.push({
+            ...originalObj,
+            objectNumber: objNum,
+            generationNumber: entry.generation
+          });
+        } else {
+          // Create a minimal object if we don't have the original
+          objects.push({
+            type: PDFObjectType.Null,
+            value: null,
+            objectNumber: objNum,
+            generationNumber: entry.generation
+          });
+        }
+      }
+
+      // Add any new objects that were created
+      for (const [key, obj] of this.modifiedObjects) {
+        const [objNumStr, genStr] = key.split('_');
+        const objNum = parseInt(objNumStr, 10);
+
+        if (!objectNumbers.has(objNum)) {
+          objects.push({
+            ...obj,
+            objectNumber: objNum,
+            generationNumber: parseInt(genStr, 10)
+          });
+        }
+      }
+
+    } catch (error) {
+      console.warn('Error collecting PDF objects:', error);
+    }
+
+    return objects;
+  }
+
+  /**
+   * Mark an object as modified for inclusion in the saved PDF
+   */
+  modifyObject(objectNumber: number, generationNumber: number, obj: PDFObject): void {
+    const key = `${objectNumber}_${generationNumber}`;
+    this.modifiedObjects.set(key, obj);
+  }
+
+  /**
+   * Add a new object to be included in the saved PDF
+   */
+  addObject(obj: PDFObject): number {
+    // Find next available object number
+    let objectNumber = this.getNextObjectNumber();
+
+    const key = `${objectNumber}_0`;
+    this.modifiedObjects.set(key, {
+      ...obj,
+      objectNumber,
+      generationNumber: 0
+    });
+
+    return objectNumber;
+  }
+
+  private getNextObjectNumber(): number {
+    const xrefTable = (this.pdf as any).xrefTable as XRefTable;
+    let maxObjectNumber = 0;
+
+    // Find the highest object number
+    for (let i = 1; i <= 10000; i++) {
+      const entry = xrefTable?.getEntry(i);
+      if (entry) {
+        maxObjectNumber = Math.max(maxObjectNumber, i);
+      } else {
+        break;
+      }
+    }
+
+    // Check modified objects too
+    for (const key of this.modifiedObjects.keys()) {
+      const objNum = parseInt(key.split('_')[0], 10);
+      maxObjectNumber = Math.max(maxObjectNumber, objNum);
+    }
+
+    return maxObjectNumber + 1;
   }
 
   private writeObject(writer: PDFStreamWriter, obj: PDFObject): void {
