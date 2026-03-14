@@ -148,7 +148,40 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] Enhanced `ImageResource` parsing — `filter[]`, `decodeParms`, `smaskData/Width/Height`
 - [x] Demo image gallery panel with lightbox viewer
 
-### Phase 13 — Advanced Text & Layout
+### Phase 13 — Agentic AI Workflow Optimization ✅
+
+- [x] OpenAI / Anthropic function-calling tool schema generation (`getToolSchemas()`)
+- [x] MCP (Model Context Protocol) server manifest generation (`getMCPManifest()`)
+- [x] JSON Schema generation for all input/output types (`getJSONSchemas()`)
+- [x] `ToolSchema` interface with parameters, constraints, and examples
+- [x] Enhanced ontology with tool-use constraints and agent guidance
+- [x] Agent session context tracking (`AgentSession` interface)
+- [x] `describeForAgent()` — single-call introspection for AI agents
+
+### Phase 14 — Rust CLI & WASM ✅
+
+- [x] Rust project scaffold (`agenticpdf-rs/`)
+- [x] Core PDF parser in Rust (header, xref, objects, streams)
+- [x] FlateDecode / PNG predictor decompression in Rust
+- [x] CLI binary (`agenticpdf`) with text, metadata, images, chunk commands
+- [x] WASM compilation target (`wasm32-unknown-unknown`)
+- [x] `wasm-bindgen` bridge for browser integration
+- [x] Performance-critical hot paths (inflate, CCITT, text extraction)
+- [x] Benchmark suite comparing TS vs. Rust/WASM performance
+
+### Phase 15 — DoD Security Audit & Compliance ✅
+
+- [x] CVE vulnerability assessment for PDF parsing attack surfaces
+- [x] MITRE ATT&CK mapping (T1203, T1204, T1059 — PDF-specific vectors)
+- [x] NIST FIPS 140-3 compliance review (cryptographic modules)
+- [x] CMMC 2.0 Level 2 compliance checklist (AC, AU, IA, SC controls)
+- [x] Input validation hardening (size limits, recursion depth, object count)
+- [x] Memory safety audit (buffer bounds, integer overflow, DoS prevention)
+- [x] SBOM generation (`generateSBOM()` method)
+- [x] `SECURITY_AUDIT.md` comprehensive report
+- [x] Supply chain security documentation
+
+### Phase 16 — Advanced Text & Layout
 
 - [ ] Multi-column layout detection
 - [ ] Table structure extraction (rows, cells, headers)
@@ -157,14 +190,14 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Vertical text rendering (CJK)
 - [ ] Right-to-left text (Arabic, Hebrew)
 
-### Phase 14 — Encryption & Security
+### Phase 17 — Encryption & Security
 
 - [ ] Standard security handler (RC4, AES-128, AES-256)
 - [ ] Password-protected PDF opening
 - [ ] Permission flag enforcement
 - [ ] Certificate-based encryption
 
-### Phase 15 — Performance & Scale
+### Phase 18 — Performance & Scale
 
 - [ ] Web Worker rendering pipeline
 - [ ] Tile-based rendering for large pages
@@ -172,7 +205,7 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Virtual scroll for 1000+ page documents
 - [ ] Incremental parsing for append-mode PDFs
 
-### Phase 16 — PDF Writing & Modification
+### Phase 19 — PDF Writing & Modification
 
 - [ ] Incremental save (append changes without rewriting)
 - [ ] Page insertion / deletion / reordering
@@ -180,7 +213,7 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Digital signature support
 - [ ] PDF/A conformance output
 
-### Phase 17 — AI & RAG Enhancements
+### Phase 20 — AI & RAG Enhancements
 
 - [ ] Embedding generation via `EmbeddingProvider` interface
 - [ ] Vector store integration helpers

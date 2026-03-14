@@ -365,6 +365,106 @@ export interface NLPReadyContent {
     summary?: string;
     keywords?: string[];
 }
+// Agentic AI Tool Schema Types
+export type ToolSchemaFormat = 'openai' | 'anthropic' | 'generic';
+
+export interface ToolParameter {
+    name: string;
+    type: string;
+    description: string;
+    required: boolean;
+    enum?: string[];
+    default?: any;
+    minimum?: number;
+    maximum?: number;
+    items?: { type: string };
+}
+
+export interface ToolSchema {
+    name: string;
+    description: string;
+    parameters: ToolParameter[];
+    returnType: string;
+    category: string;
+    streaming: boolean;
+    readOnly: boolean;
+}
+
+export interface MCPManifest {
+    protocol: string;
+    name: string;
+    version: string;
+    description: string;
+    tools: MCPTool[];
+    resources: MCPResource[];
+}
+
+export interface MCPTool {
+    name: string;
+    description: string;
+    inputSchema: Record<string, any>;
+    annotations?: Record<string, any>;
+}
+
+export interface MCPResource {
+    uri: string;
+    name: string;
+    description: string;
+    mimeType: string;
+}
+
+export interface AgentSession {
+    sessionId: string;
+    documentInfo: {
+        pageCount: number;
+        fileSize: number;
+        version: string;
+        encrypted: boolean;
+    };
+    availableTools: string[];
+    created: string;
+}
+
+// DoD Security Types
+export interface SecurityConfig {
+    maxFileSize: number;
+    maxPageCount: number;
+    maxObjectCount: number;
+    maxStreamSize: number;
+    maxRecursionDepth: number;
+    maxStringLength: number;
+    maxDictEntries: number;
+    maxXRefEntries: number;
+    allowJavaScript: boolean;
+    allowExternalResources: boolean;
+    allowEncryptedPDFs: boolean;
+    sanitizeStrings: boolean;
+}
+
+export interface SBOMEntry {
+    name: string;
+    version: string;
+    license: string;
+    type: string;
+    purl?: string;
+    cpe?: string;
+    supplier?: string;
+}
+
+export interface SBOM {
+    bomFormat: string;
+    specVersion: string;
+    version: number;
+    metadata: {
+        timestamp: string;
+        component: SBOMEntry;
+        tools: { name: string; version: string }[];
+    };
+    components: SBOMEntry[];
+}
+
+export declare const DEFAULT_SECURITY_CONFIG: SecurityConfig;
+
 // Ontology & AI Agent Discovery Types
 export interface OntologyConcept {
     id: string;
@@ -612,6 +712,38 @@ export declare class AgenticPDF {
      * Parse and return the document outline (bookmarks) tree
      */
     getOutline(): OutlineItem[];
+    /**
+     * Generate tool/function-calling schemas for AI agent integration
+     */
+    static getToolSchemas(format?: ToolSchemaFormat): Record<string, any>[];
+    /**
+     * Generate MCP (Model Context Protocol) server manifest
+     */
+    static getMCPManifest(): MCPManifest;
+    /**
+     * Generate JSON Schema definitions for all input/output types
+     */
+    static getJSONSchemas(): Record<string, Record<string, any>>;
+    /**
+     * Single-call introspection endpoint for AI agents
+     */
+    static describeForAgent(format?: ToolSchemaFormat): Record<string, any>;
+    /**
+     * Generate CycloneDX SBOM for supply chain security
+     */
+    static generateSBOM(): SBOM;
+    /**
+     * Get hardened security configuration for DoD environments
+     */
+    static getSecurityConfig(): SecurityConfig;
+    /**
+     * Validate PDF data against security constraints
+     */
+    static validateSecurityConstraints(data: Uint8Array, config?: Partial<SecurityConfig>): string[];
+    /**
+     * Create an agent session context for tool orchestration
+     */
+    createAgentSession(): AgentSession;
     /**
      * Describes the loaded document's available operations and recommended workflows
      */

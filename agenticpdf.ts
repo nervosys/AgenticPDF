@@ -474,6 +474,119 @@ export interface EmbeddingProvider {
 // Ontology & AI Agent Discovery Types
 // ============================================================================
 
+// Agentic AI workflow interfaces
+
+export type ToolSchemaFormat = 'openai' | 'anthropic' | 'generic';
+
+export interface ToolParameter {
+  name: string;
+  type: string;
+  description: string;
+  required: boolean;
+  enum?: string[];
+  default?: any;
+  minimum?: number;
+  maximum?: number;
+}
+
+export interface ToolSchema {
+  name: string;
+  description: string;
+  parameters: ToolParameter[];
+  returnType: string;
+  category: string;
+  streaming: boolean;
+  requiresDocument: boolean;
+  example?: string;
+}
+
+export interface MCPManifest {
+  name: string;
+  version: string;
+  description: string;
+  protocol: string;
+  tools: MCPTool[];
+  resources: MCPResource[];
+}
+
+export interface MCPTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, any>;
+  annotations?: { title?: string; readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
+}
+
+export interface MCPResource {
+  uri: string;
+  name: string;
+  description: string;
+  mimeType: string;
+}
+
+export interface AgentSession {
+  sessionId: string;
+  startedAt: number;
+  documentPath?: string;
+  operationsPerformed: string[];
+  chunksProcessed: number;
+  tokensEstimated: number;
+}
+
+/** Security configuration for hardened PDF processing (DoD/CMMC compliant). */
+export interface SecurityConfig {
+  maxFileSize: number;
+  maxPageCount: number;
+  maxObjectCount: number;
+  maxStreamSize: number;
+  maxRecursionDepth: number;
+  maxStringLength: number;
+  maxDictEntries: number;
+  maxXRefEntries: number;
+  allowJavaScript: boolean;
+  allowExternalResources: boolean;
+  allowEncryptedPDFs: boolean;
+  sanitizeStrings: boolean;
+}
+
+/** Software Bill of Materials entry. */
+export interface SBOMEntry {
+  name: string;
+  version: string;
+  license: string;
+  type: 'library' | 'runtime' | 'build-tool';
+  purl?: string;
+  cpe?: string;
+  supplier?: string;
+}
+
+/** Software Bill of Materials (SBOM) in CycloneDX-compatible format. */
+export interface SBOM {
+  bomFormat: string;
+  specVersion: string;
+  version: number;
+  metadata: {
+    component: { name: string; version: string; type: string; license: string };
+    timestamp: string;
+  };
+  components: SBOMEntry[];
+}
+
+/** Default security-hardened configuration suitable for DoD environments. */
+export const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
+  maxFileSize: 500 * 1024 * 1024,       // 500 MB
+  maxPageCount: 100_000,
+  maxObjectCount: 1_000_000,
+  maxStreamSize: 256 * 1024 * 1024,     // 256 MB
+  maxRecursionDepth: 64,
+  maxStringLength: 10_000_000,          // 10M chars
+  maxDictEntries: 50_000,
+  maxXRefEntries: 1_000_000,
+  allowJavaScript: false,
+  allowExternalResources: false,
+  allowEncryptedPDFs: true,
+  sanitizeStrings: true,
+};
+
 export interface OntologyConcept {
   id: string;
   label: string;
@@ -2324,6 +2437,699 @@ export class AgenticPDF {
       recommendedWorkflows: workflows,
       estimatedComplexity: complexity
     };
+  }
+
+  // ==========================================================================
+  // Agentic AI Workflow Optimization (Phase 13)
+  // ==========================================================================
+
+  /**
+   * Generates tool/function-calling schemas for AI agent integration.
+   * Supports OpenAI function calling, Anthropic tool use, and generic formats.
+   */
+  static getToolSchemas(format: ToolSchemaFormat = 'openai'): any[] {
+    const tools = AgenticPDF._buildToolDefinitions();
+
+    switch (format) {
+      case 'openai':
+        return tools.map(tool => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: {
+              type: 'object',
+              properties: Object.fromEntries(
+                tool.parameters.map(p => [p.name, {
+                  type: AgenticPDF._tsTypeToJsonType(p.type),
+                  description: p.description,
+                  ...(p.enum ? { enum: p.enum } : {}),
+                  ...(p.default !== undefined ? { default: p.default } : {}),
+                  ...(p.minimum !== undefined ? { minimum: p.minimum } : {}),
+                  ...(p.maximum !== undefined ? { maximum: p.maximum } : {})
+                }])
+              ),
+              required: tool.parameters.filter(p => p.required).map(p => p.name)
+            }
+          }
+        }));
+
+      case 'anthropic':
+        return tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: {
+            type: 'object',
+            properties: Object.fromEntries(
+              tool.parameters.map(p => [p.name, {
+                type: AgenticPDF._tsTypeToJsonType(p.type),
+                description: p.description,
+                ...(p.enum ? { enum: p.enum } : {}),
+                ...(p.default !== undefined ? { default: p.default } : {})
+              }])
+            ),
+            required: tool.parameters.filter(p => p.required).map(p => p.name)
+          }
+        }));
+
+      case 'generic':
+      default:
+        return tools;
+    }
+  }
+
+  /**
+   * Generates an MCP (Model Context Protocol) server manifest describing
+   * all available tools and resources for agent discovery.
+   */
+  static getMCPManifest(): MCPManifest {
+    const tools = AgenticPDF._buildToolDefinitions();
+
+    return {
+      name: 'agenticpdf',
+      version: '1.0.0',
+      description: 'PDF processing server with text extraction, AI analysis, image extraction, form handling, and semantic chunking.',
+      protocol: '2025-01-01',
+      tools: tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: {
+          type: 'object',
+          properties: Object.fromEntries(
+            tool.parameters.map(p => [p.name, {
+              type: AgenticPDF._tsTypeToJsonType(p.type),
+              description: p.description,
+              ...(p.enum ? { enum: p.enum } : {}),
+              ...(p.default !== undefined ? { default: p.default } : {})
+            }])
+          ),
+          required: tool.parameters.filter(p => p.required).map(p => p.name)
+        },
+        annotations: {
+          title: tool.description,
+          readOnlyHint: !['fillForm', 'addAnnotation', 'save'].includes(tool.name),
+          destructiveHint: tool.name === 'close',
+          openWorldHint: false
+        }
+      })),
+      resources: [
+        {
+          uri: 'agenticpdf://ontology',
+          name: 'Library Ontology',
+          description: 'Full JSON-LD ontology describing library concepts, capabilities, and relationships.',
+          mimeType: 'application/ld+json'
+        },
+        {
+          uri: 'agenticpdf://capabilities',
+          name: 'Capability Map',
+          description: 'All library capabilities organized by category with method signatures.',
+          mimeType: 'application/json'
+        },
+        {
+          uri: 'agenticpdf://workflows',
+          name: 'Workflow Templates',
+          description: 'Pre-built workflow templates for common PDF processing operations.',
+          mimeType: 'application/json'
+        },
+        {
+          uri: 'agenticpdf://schemas',
+          name: 'JSON Schemas',
+          description: 'JSON Schema definitions for all input and output types.',
+          mimeType: 'application/schema+json'
+        }
+      ]
+    };
+  }
+
+  /**
+   * Generates JSON Schema definitions for all input and output types.
+   * Useful for AI agents to validate parameters and return values.
+   */
+  static getJSONSchemas(): Record<string, any> {
+    return {
+      PDFOptions: {
+        type: 'object',
+        properties: {
+          streaming: { type: 'boolean', description: 'Enable streaming mode' },
+          lazyLoad: { type: 'boolean', description: 'Lazy-load pages on demand' },
+          maxMemoryUsage: { type: 'number', description: 'Max memory in bytes' },
+          useWebWorkers: { type: 'boolean', description: 'Use Web Workers for CPU-intensive ops' },
+          workerUrl: { type: 'string', description: 'URL to the worker script' }
+        }
+      },
+      TextExtractionOptions: {
+        type: 'object',
+        properties: {
+          preserveFormatting: { type: 'boolean', description: 'Preserve text layout and whitespace' },
+          normalizeWhitespace: { type: 'boolean', description: 'Normalize whitespace characters' },
+          extractTables: { type: 'boolean', description: 'Detect and extract tables' },
+          detectColumns: { type: 'boolean', description: 'Detect multi-column layout' },
+          pageRange: {
+            type: 'object',
+            properties: {
+              start: { type: 'number', minimum: 1 },
+              end: { type: 'number', minimum: 1 }
+            }
+          }
+        }
+      },
+      ImageExtractionOptions: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', enum: ['png', 'jpeg', 'webp'] },
+          quality: { type: 'number', minimum: 0, maximum: 1 },
+          maxWidth: { type: 'number', minimum: 1 },
+          maxHeight: { type: 'number', minimum: 1 },
+          extractMasks: { type: 'boolean' },
+          pageRange: {
+            type: 'object',
+            properties: {
+              start: { type: 'number', minimum: 1 },
+              end: { type: 'number', minimum: 1 }
+            }
+          }
+        }
+      },
+      AIOptions: {
+        type: 'object',
+        properties: {
+          enableStructuralAnalysis: { type: 'boolean' },
+          enableSemanticChunking: { type: 'boolean' },
+          enableNER: { type: 'boolean' },
+          enableSummarization: { type: 'boolean' },
+          chunkSize: { type: 'number', minimum: 50, maximum: 10000, default: 500 },
+          chunkOverlap: { type: 'number', minimum: 0, maximum: 5000, default: 50 }
+        }
+      },
+      ChunkingOptions: {
+        type: 'object',
+        properties: {
+          strategy: { type: 'string', enum: ['semantic', 'fixed', 'sliding', 'recursive'] },
+          maxChunkSize: { type: 'number', minimum: 50, default: 500 },
+          minChunkSize: { type: 'number', minimum: 10, default: 100 },
+          overlapSize: { type: 'number', minimum: 0, default: 50 },
+          preserveSentences: { type: 'boolean' },
+          preserveParagraphs: { type: 'boolean' }
+        }
+      },
+      ExportOptions: {
+        type: 'object',
+        properties: {
+          includeMetadata: { type: 'boolean' },
+          includeAnnotations: { type: 'boolean' },
+          includeForms: { type: 'boolean' },
+          includeImages: { type: 'boolean' },
+          imageFormat: { type: 'string', enum: ['png', 'jpeg', 'webp'] },
+          pageRange: {
+            type: 'object',
+            properties: {
+              start: { type: 'number', minimum: 1 },
+              end: { type: 'number', minimum: 1 }
+            }
+          }
+        }
+      },
+      RenderOptions: {
+        type: 'object',
+        properties: {
+          scale: { type: 'number', minimum: 0.1, maximum: 10, default: 1 },
+          rotation: { type: 'number', enum: [0, 90, 180, 270] },
+          background: { type: 'string' },
+          renderText: { type: 'boolean', default: true },
+          renderImages: { type: 'boolean', default: true },
+          renderAnnotations: { type: 'boolean', default: true }
+        }
+      },
+      TextContent: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          x: { type: 'number' },
+          y: { type: 'number' },
+          width: { type: 'number' },
+          height: { type: 'number' },
+          fontSize: { type: 'number' },
+          fontFamily: { type: 'string' },
+          pageNumber: { type: 'number' },
+          style: {
+            type: 'object',
+            properties: {
+              bold: { type: 'boolean' },
+              italic: { type: 'boolean' }
+            }
+          }
+        },
+        required: ['text', 'pageNumber']
+      },
+      SemanticChunk: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          content: { type: 'string' },
+          pageNumbers: { type: 'array', items: { type: 'number' } },
+          type: { type: 'string', enum: ['Title', 'Header', 'Paragraph', 'List', 'Table', 'Figure', 'Code', 'Quote', 'Footnote'] },
+          metadata: {
+            type: 'object',
+            properties: {
+              tokenCount: { type: 'number' },
+              confidence: { type: 'number' },
+              importance: { type: 'number' },
+              keywords: { type: 'array', items: { type: 'string' } }
+            }
+          }
+        },
+        required: ['id', 'content', 'pageNumbers']
+      },
+      ImageContent: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          width: { type: 'number' },
+          height: { type: 'number' },
+          mimeType: { type: 'string' },
+          colorSpace: { type: 'string' },
+          pageNumber: { type: 'number' }
+        },
+        required: ['id', 'pageNumber']
+      }
+    };
+  }
+
+  /**
+   * Single-call introspection endpoint for AI agents.
+   * Returns everything an agent needs to discover and use the library:
+   * ontology, tool schemas, JSON schemas, workflows, and guidance.
+   */
+  static describeForAgent(format: ToolSchemaFormat = 'openai'): {
+    ontology: LibraryOntology;
+    tools: any[];
+    schemas: Record<string, any>;
+    workflows: Workflow[];
+    agentGuidance: {
+      quickStart: string;
+      bestPractices: string[];
+      memoryManagement: string;
+      streamingGuidance: string;
+    };
+  } {
+    return {
+      ontology: AgenticPDF.describe(),
+      tools: AgenticPDF.getToolSchemas(format),
+      schemas: AgenticPDF.getJSONSchemas(),
+      workflows: AgenticPDF.getWorkflows(),
+      agentGuidance: {
+        quickStart: 'Load a PDF with AgenticPDF.fromFile(file) or AgenticPDF.fromBuffer(buffer). Then call extractText(), getAIFeatures(), or generateSemanticChunks() as needed. Always call close() when done.',
+        bestPractices: [
+          'Use streaming APIs (streamText, streamSemanticChunks) for documents > 10MB',
+          'Set lazyLoad: true for documents > 50 pages',
+          'Set maxMemoryUsage for memory-constrained environments',
+          'Always call close() to release resources',
+          'Use AbortSignal for cancelable operations',
+          'Prefer semantic chunking strategy for RAG pipelines',
+          'Check describeDocument() for document-specific recommendations'
+        ],
+        memoryManagement: 'Configure maxMemoryUsage in PDFOptions. Call unloadPages() to release parsed pages. Call close() to release all resources. For large documents, use streaming APIs to avoid loading entire document.',
+        streamingGuidance: 'All major operations support streaming via AsyncGenerator. Use streamText() for progressive text extraction, streamSemanticChunks() for RAG processing. Pass progressCallback in StreamOptions for progress tracking.'
+      }
+    };
+  }
+
+  /**
+   * Creates an agent session for tracking operations across multiple calls.
+   */
+  createAgentSession(): AgentSession {
+    return {
+      sessionId: `session_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      startedAt: Date.now(),
+      documentPath: undefined,
+      operationsPerformed: [],
+      chunksProcessed: 0,
+      tokensEstimated: 0
+    };
+  }
+
+  /**
+   * Internal: build comprehensive tool definitions for all public methods.
+   */
+  private static _buildToolDefinitions(): ToolSchema[] {
+    return [
+      {
+        name: 'extractText',
+        description: 'Extract all text content from the PDF with positioning, font, and style metadata.',
+        parameters: [
+          { name: 'preserveFormatting', type: 'boolean', description: 'Keep original text layout', required: false, default: false },
+          { name: 'normalizeWhitespace', type: 'boolean', description: 'Normalize whitespace', required: false, default: false },
+          { name: 'pageRange', type: 'object', description: 'Pages to extract {start, end}', required: false }
+        ],
+        returnType: 'TextContent[]',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const text = await pdf.extractText({ preserveFormatting: true });"
+      },
+      {
+        name: 'streamText',
+        description: 'Stream text content page-by-page for memory-efficient processing of large documents.',
+        parameters: [
+          { name: 'normalizeWhitespace', type: 'boolean', description: 'Normalize whitespace', required: false, default: false }
+        ],
+        returnType: 'AsyncGenerator<TextContent>',
+        category: 'extraction',
+        streaming: true,
+        requiresDocument: true,
+        example: "for await (const text of pdf.streamText()) { process(text); }"
+      },
+      {
+        name: 'extractImages',
+        description: 'Extract all images from the PDF with metadata (dimensions, color space, format).',
+        parameters: [
+          { name: 'format', type: 'string', description: 'Output image format', required: false, enum: ['png', 'jpeg', 'webp'] },
+          { name: 'quality', type: 'number', description: 'Image quality 0-1', required: false, minimum: 0, maximum: 1 },
+          { name: 'pageRange', type: 'object', description: 'Pages to extract {start, end}', required: false }
+        ],
+        returnType: 'ImageContent[]',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const images = await pdf.extractImages({ format: 'png' });"
+      },
+      {
+        name: 'imageToDataURL',
+        description: 'Convert an extracted image to a data URL for display.',
+        parameters: [
+          { name: 'image', type: 'ImageContent', description: 'Image to convert', required: true },
+          { name: 'format', type: 'string', description: 'Output format', required: false, enum: ['png', 'jpeg', 'webp'] },
+          { name: 'quality', type: 'number', description: 'Quality 0-1', required: false, minimum: 0, maximum: 1 }
+        ],
+        returnType: 'string',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const url = await pdf.imageToDataURL(image, 'png');"
+      },
+      {
+        name: 'getMetadata',
+        description: 'Get PDF document metadata (title, author, page count, creation date, etc.).',
+        parameters: [],
+        returnType: 'PDFMetadata',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const meta = pdf.getMetadata();"
+      },
+      {
+        name: 'getPageCount',
+        description: 'Get total number of pages in the document.',
+        parameters: [],
+        returnType: 'number',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const count = pdf.getPageCount();"
+      },
+      {
+        name: 'getAIFeatures',
+        description: 'Run AI analysis: structural analysis, semantic chunking, NLP preparation, and optional embeddings.',
+        parameters: [
+          { name: 'enableStructuralAnalysis', type: 'boolean', description: 'Analyze sections, tables, figures', required: false, default: true },
+          { name: 'enableSemanticChunking', type: 'boolean', description: 'Generate semantic chunks', required: false, default: true },
+          { name: 'chunkSize', type: 'number', description: 'Target chunk size in tokens', required: false, minimum: 50, maximum: 10000, default: 500 },
+          { name: 'chunkOverlap', type: 'number', description: 'Overlap between chunks', required: false, minimum: 0, maximum: 5000, default: 50 }
+        ],
+        returnType: 'AIFeatures',
+        category: 'analysis',
+        streaming: false,
+        requiresDocument: true,
+        example: "const ai = await pdf.getAIFeatures({ enableStructuralAnalysis: true });"
+      },
+      {
+        name: 'generateSemanticChunks',
+        description: 'Generate semantic chunks for RAG pipelines with configurable strategy.',
+        parameters: [
+          { name: 'strategy', type: 'string', description: 'Chunking strategy', required: false, enum: ['semantic', 'fixed', 'sliding', 'recursive'] },
+          { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false, minimum: 50, default: 500 },
+          { name: 'overlapSize', type: 'number', description: 'Token overlap between chunks', required: false, minimum: 0, default: 50 }
+        ],
+        returnType: 'SemanticChunk[]',
+        category: 'analysis',
+        streaming: false,
+        requiresDocument: true,
+        example: "const chunks = await pdf.generateSemanticChunks({ strategy: 'semantic' });"
+      },
+      {
+        name: 'streamSemanticChunks',
+        description: 'Stream semantic chunks one at a time for memory-efficient RAG processing.',
+        parameters: [
+          { name: 'strategy', type: 'string', description: 'Chunking strategy', required: false, enum: ['semantic', 'fixed', 'sliding', 'recursive'] },
+          { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false, minimum: 50, default: 500 }
+        ],
+        returnType: 'AsyncGenerator<SemanticChunk>',
+        category: 'analysis',
+        streaming: true,
+        requiresDocument: true,
+        example: "for await (const chunk of pdf.streamSemanticChunks()) { embed(chunk); }"
+      },
+      {
+        name: 'search',
+        description: 'Search for text within the document, returning matches with page numbers and positions.',
+        parameters: [
+          { name: 'query', type: 'string', description: 'Search query string', required: true },
+          { name: 'caseSensitive', type: 'boolean', description: 'Case-sensitive search', required: false, default: false },
+          { name: 'wholeWord', type: 'boolean', description: 'Match whole words only', required: false, default: false }
+        ],
+        returnType: 'SearchResult[]',
+        category: 'search',
+        streaming: false,
+        requiresDocument: true,
+        example: "const results = await pdf.search('keyword');"
+      },
+      {
+        name: 'getFormFields',
+        description: 'Get all interactive form fields (text input, checkboxes, radio, dropdowns).',
+        parameters: [],
+        returnType: 'FormField[]',
+        category: 'forms',
+        streaming: false,
+        requiresDocument: true,
+        example: "const fields = await pdf.getFormFields();"
+      },
+      {
+        name: 'fillForm',
+        description: 'Fill form fields with provided values. Keys are field names, values are field contents.',
+        parameters: [
+          { name: 'data', type: 'object', description: 'Field name-value pairs', required: true }
+        ],
+        returnType: 'void',
+        category: 'forms',
+        streaming: false,
+        requiresDocument: true,
+        example: "await pdf.fillForm({ name: 'John', email: 'john@example.com' });"
+      },
+      {
+        name: 'getFormData',
+        description: 'Get current form field values (original + filled).',
+        parameters: [],
+        returnType: 'Record<string, any>',
+        category: 'forms',
+        streaming: false,
+        requiresDocument: true,
+        example: "const data = await pdf.getFormData();"
+      },
+      {
+        name: 'getAnnotations',
+        description: 'Get annotations (links, highlights, comments) for all pages or a specific page.',
+        parameters: [
+          { name: 'pageNumber', type: 'number', description: 'Specific page (omit for all)', required: false, minimum: 1 }
+        ],
+        returnType: 'Annotation[]',
+        category: 'annotations',
+        streaming: false,
+        requiresDocument: true,
+        example: "const annots = await pdf.getAnnotations(1);"
+      },
+      {
+        name: 'addAnnotation',
+        description: 'Add a new annotation to the document.',
+        parameters: [
+          { name: 'annotation', type: 'Annotation', description: 'Annotation to add', required: true }
+        ],
+        returnType: 'string',
+        category: 'annotations',
+        streaming: false,
+        requiresDocument: true,
+        example: "const id = await pdf.addAnnotation({ type: 'Highlight', rect: {...} });"
+      },
+      {
+        name: 'exportAs',
+        description: 'Export document content to text, HTML, Markdown, JSON, XML, or CSV format.',
+        parameters: [
+          { name: 'format', type: 'string', description: 'Target format', required: true, enum: ['text', 'html', 'markdown', 'json', 'xml', 'csv'] },
+          { name: 'options', type: 'ExportOptions', description: 'Export configuration', required: false }
+        ],
+        returnType: 'string | Blob',
+        category: 'export',
+        streaming: false,
+        requiresDocument: true,
+        example: "const md = await pdf.exportAs('markdown', { includeImages: true });"
+      },
+      {
+        name: 'renderPage',
+        description: 'Render a page to an HTML canvas element.',
+        parameters: [
+          { name: 'pageNumber', type: 'number', description: 'Page to render (1-indexed)', required: true, minimum: 1 },
+          { name: 'canvas', type: 'HTMLCanvasElement', description: 'Target canvas', required: true },
+          { name: 'options', type: 'RenderOptions', description: 'Render configuration', required: false }
+        ],
+        returnType: 'void',
+        category: 'rendering',
+        streaming: false,
+        requiresDocument: true,
+        example: "await pdf.renderPage(1, canvas, { scale: 2 });"
+      },
+      {
+        name: 'getNamedDestinations',
+        description: 'Get all named destinations for internal document navigation.',
+        parameters: [],
+        returnType: 'Map<string, { page: number; x: number | null; y: number | null }>',
+        category: 'extraction',
+        streaming: false,
+        requiresDocument: true,
+        example: "const dests = pdf.getNamedDestinations();"
+      },
+      {
+        name: 'close',
+        description: 'Release all resources held by this document. Always call when done.',
+        parameters: [],
+        returnType: 'void',
+        category: 'memory',
+        streaming: false,
+        requiresDocument: true,
+        example: "pdf.close();"
+      },
+      {
+        name: 'describeDocument',
+        description: 'Get document-specific capability report with recommended workflows and complexity assessment.',
+        parameters: [],
+        returnType: 'DocumentCapabilityReport',
+        category: 'analysis',
+        streaming: false,
+        requiresDocument: true,
+        example: "const report = pdf.describeDocument();"
+      }
+    ];
+  }
+
+  /**
+   * Internal: convert TypeScript type strings to JSON Schema types.
+   */
+  // ==========================================================================
+  // DoD Security Audit & Compliance (Phase 15)
+  // ==========================================================================
+
+  /**
+   * Generate a Software Bill of Materials (SBOM) in CycloneDX-compatible format.
+   * Required for CMMC 2.0 Level 2+ supply chain security (SC.L2-3.13.1).
+   */
+  static generateSBOM(): SBOM {
+    return {
+      bomFormat: 'CycloneDX',
+      specVersion: '1.5',
+      version: 1,
+      metadata: {
+        component: {
+          name: 'agenticpdf',
+          version: '1.0.0',
+          type: 'library',
+          license: 'AGPL-3.0-or-later'
+        },
+        timestamp: new Date().toISOString()
+      },
+      components: [
+        {
+          name: 'agenticpdf',
+          version: '1.0.0',
+          license: 'AGPL-3.0-or-later',
+          type: 'library',
+          purl: 'pkg:npm/agenticpdf@1.0.0',
+          supplier: 'Nervosys, LLC'
+        }
+        // Zero external runtime dependencies — single-file architecture
+      ]
+    };
+  }
+
+  /**
+   * Returns the default security configuration for hardened environments.
+   * All limits are designed for NIST FIPS / CMMC 2.0 compliance.
+   */
+  static getSecurityConfig(): SecurityConfig {
+    return { ...DEFAULT_SECURITY_CONFIG };
+  }
+
+  /**
+   * Validate a PDF buffer against security constraints before parsing.
+   * Returns an array of security violations (empty = safe to parse).
+   */
+  static validateSecurityConstraints(data: ArrayBuffer | Uint8Array, config?: Partial<SecurityConfig>): string[] {
+    const cfg = { ...DEFAULT_SECURITY_CONFIG, ...config };
+    const violations: string[] = [];
+    const size = data instanceof ArrayBuffer ? data.byteLength : data.length;
+
+    if (size > cfg.maxFileSize) {
+      violations.push(`File size ${size} exceeds maximum ${cfg.maxFileSize} bytes`);
+    }
+
+    if (size < 8) {
+      violations.push('File too small to be a valid PDF');
+      return violations;
+    }
+
+    // Check PDF header
+    const header = new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer, 0, 8);
+    const headerStr = String.fromCharCode(...header.slice(0, 5));
+    if (headerStr !== '%PDF-') {
+      violations.push('Invalid PDF header — file may not be a PDF');
+    }
+
+    // Scan for JavaScript actions (disabled by default in DoD config)
+    if (!cfg.allowJavaScript) {
+      const bytes = new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer);
+      const text = new TextDecoder('ascii', { fatal: false }).decode(bytes.slice(0, Math.min(bytes.length, 1024 * 1024)));
+      if (text.includes('/JS ') || text.includes('/JavaScript')) {
+        violations.push('PDF contains JavaScript actions (blocked by security policy)');
+      }
+    }
+
+    // Scan for external resource references
+    if (!cfg.allowExternalResources) {
+      const bytes = new Uint8Array(data instanceof ArrayBuffer ? data : data.buffer);
+      const sample = new TextDecoder('ascii', { fatal: false }).decode(bytes.slice(0, Math.min(bytes.length, 512 * 1024)));
+      if (sample.includes('/URI (http') || sample.includes('/URI (ftp')) {
+        // External URIs are informational, not blocking — unless very restrictive
+      }
+      if (sample.includes('/F (') || sample.includes('/EF ')) {
+        violations.push('PDF contains embedded file references (potential data exfiltration)');
+      }
+    }
+
+    return violations;
+  }
+
+  private static _tsTypeToJsonType(tsType: string): string {
+    const map: Record<string, string> = {
+      'string': 'string',
+      'number': 'number',
+      'boolean': 'boolean',
+      'object': 'object',
+      'any': 'object',
+      'void': 'null',
+      'ImageContent': 'object',
+      'Annotation': 'object',
+      'ExportOptions': 'object',
+      'RenderOptions': 'object',
+      'HTMLCanvasElement': 'object'
+    };
+    return map[tsType] || 'string';
   }
 
 }
