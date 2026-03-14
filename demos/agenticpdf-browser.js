@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-14T05:49:36.317Z
+ * Compiled: 2026-03-14T18:43:32.721Z
  */
 
 (function(global) {
@@ -1394,10 +1394,212 @@ class AgenticPDF {
         ];
     }
     /**
-     * Describes the currently loaded document's available operations and
-     * recommends workflows based on document characteristics.
-     * Returns undefined if no document is loaded.
+     * Get document outline (bookmarks) as a hierarchical tree.
+     * Returns an array of top-level outline items, each potentially with nested children.
      */
+    getOutline() {
+        if (!this.parser || !this.xrefTable || !this.catalog)
+            return [];
+        const parser = this.parser;
+        const xref = this.xrefTable;
+        const resolve = (obj) => {
+            if (obj && obj.type === PDFObjectType.Reference) {
+                const ref = obj.value;
+                return parser.parseIndirectObject(ref.objectNumber, ref.generationNumber, xref);
+            }
+            return obj;
+        };
+        // Build page object number -> page index map
+        const objNumToPage = new Map();
+        const collectPages = (node, ref) => {
+            const dict = resolve(node);
+            if (dict.type !== PDFObjectType.Dictionary)
+                return;
+            const d = dict.value;
+            const typeEntry = d.entries.get('Type');
+            const typeName = typeEntry?.type === PDFObjectType.Name ? typeEntry.value : '';
+            if (typeName === 'Page') {
+                if (ref && ref.type === PDFObjectType.Reference) {
+                    objNumToPage.set(ref.value.objectNumber, objNumToPage.size + 1);
+                }
+                return;
+            }
+            const kids = d.entries.get('Kids');
+            if (!kids)
+                return;
+            const kidsArr = resolve(kids);
+            if (kidsArr.type !== PDFObjectType.Array)
+                return;
+            for (const kid of kidsArr.value) {
+                collectPages(kid, kid);
+            }
+        };
+        const pagesRef = this.catalog.entries.get('Pages');
+        if (pagesRef)
+            collectPages(pagesRef);
+        // Get the /Outlines entry from the catalog
+        const outlinesRef = this.catalog.entries.get('Outlines');
+        if (!outlinesRef)
+            return [];
+        const outlinesObj = resolve(outlinesRef);
+        if (outlinesObj.type !== PDFObjectType.Dictionary)
+            return [];
+        const outlinesDict = outlinesObj.value;
+        // Helper: extract page number from a destination
+        const getPageFromDest = (dest) => {
+            const resolved = resolve(dest);
+            if (resolved.type === PDFObjectType.Array) {
+                const arr = resolved.value;
+                if (arr.length > 0) {
+                    const pageRef = arr[0];
+                    if (pageRef.type === PDFObjectType.Reference) {
+                        return objNumToPage.get(pageRef.value.objectNumber) ?? null;
+                    }
+                }
+            }
+            else if (resolved.type === PDFObjectType.String || resolved.type === PDFObjectType.Name) {
+                // Named destination — look up in named dests
+                const namedDests = this.getNamedDestinations();
+                const info = namedDests.get(resolved.value);
+                return info?.page ?? null;
+            }
+            return null;
+        };
+        // Helper: get destination string from an outline item
+        const getDestString = (dict) => {
+            const dest = dict.entries.get('Dest');
+            if (dest) {
+                const resolved = resolve(dest);
+                if (resolved.type === PDFObjectType.String || resolved.type === PDFObjectType.Name) {
+                    return resolved.value;
+                }
+                // Array dest — format as string
+                if (resolved.type === PDFObjectType.Array) {
+                    return null; // Direct page ref, no string name
+                }
+            }
+            // Check /A (action) dict
+            const action = dict.entries.get('A');
+            if (action) {
+                const aObj = resolve(action);
+                if (aObj.type === PDFObjectType.Dictionary) {
+                    const aDict = aObj.value;
+                    const sEntry = aDict.entries.get('S');
+                    if (sEntry?.type === PDFObjectType.Name && sEntry.value === 'GoTo') {
+                        const dEntry = aDict.entries.get('D');
+                        if (dEntry) {
+                            const res = resolve(dEntry);
+                            if (res.type === PDFObjectType.String || res.type === PDFObjectType.Name) {
+                                return res.value;
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        };
+        // Helper: get page number from outline item
+        const getPageNum = (dict) => {
+            const dest = dict.entries.get('Dest');
+            if (dest) {
+                return getPageFromDest(dest);
+            }
+            const action = dict.entries.get('A');
+            if (action) {
+                const aObj = resolve(action);
+                if (aObj.type === PDFObjectType.Dictionary) {
+                    const aDict = aObj.value;
+                    const sEntry = aDict.entries.get('S');
+                    if (sEntry?.type === PDFObjectType.Name && sEntry.value === 'GoTo') {
+                        const dEntry = aDict.entries.get('D');
+                        if (dEntry)
+                            return getPageFromDest(dEntry);
+                    }
+                }
+            }
+            return null;
+        };
+        // Walk the outline tree using /First / /Next sibling chain
+        const visited = new Set();
+        const walkOutline = (entryObj) => {
+            const items = [];
+            let current = entryObj;
+            while (current) {
+                const resolved = resolve(current);
+                if (resolved.type !== PDFObjectType.Dictionary)
+                    break;
+                const dict = resolved.value;
+                // Prevent infinite loops
+                const refKey = current.type === PDFObjectType.Reference
+                    ? `${current.value.objectNumber}:${current.value.generationNumber}`
+                    : '';
+                if (refKey && visited.has(refKey))
+                    break;
+                if (refKey)
+                    visited.add(refKey);
+                // Extract title
+                const titleObj = dict.entries.get('Title');
+                let title = '';
+                if (titleObj) {
+                    const titleRes = resolve(titleObj);
+                    if (titleRes.type === PDFObjectType.String) {
+                        title = titleRes.value;
+                    }
+                }
+                // Extract style flags from /F entry (bit 0 = italic, bit 1 = bold)
+                let bold = false;
+                let italic = false;
+                const flagsObj = dict.entries.get('F');
+                if (flagsObj?.type === PDFObjectType.Number) {
+                    const flags = flagsObj.value;
+                    italic = !!(flags & 1);
+                    bold = !!(flags & 2);
+                }
+                // Extract color from /C entry [r g b] (0-1 range)
+                let color = null;
+                const cObj = dict.entries.get('C');
+                if (cObj) {
+                    const cRes = resolve(cObj);
+                    if (cRes.type === PDFObjectType.Array) {
+                        const cArr = cRes.value;
+                        if (cArr.length >= 3) {
+                            color = {
+                                r: Math.round((cArr[0].value || 0) * 255),
+                                g: Math.round((cArr[1].value || 0) * 255),
+                                b: Math.round((cArr[2].value || 0) * 255)
+                            };
+                        }
+                    }
+                }
+                // Recursively process children via /First
+                const firstChild = dict.entries.get('First');
+                const children = firstChild ? walkOutline(firstChild) : [];
+                items.push({
+                    title,
+                    destination: getDestString(dict),
+                    page: getPageNum(dict),
+                    bold,
+                    italic,
+                    color,
+                    children
+                });
+                // Move to next sibling via /Next
+                const nextObj = dict.entries.get('Next');
+                current = nextObj || null;
+            }
+            return items;
+        };
+        // Start from the first child of the /Outlines dict
+        const firstEntry = outlinesDict.entries.get('First');
+        if (!firstEntry)
+            return [];
+        return walkOutline(firstEntry);
+    }
+    /**
+       * Describes the currently loaded document's available operations and
+       * recommends workflows based on document characteristics.
+       * Returns undefined if no document is loaded.
+       */
     describeDocument() {
         if (!this.metadata)
             return undefined;

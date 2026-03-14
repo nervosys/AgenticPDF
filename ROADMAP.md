@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-03-13  
 > **Version:** 1.0.0  
-> **Architecture:** Single-file TypeScript library (`agenticpdf.ts`, ~10,000+ lines)  
+> **Architecture:** Single-file TypeScript library (`agenticpdf.ts`, ~11,000+ lines)  
 > **Tests:** 560 passing across 16 suites
 
 ---
@@ -97,23 +97,36 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] Tooltip shows destination name and page number on hover
 - [x] 57 named destinations resolved across 8 pages in sample PDF
 
+## Phase 8.5 — Ontology & AI Agent Discovery ✅
+
+- [x] `describe()` — full JSON-LD style ontology (concepts, capabilities, workflows, enums)
+- [x] `getCapabilities()` — capability map organized by category
+- [x] `getMethodSignatures()` — all method signatures for code generation
+- [x] `getWorkflows()` — pre-built workflow templates for common operations
+- [x] `describeDocument()` — instance-level document capability report
+- [x] 9 ontology concepts, 11 capability categories, 26 method descriptors, 7 workflow templates
+
 ---
 
 ## Planned — Not Yet Implemented
 
-### Phase 9 — Text Selection & Copy
+## Phase 9 — Text Selection & Copy ✅
 
-- [ ] Text layer overlay (`buildTextLayer()` integration in demo)
-- [ ] Transparent text spans positioned over rendered glyphs
-- [ ] Native browser text selection and clipboard copy
-- [ ] Search-in-document (Ctrl+F) via text layer
+- [x] Text layer overlay (`buildTextLayer()` integration in demo)
+- [x] Transparent text spans positioned over rendered glyphs
+- [x] Native browser text selection and clipboard copy
+- [x] Search-in-document (Ctrl+F) via text layer
 
-### Phase 10 — Outline / Bookmarks Panel
+## Phase 10 — Outline / Bookmarks Panel ✅
 
-- [ ] Parse `/Outlines` tree from catalog
-- [ ] Sidebar bookmark panel with nested tree UI
-- [ ] Click-to-navigate from outline entries
-- [ ] Expand/collapse outline sections
+- [x] Parse `/Outlines` tree from catalog
+- [x] Sidebar bookmark panel with nested tree UI
+- [x] Click-to-navigate from outline entries
+- [x] Expand/collapse outline sections
+
+---
+
+## Planned — Not Yet Implemented
 
 ### Phase 11 — Form Interaction
 
@@ -193,7 +206,7 @@ Interactive demo at `demos/render-engine-demo.html`.
 | ------------------- | ------------------------------- |
 | TypeScript source   | `agenticpdf.ts`                 |
 | Browser IIFE bundle | `demos/agenticpdf-browser.js`   |
-| Type declarations   | `modernpdf.d.ts`                |
+| Type declarations   | `agenticpdf.d.ts`               |
 | Demo viewer         | `demos/render-engine-demo.html` |
 | Build script        | `scripts/build-browser.cjs`     |
 

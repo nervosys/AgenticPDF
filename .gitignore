@@ -178,3 +178,4 @@ codeql-results.*
 
 # Utility scripts (keep in repo for team use)
 # validate-workflows.cjs_temp_agenticpdf.js
+_temp_agenticpdf.js

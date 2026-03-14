@@ -418,6 +418,16 @@ export interface DocumentCapabilityReport {
     estimatedComplexity: 'simple' | 'moderate' | 'complex';
 }
 
+export interface OutlineItem {
+    title: string;
+    destination: string | null;
+    page: number | null;
+    bold: boolean;
+    italic: boolean;
+    color: Color | null;
+    children: OutlineItem[];
+}
+
 export interface EmbeddingProvider {
     model: string;
     dimensions: number;
@@ -581,6 +591,10 @@ export declare class AgenticPDF {
      * Returns pre-built workflow templates for common operations
      */
     static getWorkflows(): Workflow[];
+    /**
+     * Parse and return the document outline (bookmarks) tree
+     */
+    getOutline(): OutlineItem[];
     /**
      * Describes the loaded document's available operations and recommended workflows
      */

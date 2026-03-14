@@ -280,6 +280,86 @@
             background: rgba(0, 100, 255, 0.15);
             border-color: rgba(0, 100, 255, 0.4) !important;
         }
+
+        /* Text selection layer */
+        .text-layer {
+            position: absolute;
+            left: 0;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+            opacity: 1;
+            line-height: 1.0;
+            z-index: 5;
+            user-select: text;
+            cursor: text;
+        }
+        .text-layer span {
+            color: transparent;
+            position: absolute;
+            white-space: pre;
+            transform-origin: 0% 0%;
+            pointer-events: all;
+        }
+        .text-layer ::selection {
+            background: rgba(0, 102, 204, 0.35);
+        }
+        .text-layer ::-moz-selection {
+            background: rgba(0, 102, 204, 0.35);
+        }
+
+        /* Outline / Bookmarks panel */
+        .outline-tree {
+            font-size: 13px;
+            line-height: 1.6;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .outline-tree ul {
+            list-style: none;
+            padding-left: 16px;
+            margin: 0;
+        }
+        .outline-tree > ul {
+            padding-left: 0;
+        }
+        .outline-item {
+            cursor: pointer;
+            padding: 3px 6px;
+            border-radius: 4px;
+            color: var(--text-muted);
+            transition: background 0.12s, color 0.12s;
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+        .outline-item:hover {
+            background: rgba(99, 102, 241, 0.12);
+            color: var(--text);
+        }
+        .outline-item .page-num {
+            font-size: 11px;
+            color: var(--accent);
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+        .outline-toggle {
+            width: 14px;
+            height: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: var(--text-muted);
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: transform 0.15s;
+            user-select: none;
+        }
+        .outline-toggle.expanded {
+            transform: rotate(90deg);
+        }
     </style>
 </head>
 <body>
@@ -389,6 +469,15 @@
             </div>
         </div>
 
+
+        <!-- Outline / Bookmarks -->
+        <div class="panel" id="outlinePanel" style="display:none;">
+            <div class="panel-header">Outline</div>
+            <div class="panel-body">
+                <div class="outline-tree" id="outlineTree"></div>
+            </div>
+        </div>
+
         <!-- Render Log -->
         <div class="panel">
             <div class="panel-header">Engine Log</div>
@@ -484,6 +573,13 @@
                 a.style.top  = (oy * zoom) + 'px';
                 a.style.width = (ow * zoom) + 'px';
                 a.style.height = (oh * zoom) + 'px';
+            }
+
+            // Reposition text layer
+            const textLayers = container.querySelectorAll('.text-layer');
+            for (const tl of textLayers) {
+                tl.style.width = displayW + 'px';
+                tl.style.height = displayH + 'px';
             }
         }
     }
@@ -761,6 +857,10 @@
                 log(`Page ${pageNum}: annotation overlay error: ${e.message}`, 'warn');
             }
 
+
+            // Build text selection layer
+            buildTextLayerForPage(pdfDoc, pageNum, container, page, zoom);
+
             canvasArea.appendChild(container);
             pageContainers.push(container);
 
@@ -790,6 +890,119 @@
             const mb = (performance.memory.usedJSHeapSize / (1024 * 1024)).toFixed(1);
             $('statusMemory').textContent = `Heap: ${mb} MB`;
         }
+    }
+
+
+    // ── Text Layer ──
+    async function buildTextLayerForPage(pdfDoc, pageNum, container, page, zoom) {
+        const textLayerDiv = document.createElement('div');
+        textLayerDiv.className = 'text-layer';
+        textLayerDiv.style.width = (page.width * zoom) + 'px';
+        textLayerDiv.style.height = (page.height * zoom) + 'px';
+        container.appendChild(textLayerDiv);
+
+        try {
+            await pdfDoc.buildTextLayer(pageNum, textLayerDiv, {
+                width: page.width * zoom,
+                height: page.height * zoom,
+                scale: zoom
+            }, { enhanceTextSelection: true });
+        } catch (e) {
+            // Silent failure — text layer is optional enhancement
+            console.warn('Text layer error for page ' + pageNum + ':', e.message);
+        }
+    }
+
+    // ── Outline Panel ──
+    function buildOutlinePanel(pdfDoc) {
+        let outline = [];
+        try {
+            outline = pdfDoc.getOutline();
+        } catch (e) {
+            console.warn('Outline parse error:', e.message);
+            return;
+        }
+
+        if (!outline || outline.length === 0) return;
+
+        $('outlinePanel').style.display = '';
+        const tree = $('outlineTree');
+        tree.innerHTML = '';
+        tree.appendChild(renderOutlineItems(outline));
+        log('Outline loaded: ' + countItems(outline) + ' items', 'success');
+    }
+
+    function countItems(items) {
+        let n = 0;
+        for (const item of items) {
+            n += 1 + countItems(item.children);
+        }
+        return n;
+    }
+
+    function renderOutlineItems(items) {
+        const ul = document.createElement('ul');
+        for (const item of items) {
+            const li = document.createElement('li');
+            const row = document.createElement('div');
+            row.className = 'outline-item';
+
+            // Toggle for children
+            if (item.children.length > 0) {
+                const toggle = document.createElement('span');
+                toggle.className = 'outline-toggle expanded';
+                toggle.textContent = '\u25B6';
+                toggle.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const childUl = li.querySelector(':scope > ul');
+                    if (childUl) {
+                        const hidden = childUl.style.display === 'none';
+                        childUl.style.display = hidden ? '' : 'none';
+                        toggle.classList.toggle('expanded', hidden);
+                    }
+                });
+                row.appendChild(toggle);
+            } else {
+                const spacer = document.createElement('span');
+                spacer.style.width = '14px';
+                spacer.style.display = 'inline-block';
+                spacer.style.flexShrink = '0';
+                row.appendChild(spacer);
+            }
+
+            const label = document.createElement('span');
+            label.textContent = item.title || '(untitled)';
+            if (item.bold) label.style.fontWeight = '700';
+            if (item.italic) label.style.fontStyle = 'italic';
+            row.appendChild(label);
+
+            if (item.page != null) {
+                const pageSpan = document.createElement('span');
+                pageSpan.className = 'page-num';
+                pageSpan.textContent = 'p.' + item.page;
+                row.appendChild(pageSpan);
+            }
+
+            // Click to navigate
+            row.addEventListener('click', () => {
+                if (item.page != null && item.page >= 1 && item.page <= pageContainers.length) {
+                    const tgt = pageContainers[item.page - 1];
+                    if (tgt) {
+                        tgt.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                }
+            });
+
+            li.appendChild(row);
+
+            // Recurse children
+            if (item.children.length > 0) {
+                li.appendChild(renderOutlineItems(item.children));
+            }
+
+            ul.appendChild(li);
+        }
+        return ul;
     }
 
     // ── Re-render button ──
@@ -844,6 +1057,7 @@
         $('zoomOverlay').style.display = '';
             log('Starting render pipeline…');
             await renderAllPages();
+            buildOutlinePanel(pdfDoc);
 
         } catch (e) {
             log(`Error: ${e.message}`, 'error');
