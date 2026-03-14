@@ -1,6 +1,6 @@
 # AgenticPDF — Implementation Roadmap
 
-> **Last updated:** 2026-03-13  
+> **Last updated:** 2026-03-14  
 > **Version:** 1.0.0  
 > **Architecture:** Single-file TypeScript library (`agenticpdf.ts`, ~11,000+ lines)  
 > **Tests:** 560 passing across 16 suites
@@ -108,8 +108,6 @@ Interactive demo at `demos/render-engine-demo.html`.
 
 ---
 
-## Planned — Not Yet Implemented
-
 ## Phase 9 — Text Selection & Copy ✅
 
 - [x] Text layer overlay (`buildTextLayer()` integration in demo)
@@ -128,12 +126,16 @@ Interactive demo at `demos/render-engine-demo.html`.
 
 ## Planned — Not Yet Implemented
 
-### Phase 11 — Form Interaction
+## Phase 11 — Form Interaction ✅
 
-- [ ] Render form fields as HTML input overlays
-- [ ] Text fields, checkboxes, radio buttons, dropdowns
-- [ ] `fillForm()` and `save()` round-trip
-- [ ] Form field validation display
+- [x] Render form fields as interactive HTML input overlays (text, textarea, select, checkbox, radio)
+- [x] Form field parent chain walking for inherited FT/Ff/T/V/Opt properties
+- [x] Button sub-type detection (checkbox, radio, pushbutton) from `/Ff` flags
+- [x] `fillForm()` stores values via `_formValues` map; `getFormData()` merges original + filled
+- [x] `buttonSubType` property on `FormField` interface
+- [x] Sidebar form panel with field listing and Export JSON button
+- [x] Form overlay zoom/reposition in `applyZoomCSS()`
+- [x] Required field highlighting and read-only field disabling
 
 ### Phase 12 — Image Extraction & Formats
 

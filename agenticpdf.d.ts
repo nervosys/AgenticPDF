@@ -207,6 +207,7 @@ export interface FormField {
     doNotScroll?: boolean;
     comb?: boolean;
     richText?: boolean;
+    buttonSubType?: 'checkbox' | 'radio' | 'pushbutton';
 }
 export declare enum FormFieldType {
     Button = "Button",
@@ -526,6 +527,10 @@ export declare class AgenticPDF {
      * Fill form fields
      */
     fillForm(data: Record<string, any>): Promise<void>;
+    /**
+     * Get current form data (original + filled values)
+     */
+    getFormData(): Promise<Record<string, any>>;
     /**
      * Get annotations
      */

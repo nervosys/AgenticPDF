@@ -360,6 +360,60 @@
         .outline-toggle.expanded {
             transform: rotate(90deg);
         }
+
+        /* Form field overlay */
+        .pdf-form-overlay {
+            position: absolute;
+            z-index: 15;
+            pointer-events: auto;
+        }
+        .pdf-form-overlay input[type="text"],
+        .pdf-form-overlay textarea {
+            width: 100%;
+            height: 100%;
+            box-sizing: border-box;
+            background: rgba(255,255,255,0.85);
+            border: 1.5px solid var(--accent);
+            border-radius: 2px;
+            padding: 2px 4px;
+            font-size: 12px;
+            font-family: sans-serif;
+            color: #222;
+            outline: none;
+        }
+        .pdf-form-overlay input[type="text"]:focus,
+        .pdf-form-overlay textarea:focus {
+            border-color: var(--accent-hover);
+            box-shadow: 0 0 0 2px rgba(99,102,241,0.25);
+        }
+        .pdf-form-overlay select {
+            width: 100%;
+            height: 100%;
+            box-sizing: border-box;
+            background: rgba(255,255,255,0.9);
+            border: 1.5px solid var(--accent);
+            border-radius: 2px;
+            font-size: 12px;
+            color: #222;
+        }
+        .pdf-form-overlay input[type="checkbox"],
+        .pdf-form-overlay input[type="radio"] {
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            accent-color: var(--accent);
+        }
+        .pdf-form-overlay.required input,
+        .pdf-form-overlay.required select,
+        .pdf-form-overlay.required textarea {
+            border-color: var(--error);
+        }
+        .pdf-form-overlay.readonly input,
+        .pdf-form-overlay.readonly select,
+        .pdf-form-overlay.readonly textarea {
+            background: rgba(200,200,200,0.5);
+            cursor: default;
+        }
     </style>
 </head>
 <body>
@@ -469,6 +523,16 @@
             </div>
         </div>
 
+
+        <!-- Form Fields -->
+        <div class="panel" id="formPanel" style="display:none;">
+            <div class="panel-header">Form Fields</div>
+            <div class="panel-body">
+                <div id="formInfo" style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">No form fields detected.</div>
+                <button class="primary" id="exportFormBtn" style="display:none;">Export Form Data (JSON)</button>
+                <div id="exportFormMsg" style="font-size:11px;color:var(--success);margin-top:6px;display:none;"></div>
+            </div>
+        </div>
 
         <!-- Outline / Bookmarks -->
         <div class="panel" id="outlinePanel" style="display:none;">
@@ -580,6 +644,21 @@
             for (const tl of textLayers) {
                 tl.style.width = displayW + 'px';
                 tl.style.height = displayH + 'px';
+            }
+
+            // Reposition form field overlays
+            const formOverlays = container.querySelectorAll('.pdf-form-overlay');
+            for (const fo of formOverlays) {
+                const ox = parseFloat(fo.dataset.pdfX) || 0;
+                const oy = parseFloat(fo.dataset.pdfY) || 0;
+                const ow = parseFloat(fo.dataset.pdfW) || 0;
+                const oh = parseFloat(fo.dataset.pdfH) || 0;
+                fo.style.left = (ox * zoom) + 'px';
+                fo.style.top  = (oy * zoom) + 'px';
+                fo.style.width = (ow * zoom) + 'px';
+                fo.style.height = (oh * zoom) + 'px';
+                const inp = fo.querySelector('input[type="text"], textarea, select');
+                if (inp) inp.style.fontSize = Math.max(8, Math.min(oh * zoom * 0.65, 16)) + 'px';
             }
         }
     }
@@ -710,6 +789,7 @@
 
         // Clear previous canvases
         pageContainers.forEach(c => c.remove());
+        formFieldElements = [];
         pageContainers = [];
 
         const metadata = pdfDoc.getMetadata();
@@ -861,6 +941,9 @@
             // Build text selection layer
             buildTextLayerForPage(pdfDoc, pageNum, container, page, zoom);
 
+            // Build form field overlays
+            await buildFormOverlays(pdfDoc, pageNum, container, page, zoom);
+
             canvasArea.appendChild(container);
             pageContainers.push(container);
 
@@ -1005,6 +1088,123 @@
         return ul;
     }
 
+    // ── Form Field Overlays ──
+    let formFieldElements = [];
+
+    async function buildFormOverlays(pdfDoc, pageNum, container, page, zoom) {
+        let fields = [];
+        try { fields = await pdfDoc.getFormFields(); } catch(e) { return; }
+        const pageFields = fields.filter(f => f.pageNumber === pageNum);
+        if (!pageFields.length) return;
+
+        for (const field of pageFields) {
+            const r = field.rect;
+            if (!r) continue;
+            const x = r.x * zoom;
+            const y = (page.height - r.y - r.height) * zoom;
+            const w = r.width * zoom;
+            const h = r.height * zoom;
+
+            const overlay = document.createElement('div');
+            overlay.className = 'pdf-form-overlay';
+            if (field.required) overlay.classList.add('required');
+            if (field.readOnly) overlay.classList.add('readonly');
+            overlay.dataset.pdfX = r.x;
+            overlay.dataset.pdfY = (page.height - r.y - r.height);
+            overlay.dataset.pdfW = r.width;
+            overlay.dataset.pdfH = r.height;
+            overlay.dataset.fieldName = field.name || '';
+            overlay.style.cssText = 'position:absolute;left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h + 'px;';
+
+            let input;
+            const ft = field.type;
+            if (ft === 'Choice') {
+                input = document.createElement('select');
+                if (field.options && field.options.length) {
+                    for (const opt of field.options) {
+                        const o = document.createElement('option');
+                        o.value = opt; o.textContent = opt;
+                        if (opt === field.value) o.selected = true;
+                        input.appendChild(o);
+                    }
+                }
+            } else if (ft === 'Button') {
+                const sub = field.buttonSubType || 'checkbox';
+                if (sub === 'radio') {
+                    input = document.createElement('input');
+                    input.type = 'radio';
+                    input.name = field.name || '';
+                    if (field.value && field.value !== 'Off') input.checked = true;
+                } else if (sub === 'checkbox') {
+                    input = document.createElement('input');
+                    input.type = 'checkbox';
+                    if (field.value && field.value !== 'Off') input.checked = true;
+                } else {
+                    // pushbutton — skip overlay
+                    continue;
+                }
+            } else {
+                // Text or Signature
+                if (h > 40) {
+                    input = document.createElement('textarea');
+                } else {
+                    input = document.createElement('input');
+                    input.type = 'text';
+                }
+                input.value = field.value || '';
+                input.placeholder = field.name || '';
+            }
+
+            if (field.readOnly) input.disabled = true;
+            input.dataset.fieldId = field.id || '';
+            input.dataset.fieldName = field.name || '';
+            input.style.fontSize = Math.max(8, Math.min(h * 0.65, 16)) + 'px';
+            overlay.appendChild(input);
+            container.appendChild(overlay);
+            formFieldElements.push({ field, input, overlay });
+        }
+
+        if (pageFields.length) log('Page ' + pageNum + ': ' + pageFields.length + ' form overlays');
+    }
+
+    function initFormPanel(pdfDoc) {
+        let fields = [];
+        try { fields = pdfDoc.getFormFields ? pdfDoc.getFormFields() : []; } catch(e) {}
+        // getFormFields may return a promise
+        Promise.resolve(fields).then(function(ff) {
+            if (!ff || ff.length === 0) return;
+            const panel = $('formPanel');
+            if (panel) panel.style.display = '';
+            const info = $('formInfo');
+            if (info) info.textContent = ff.length + ' field(s) detected: ' + ff.map(f => f.name || f.id).join(', ');
+            const btn = $('exportFormBtn');
+            if (btn) {
+                btn.style.display = '';
+                btn.addEventListener('click', function() {
+                    const data = {};
+                    for (const entry of formFieldElements) {
+                        const inp = entry.input;
+                        const name = entry.field.name || entry.field.id || '';
+                        if (inp.type === 'checkbox' || inp.type === 'radio') {
+                            data[name] = inp.checked;
+                        } else {
+                            data[name] = inp.value;
+                        }
+                    }
+                    const json = JSON.stringify(data, null, 2);
+                    navigator.clipboard.writeText(json).then(function() {
+                        const msg = $('exportFormMsg');
+                        if (msg) { msg.style.display = ''; msg.textContent = 'Copied to clipboard!'; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
+                    }).catch(function(e) {
+                        const msg = $('exportFormMsg');
+                        if (msg) { msg.style.display = ''; msg.textContent = json; }
+                    });
+                    log('Form data exported (' + Object.keys(data).length + ' fields)', 'success');
+                });
+            }
+        });
+    }
+
     // ── Re-render button ──
     reRenderBtn.addEventListener('click', () => renderAllPages());
 
@@ -1058,6 +1258,7 @@
             log('Starting render pipeline…');
             await renderAllPages();
             buildOutlinePanel(pdfDoc);
+            initFormPanel(pdfDoc);
 
         } catch (e) {
             log(`Error: ${e.message}`, 'error');

@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-14T18:43:32.721Z
+ * Compiled: 2026-03-14T19:08:36.566Z
  */
 
 (function(global) {
@@ -222,6 +222,7 @@ class AgenticPDF {
         this.options = options;
         this.pages = new Map();
         this.objects = new Map();
+        this._formValues = new Map();
         // Apply optimal viewer defaults if no render options specified
         if (!this.options.renderOptions) {
             this.options.renderOptions = PDFRenderer.getOptimalViewerOptions();
@@ -431,6 +432,19 @@ class AgenticPDF {
     async fillForm(data) {
         const filler = new FormFiller(this);
         await filler.fill(data);
+    }
+    /**
+     * Get the current form data (original values merged with any filled values)
+     */
+    async getFormData() {
+        const fields = await this.getFormFields();
+        const result = {};
+        for (const field of fields) {
+            result[field.name] = this._formValues.has(field.name)
+                ? this._formValues.get(field.name)
+                : field.value;
+        }
+        return result;
     }
     /**
      * Get annotations
@@ -5282,7 +5296,7 @@ class FormExtractor {
                             const subtype = dict.entries.get('Subtype');
                             // Check if it's a Widget annotation (form field)
                             if (subtype && subtype.type === PDFObjectType.Name && subtype.value === 'Widget') {
-                                const field = this.parseFormField(dict, page.pageNumber, i);
+                                const field = await this.parseFormField(dict, page.pageNumber, i);
                                 if (field)
                                     fields.push(field);
                             }
@@ -5316,40 +5330,107 @@ class FormExtractor {
         const key = `${ref.objectNumber}_${ref.generationNumber}`;
         return objects?.get(key);
     }
-    parseFormField(annotDict, pageNumber, fieldIndex) {
+    async parseFormField(annotDict, pageNumber, fieldIndex) {
         try {
-            // Extract field properties
             const rect = this.parseRectFromDict(annotDict, 'Rect');
             if (!rect)
                 return null;
-            const fieldName = this.getStringFromDict(annotDict, 'T') || `field_${pageNumber}_${fieldIndex}`;
-            const fieldType = this.getFormFieldType(annotDict);
-            const flags = this.getNumberFromDict(annotDict, 'Ff') || 0;
+            // Walk /Parent chain for inherited properties (FT, Ff, T, V, DV, Opt)
+            const inherited = await this.resolveInheritedProps(annotDict);
+            const fieldName = this.getStringFromDict(annotDict, 'T') || inherited.name || `field_${pageNumber}_${fieldIndex}`;
+            const fieldType = this.mapFT(this.getNameFromDict(annotDict, 'FT') || inherited.ft);
+            const flags = this.getNumberFromDict(annotDict, 'Ff') ?? inherited.ff ?? 0;
             const field = {
                 id: `${pageNumber}_${fieldIndex}_${fieldName}`,
                 name: fieldName,
                 type: fieldType,
-                value: this.getFieldValue(annotDict),
-                defaultValue: this.getFieldValue(annotDict, 'DV'),
+                value: this.getFieldValue(annotDict) ?? inherited.value,
+                defaultValue: this.getFieldValue(annotDict, 'DV') ?? inherited.defaultValue,
                 rect,
                 pageNumber,
                 flags,
-                required: !!(flags & 2), // Bit 1: Required
-                readOnly: !!(flags & 1), // Bit 0: ReadOnly
-                noExport: !!(flags & 4), // Bit 2: NoExport
-                multiline: !!(flags & 4096), // Bit 12: Multiline (for text fields)
-                password: !!(flags & 8192), // Bit 13: Password (for text fields)
+                required: !!(flags & 2),
+                readOnly: !!(flags & 1),
+                noExport: !!(flags & 4),
+                multiline: !!(flags & 4096),
+                password: !!(flags & 8192),
                 maxLength: this.getNumberFromDict(annotDict, 'MaxLen')
             };
             // Handle specific field types
             if (field.type === FormFieldType.Choice) {
                 field.options = this.getChoiceOptions(annotDict);
+                if (!field.options?.length && inherited.optDict) {
+                    field.options = this.getChoiceOptions(inherited.optDict);
+                }
+            }
+            // Detect button sub-type from Ff flags
+            if (field.type === FormFieldType.Button) {
+                if (flags & 0x10000) {
+                    field.buttonSubType = 'pushbutton';
+                }
+                else if (flags & 0x8000) {
+                    field.buttonSubType = 'radio';
+                }
+                else {
+                    field.buttonSubType = 'checkbox';
+                }
             }
             return field;
         }
         catch (error) {
             console.warn('Error parsing form field:', error);
             return null;
+        }
+    }
+    async resolveInheritedProps(dict) {
+        const result = {};
+        let current = dict;
+        for (let depth = 0; depth < 10; depth++) {
+            const parentRef = current.entries.get('Parent');
+            if (!parentRef || parentRef.type !== PDFObjectType.Reference)
+                break;
+            const parentObj = await this.getObjectFromReference(parentRef.value);
+            if (!parentObj || parentObj.type !== PDFObjectType.Dictionary)
+                break;
+            current = parentObj.value;
+            if (!result.ft) {
+                const ft = current.entries.get('FT');
+                if (ft?.type === PDFObjectType.Name)
+                    result.ft = ft.value;
+            }
+            if (result.ff === undefined) {
+                const ff = current.entries.get('Ff');
+                if (ff?.type === PDFObjectType.Number)
+                    result.ff = ff.value;
+            }
+            if (!result.name) {
+                const t = current.entries.get('T');
+                if (t?.type === PDFObjectType.String)
+                    result.name = t.value;
+            }
+            if (result.value === undefined) {
+                result.value = this.getFieldValue(current);
+            }
+            if (result.defaultValue === undefined) {
+                result.defaultValue = this.getFieldValue(current, 'DV');
+            }
+            if (!result.optDict && current.entries.has('Opt')) {
+                result.optDict = current;
+            }
+        }
+        return result;
+    }
+    getNameFromDict(dict, key) {
+        const obj = dict.entries.get(key);
+        return obj && obj.type === PDFObjectType.Name ? obj.value : undefined;
+    }
+    mapFT(ft) {
+        switch (ft) {
+            case 'Tx': return FormFieldType.Text;
+            case 'Btn': return FormFieldType.Button;
+            case 'Ch': return FormFieldType.Choice;
+            case 'Sig': return FormFieldType.Signature;
+            default: return FormFieldType.Text;
         }
     }
     getFormFieldType(dict) {
@@ -5454,12 +5535,9 @@ class FormFiller {
         this.pdf = pdf;
     }
     async fill(data) {
-        const fields = await new FormExtractor(this.pdf).extract();
-        for (const field of fields) {
-            if (data.hasOwnProperty(field.name)) {
-                field.value = data[field.name];
-                // Update the PDF structure with new value
-            }
+        const formValues = this.pdf._formValues;
+        for (const [key, val] of Object.entries(data)) {
+            formValues.set(key, val);
         }
     }
 }
