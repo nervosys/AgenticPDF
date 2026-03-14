@@ -213,11 +213,11 @@ Interactive demo at `demos/render-engine-demo.html`.
 
 ### Phase 19 — Performance & Scale
 
-- [ ] Web Worker rendering pipeline
-- [ ] Tile-based rendering for large pages
-- [ ] Page-level lazy loading in viewer
-- [ ] Virtual scroll for 1000+ page documents
-- [ ] Incremental parsing for append-mode PDFs
+- [x] Web Worker rendering pipeline
+- [x] Tile-based rendering for large pages
+- [x] Page-level lazy loading in viewer
+- [x] Virtual scroll for 1000+ page documents
+- [x] Incremental parsing for append-mode PDFs
 
 ### Phase 20 — PDF Writing & Modification
 

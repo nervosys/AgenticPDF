@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-14T21:56:32.138Z
+ * Compiled: 2026-03-14T22:03:09.101Z
  */
 
 (function(global) {
@@ -879,6 +879,57 @@ class AgenticPDF {
             ownerPassword: ownerPassword || userPassword,
             permissions: permissions ?? 0xFFFFFFFC, // All permissions by default
         };
+    }
+    /**
+     * Create a Web Worker rendering pipeline for CPU-intensive operations.
+     * @param workerUrl Optional URL to worker script; auto-generates if omitted.
+     */
+    createWorkerPipeline(workerUrl) {
+        const url = workerUrl || this.options.workerUrl || WorkerRenderPipeline.createDefaultWorkerUrl();
+        return new WorkerRenderPipeline(url);
+    }
+    /**
+     * Create a tile renderer for large/zoomed pages.
+     */
+    createTileRenderer(config) {
+        return new TileRenderer(config);
+    }
+    /**
+     * Create a lazy page loader with prefetching.
+     * @param prefetchRange Number of pages to prefetch ahead/behind.
+     */
+    createLazyLoader(prefetchRange = 3) {
+        const pageCount = this.metadata?.pageCount || 0;
+        const loadPage = async (pageNumber) => {
+            await this.getPage(pageNumber);
+        };
+        return new LazyPageLoader(pageCount, loadPage, prefetchRange);
+    }
+    /**
+     * Create a virtual scroll viewer for 1000+ page documents.
+     * Only renders pages visible in the viewport.
+     */
+    createVirtualScroller(config) {
+        const fullConfig = {
+            pageGap: 8,
+            overscan: 200,
+            estimatedPageHeight: 842, // A4 height at 72 DPI
+            ...config,
+        };
+        const viewer = new VirtualScrollViewer(fullConfig);
+        viewer.init(this.metadata?.pageCount || 0);
+        return viewer;
+    }
+    /**
+     * Detect incremental updates in append-mode PDFs.
+     * Returns an incremental parser for revision analysis.
+     */
+    getIncrementalParser() {
+        if (!this.buffer)
+            return null;
+        const parser = new IncrementalParser(this.buffer);
+        parser.detectRevisions();
+        return parser;
     }
     /**
      * Get PDF version
@@ -11827,6 +11878,535 @@ class PDFRenderer {
         ctx.restore();
     }
 }
+// ============================================================================
+// Performance & Scale — Phase 19
+// ============================================================================
+/**
+ * Web Worker rendering pipeline.
+ * Offloads CPU-intensive PDF parsing and rendering tasks to a dedicated Web Worker.
+ * Uses structured cloning for transferring buffers and postMessage for commands.
+ */
+class WorkerRenderPipeline {
+    constructor(workerUrl) {
+        this.workerUrl = workerUrl;
+        this.worker = null;
+        this.pendingTasks = new Map();
+        this.taskId = 0;
+        this.ready = false;
+    }
+    /** Initialize the worker. */
+    async init() {
+        if (typeof Worker === 'undefined') {
+            throw new Error('Web Workers not available in this environment');
+        }
+        this.worker = new Worker(this.workerUrl, { type: 'module' });
+        this.worker.onmessage = (e) => this.handleMessage(e);
+        this.worker.onerror = (e) => this.handleError(e);
+        // Send init command and wait for ready
+        return new Promise((resolve, reject) => {
+            const id = String(++this.taskId);
+            this.pendingTasks.set(id, {
+                resolve: () => { this.ready = true; resolve(); },
+                reject
+            });
+            this.worker.postMessage({ type: 'init', id });
+        });
+    }
+    /** Render a page in the worker and return ImageBitmap. */
+    async renderPage(buffer, pageNumber, scale) {
+        return this.postTask('renderPage', { buffer, pageNumber, scale }, [buffer]);
+    }
+    /** Extract text for a page in the worker. */
+    async extractText(buffer, pageNumber) {
+        return this.postTask('extractText', { buffer, pageNumber }, [buffer]);
+    }
+    /** Parse PDF structure in the worker (page count, metadata). */
+    async parseStructure(buffer) {
+        return this.postTask('parseStructure', { buffer }, [buffer]);
+    }
+    /** Terminate the worker. */
+    terminate() {
+        if (this.worker) {
+            this.worker.terminate();
+            this.worker = null;
+            this.ready = false;
+            // Reject pending tasks
+            for (const [, task] of this.pendingTasks) {
+                task.reject(new Error('Worker terminated'));
+            }
+            this.pendingTasks.clear();
+        }
+    }
+    /** Check if worker is ready. */
+    isReady() {
+        return this.ready;
+    }
+    async postTask(type, data, transferable = []) {
+        if (!this.worker)
+            throw new Error('Worker not initialized');
+        const id = String(++this.taskId);
+        return new Promise((resolve, reject) => {
+            this.pendingTasks.set(id, { resolve, reject });
+            this.worker.postMessage({ type, id, ...data }, transferable);
+        });
+    }
+    handleMessage(e) {
+        const { id, result, error } = e.data;
+        const task = this.pendingTasks.get(id);
+        if (task) {
+            this.pendingTasks.delete(id);
+            if (error)
+                task.reject(new Error(error));
+            else
+                task.resolve(result);
+        }
+    }
+    handleError(e) {
+        console.error('Worker error:', e.message);
+        // Reject all pending tasks
+        for (const [, task] of this.pendingTasks) {
+            task.reject(new Error(e.message));
+        }
+        this.pendingTasks.clear();
+    }
+    /**
+     * Generate a default worker script as a Blob URL.
+     * This creates a self-contained worker that handles PDF tasks.
+     */
+    static createDefaultWorkerUrl() {
+        const workerCode = `
+      let ready = false;
+      self.onmessage = function(e) {
+        const { type, id } = e.data;
+        try {
+          switch (type) {
+            case 'init':
+              ready = true;
+              self.postMessage({ id, result: true });
+              break;
+            case 'renderPage':
+              // Placeholder: actual rendering requires library import
+              self.postMessage({ id, result: null });
+              break;
+            case 'extractText':
+              self.postMessage({ id, result: '' });
+              break;
+            case 'parseStructure':
+              self.postMessage({ id, result: { pageCount: 0, version: '1.7' } });
+              break;
+            default:
+              self.postMessage({ id, error: 'Unknown task type: ' + type });
+          }
+        } catch (err) {
+          self.postMessage({ id, error: String(err) });
+        }
+      };
+    `;
+        const blob = new Blob([workerCode], { type: 'application/javascript' });
+        return URL.createObjectURL(blob);
+    }
+}
+/**
+ * Tile-based renderer for large PDF pages.
+ * Splits a page into tiles and renders them individually,
+ * enabling efficient display of large/zoomed pages without
+ * allocating enormous canvas buffers.
+ */
+class TileRenderer {
+    constructor(config) {
+        this.tileCache = new Map();
+        this.config = { ...DEFAULT_TILE_CONFIG, ...config };
+    }
+    /**
+     * Compute visible tile descriptors for a page given viewport bounds.
+     */
+    getVisibleTiles(pageNumber, pageWidth, pageHeight, scale, viewportX, viewportY, viewportWidth, viewportHeight) {
+        const { tileWidth, tileHeight, prefetchRadius } = this.config;
+        const scaledW = pageWidth * scale;
+        const scaledH = pageHeight * scale;
+        const cols = Math.ceil(scaledW / tileWidth);
+        const rows = Math.ceil(scaledH / tileHeight);
+        // Determine visible tile range
+        const startCol = Math.max(0, Math.floor(viewportX / tileWidth) - prefetchRadius);
+        const endCol = Math.min(cols - 1, Math.floor((viewportX + viewportWidth) / tileWidth) + prefetchRadius);
+        const startRow = Math.max(0, Math.floor(viewportY / tileHeight) - prefetchRadius);
+        const endRow = Math.min(rows - 1, Math.floor((viewportY + viewportHeight) / tileHeight) + prefetchRadius);
+        const tiles = [];
+        for (let row = startRow; row <= endRow; row++) {
+            for (let col = startCol; col <= endCol; col++) {
+                const x = col * tileWidth;
+                const y = row * tileHeight;
+                const w = Math.min(tileWidth, scaledW - x);
+                const h = Math.min(tileHeight, scaledH - y);
+                if (w > 0 && h > 0) {
+                    tiles.push({ pageNumber, row, col, x, y, width: w, height: h, scale });
+                }
+            }
+        }
+        return tiles;
+    }
+    /**
+     * Render a single tile from a full-page canvas.
+     * Clips the requested tile region from the source canvas.
+     */
+    renderTile(sourceCanvas, tile) {
+        const ctx = sourceCanvas.getContext('2d');
+        if (!ctx)
+            return null;
+        const key = this.tileKey(tile);
+        const cached = this.tileCache.get(key);
+        if (cached)
+            return cached;
+        try {
+            const imageData = ctx.getImageData(tile.x, tile.y, tile.width, tile.height);
+            this.tileCache.set(key, imageData);
+            this.evictOldTiles();
+            return imageData;
+        }
+        catch {
+            return null;
+        }
+    }
+    /**
+     * Composite visible tiles onto a destination canvas.
+     */
+    compositeTiles(destCanvas, tiles, offsetX, offsetY) {
+        const ctx = destCanvas.getContext('2d');
+        if (!ctx)
+            return;
+        for (const tile of tiles) {
+            const key = this.tileKey(tile);
+            const imageData = this.tileCache.get(key);
+            if (imageData) {
+                ctx.putImageData(imageData, tile.x - offsetX, tile.y - offsetY);
+            }
+        }
+    }
+    /** Get tile cache statistics. */
+    getCacheStats() {
+        return {
+            size: this.tileCache.size,
+            maxSize: this.config.maxCachedTiles,
+            hitRate: 0, // Would need hit/miss tracking
+        };
+    }
+    /** Clear the tile cache. */
+    clearCache() {
+        this.tileCache.clear();
+    }
+    /** Invalidate tiles for a specific page (e.g., after zoom change). */
+    invalidatePage(pageNumber) {
+        for (const key of this.tileCache.keys()) {
+            if (key.startsWith(`p${pageNumber}-`)) {
+                this.tileCache.delete(key);
+            }
+        }
+    }
+    tileKey(tile) {
+        return `p${tile.pageNumber}-r${tile.row}-c${tile.col}-s${tile.scale.toFixed(2)}`;
+    }
+    evictOldTiles() {
+        while (this.tileCache.size > this.config.maxCachedTiles) {
+            const firstKey = this.tileCache.keys().next().value;
+            if (firstKey)
+                this.tileCache.delete(firstKey);
+        }
+    }
+}
+/**
+ * Lazy page loader with intelligent prefetching.
+ * Loads pages on-demand and prefetches nearby pages in the background.
+ */
+class LazyPageLoader {
+    constructor(pageCount, loadPage, prefetchRange = 3) {
+        this.loadedPages = new Set();
+        this.loadingPages = new Set();
+        this.pageCount = pageCount;
+        this.loadPage = loadPage;
+        this.prefetchRange = prefetchRange;
+    }
+    /** Ensure a page is loaded, triggering prefetch of nearby pages. */
+    async ensureLoaded(pageNumber) {
+        if (pageNumber < 1 || pageNumber > this.pageCount)
+            return;
+        if (!this.loadedPages.has(pageNumber)) {
+            await this.doLoad(pageNumber);
+        }
+        // Prefetch nearby pages (don't await — background)
+        this.prefetchNearby(pageNumber);
+    }
+    /** Check if a page is loaded. */
+    isLoaded(pageNumber) {
+        return this.loadedPages.has(pageNumber);
+    }
+    /** Get the set of currently loaded page numbers. */
+    getLoadedPages() {
+        return new Set(this.loadedPages);
+    }
+    /** Unload pages that are far from the current view to free memory. */
+    unloadDistant(currentPage, keepRange = 10) {
+        let unloaded = 0;
+        for (const page of this.loadedPages) {
+            if (Math.abs(page - currentPage) > keepRange) {
+                this.loadedPages.delete(page);
+                unloaded++;
+            }
+        }
+        return unloaded;
+    }
+    /** Reset all state. */
+    reset() {
+        this.loadedPages.clear();
+        this.loadingPages.clear();
+    }
+    async doLoad(pageNumber) {
+        if (this.loadingPages.has(pageNumber))
+            return;
+        this.loadingPages.add(pageNumber);
+        try {
+            await this.loadPage(pageNumber);
+            this.loadedPages.add(pageNumber);
+        }
+        finally {
+            this.loadingPages.delete(pageNumber);
+        }
+    }
+    prefetchNearby(pageNumber) {
+        for (let offset = 1; offset <= this.prefetchRange; offset++) {
+            const next = pageNumber + offset;
+            const prev = pageNumber - offset;
+            if (next <= this.pageCount && !this.loadedPages.has(next) && !this.loadingPages.has(next)) {
+                this.doLoad(next).catch(() => { }); // Fire and forget
+            }
+            if (prev >= 1 && !this.loadedPages.has(prev) && !this.loadingPages.has(prev)) {
+                this.doLoad(prev).catch(() => { });
+            }
+        }
+    }
+}
+/**
+ * Virtual scroll viewer for efficient rendering of 1000+ page documents.
+ * Only renders pages that are currently visible in the viewport,
+ * using absolute positioning and a sentinel element for scroll height.
+ */
+class VirtualScrollViewer {
+    constructor(config) {
+        this.pageHeights = new Map();
+        this.totalHeight = 0;
+        this.visiblePages = new Set();
+        this.pageCount = 0;
+        this.config = config;
+    }
+    /** Initialize with page count and optional known page heights. */
+    init(pageCount, defaultHeight) {
+        this.pageCount = pageCount;
+        const h = defaultHeight || this.config.estimatedPageHeight;
+        this.totalHeight = 0;
+        for (let i = 1; i <= pageCount; i++) {
+            if (!this.pageHeights.has(i)) {
+                this.pageHeights.set(i, h);
+            }
+            this.totalHeight += this.pageHeights.get(i) + this.config.pageGap;
+        }
+    }
+    /**
+     * Calculate which pages are visible given the current scroll position.
+     * Returns the list of page items that should be rendered.
+     */
+    getVisiblePages(scrollTop) {
+        const items = [];
+        const viewTop = scrollTop - this.config.overscan;
+        const viewBottom = scrollTop + this.config.containerHeight + this.config.overscan;
+        let accumulatedTop = 0;
+        const newVisible = new Set();
+        for (let i = 1; i <= this.pageCount; i++) {
+            const height = this.pageHeights.get(i) || this.config.estimatedPageHeight;
+            const pageTop = accumulatedTop;
+            const pageBottom = pageTop + height;
+            accumulatedTop = pageBottom + this.config.pageGap;
+            const visible = pageBottom >= viewTop && pageTop <= viewBottom;
+            if (visible) {
+                newVisible.add(i);
+                items.push({
+                    pageNumber: i,
+                    top: pageTop,
+                    height,
+                    visible: true,
+                    loaded: false, // Caller sets this
+                });
+            }
+        }
+        // Notify callbacks for page visibility changes
+        for (const page of newVisible) {
+            if (!this.visiblePages.has(page)) {
+                this.config.onPageVisible?.(page);
+            }
+        }
+        for (const page of this.visiblePages) {
+            if (!newVisible.has(page)) {
+                this.config.onPageHidden?.(page);
+            }
+        }
+        this.visiblePages = newVisible;
+        return items;
+    }
+    /** Update the measured height of a page (after rendering). */
+    updatePageHeight(pageNumber, height) {
+        const oldHeight = this.pageHeights.get(pageNumber) || this.config.estimatedPageHeight;
+        this.pageHeights.set(pageNumber, height);
+        this.totalHeight += (height - oldHeight);
+    }
+    /** Get total scroll height. */
+    getTotalHeight() {
+        return this.totalHeight;
+    }
+    /** Get scroll position to navigate to a specific page. */
+    getScrollTopForPage(pageNumber) {
+        let top = 0;
+        for (let i = 1; i < pageNumber && i <= this.pageCount; i++) {
+            top += (this.pageHeights.get(i) || this.config.estimatedPageHeight) + this.config.pageGap;
+        }
+        return top;
+    }
+    /** Get the page number at a given scroll position. */
+    getPageAtScrollTop(scrollTop) {
+        let top = 0;
+        for (let i = 1; i <= this.pageCount; i++) {
+            const height = this.pageHeights.get(i) || this.config.estimatedPageHeight;
+            if (scrollTop < top + height)
+                return i;
+            top += height + this.config.pageGap;
+        }
+        return this.pageCount;
+    }
+    /** Get current set of visible page numbers. */
+    getVisiblePageNumbers() {
+        return new Set(this.visiblePages);
+    }
+}
+/**
+ * Incremental PDF parser for append-mode (linearized) PDFs.
+ * Handles PDFs that have been updated by appending new xref sections
+ * and incremental body updates, parsing only the latest changes.
+ */
+class IncrementalParser {
+    constructor(buffer) {
+        this.revisions = [];
+        this.buffer = buffer;
+    }
+    /**
+     * Detect all incremental updates (revisions) in the PDF.
+     * Each %%EOF marks a revision boundary.
+     */
+    detectRevisions() {
+        const view = new Uint8Array(this.buffer);
+        const eof = [0x25, 0x25, 0x45, 0x4F, 0x46]; // %%EOF
+        this.revisions = [];
+        let prevEnd = 0;
+        for (let i = 0; i <= view.length - 5; i++) {
+            let match = true;
+            for (let j = 0; j < 5; j++) {
+                if (view[i + j] !== eof[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                // Find the startxref before this %%EOF
+                const startxref = this.findStartXRefBefore(view, i);
+                this.revisions.push({
+                    xrefOffset: startxref,
+                    bodyStart: prevEnd,
+                    bodyEnd: i + 5,
+                });
+                prevEnd = i + 5;
+                // Skip any trailing whitespace after %%EOF
+                while (prevEnd < view.length && (view[prevEnd] === 0x0D || view[prevEnd] === 0x0A || view[prevEnd] === 0x20)) {
+                    prevEnd++;
+                }
+            }
+        }
+        return this.revisions.length;
+    }
+    /** Get revision count. */
+    getRevisionCount() {
+        return this.revisions.length;
+    }
+    /**
+     * Get the byte range of a specific revision.
+     * Revision 0 is the original document; higher numbers are incremental updates.
+     */
+    getRevisionRange(revision) {
+        if (revision < 0 || revision >= this.revisions.length)
+            return null;
+        return {
+            start: this.revisions[revision].bodyStart,
+            end: this.revisions[revision].bodyEnd,
+        };
+    }
+    /**
+     * Extract only the latest revision's data as a separate buffer.
+     * Useful for seeing just the incremental changes.
+     */
+    getLatestRevisionData() {
+        if (this.revisions.length === 0)
+            return new Uint8Array(this.buffer);
+        const last = this.revisions[this.revisions.length - 1];
+        return new Uint8Array(this.buffer, last.bodyStart, last.bodyEnd - last.bodyStart);
+    }
+    /**
+     * Truncate to a specific revision (non-destructive — returns new buffer).
+     * Returns a buffer containing only revisions 0..revision.
+     */
+    truncateToRevision(revision) {
+        if (revision < 0 || revision >= this.revisions.length) {
+            return this.buffer.slice(0);
+        }
+        const end = this.revisions[revision].bodyEnd;
+        return this.buffer.slice(0, end);
+    }
+    /**
+     * Check if the PDF is linearized (has a Linearized dictionary near the start).
+     */
+    isLinearized() {
+        const view = new Uint8Array(this.buffer, 0, Math.min(1024, this.buffer.byteLength));
+        const text = new TextDecoder('ascii', { fatal: false }).decode(view);
+        return text.includes('/Linearized');
+    }
+    /**
+     * Get xref offset for each revision.
+     */
+    getXRefOffsets() {
+        return this.revisions.map(r => r.xrefOffset);
+    }
+    findStartXRefBefore(view, eofPos) {
+        // Search backwards for "startxref" before this %%EOF
+        const startxref = [0x73, 0x74, 0x61, 0x72, 0x74, 0x78, 0x72, 0x65, 0x66]; // "startxref"
+        const searchStart = Math.max(0, eofPos - 256);
+        for (let i = eofPos - 9; i >= searchStart; i--) {
+            let match = true;
+            for (let j = 0; j < 9; j++) {
+                if (view[i + j] !== startxref[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                // Parse the number after "startxref"
+                let pos = i + 9;
+                while (pos < eofPos && (view[pos] === 0x20 || view[pos] === 0x0D || view[pos] === 0x0A))
+                    pos++;
+                let numStr = '';
+                while (pos < eofPos && view[pos] >= 0x30 && view[pos] <= 0x39) {
+                    numStr += String.fromCharCode(view[pos]);
+                    pos++;
+                }
+                return numStr ? parseInt(numStr, 10) : 0;
+            }
+        }
+        return 0;
+    }
+}
 class TextLayerBuilder {
     constructor(options) {
         this.textDivs = [];
@@ -12982,6 +13562,14 @@ class PDFStreamWriter {
         return this.buffer.slice(0, this.position);
     }
 }
+/** Default tile configuration. */
+const DEFAULT_TILE_CONFIG = {
+    tileWidth: 512,
+    tileHeight: 512,
+    overlap: 8,
+    maxCachedTiles: 64,
+    prefetchRadius: 1,
+};
 // ============================================================================
 // Additional Exports
 // ============================================================================

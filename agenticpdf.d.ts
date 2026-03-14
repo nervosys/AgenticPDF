@@ -949,6 +949,26 @@ export declare class AgenticPDF {
      * Set a password on the document for encryption
      */
     setPassword(userPassword: string, ownerPassword?: string, permissions?: number): void;
+    /**
+     * Create a Web Worker rendering pipeline
+     */
+    createWorkerPipeline(workerUrl?: string): any;
+    /**
+     * Create a tile renderer for large/zoomed pages
+     */
+    createTileRenderer(config?: Partial<TileConfig>): any;
+    /**
+     * Create a lazy page loader with prefetching
+     */
+    createLazyLoader(prefetchRange?: number): any;
+    /**
+     * Create a virtual scroll viewer for 1000+ page documents
+     */
+    createVirtualScroller(config: Partial<VirtualScrollConfig> & { containerHeight: number }): any;
+    /**
+     * Detect incremental updates in append-mode PDFs
+     */
+    getIncrementalParser(): any;
 
         analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
         pages: Array<{
@@ -1067,6 +1087,46 @@ declare class ThemeManager {
         size?: 'small' | 'medium' | 'large';
     }): HTMLButtonElement;
 }
+/** Configuration for tile-based rendering of large pages. */
+export interface TileConfig {
+    tileWidth: number;
+    tileHeight: number;
+    overlap: number;
+    maxCachedTiles: number;
+    prefetchRadius: number;
+}
+
+/** Configuration for virtual scroll viewer. */
+export interface VirtualScrollConfig {
+    containerHeight: number;
+    pageGap: number;
+    overscan: number;
+    estimatedPageHeight: number;
+    onPageVisible?: (pageNumber: number) => void;
+    onPageHidden?: (pageNumber: number) => void;
+}
+
+/** Tile descriptor for tile-based rendering. */
+export interface TileDescriptor {
+    pageNumber: number;
+    row: number;
+    col: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    scale: number;
+}
+
+/** Virtual scroll page item. */
+export interface VirtualPageItem {
+    pageNumber: number;
+    top: number;
+    height: number;
+    visible: boolean;
+    loaded: boolean;
+}
+
 export interface PDFOptions {
     password?: string;
     streamOptions?: StreamOptions;
