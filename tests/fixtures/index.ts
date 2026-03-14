@@ -1,5 +1,5 @@
 /**
- * Test fixtures for ModernPDF testing
+ * Test fixtures for AgenticPDF testing
  * Sample data and PDFs for consistent testing
  */
 
@@ -43,7 +43,7 @@ Abstract:
 This document describes the implementation of a PDF processing library with support for modern web standards and AI integration.
 
 1. Architecture Overview
-The ModernPDF library follows a streaming-first architecture that prioritizes memory efficiency and real-time processing capabilities.
+The AgenticPDF library follows a streaming-first architecture that prioritizes memory efficiency and real-time processing capabilities.
 
 1.1 Core Components
 - PDFParser: Handles low-level PDF structure parsing
@@ -55,9 +55,9 @@ The library implements a pull-based streaming model that allows for processing o
 
 2. API Reference
 The main entry points for the library are the factory methods:
-- ModernPDF.fromFile(file)
-- ModernPDF.fromUrl(url)
-- ModernPDF.fromStream(stream)
+- AgenticPDF.fromFile(file)
+- AgenticPDF.fromUrl(url)
+- AgenticPDF.fromStream(stream)
 
 3. Performance Considerations
 Memory usage scales with document complexity rather than size when using streaming operations.`,
@@ -98,7 +98,7 @@ export const SAMPLE_METADATA = {
         subject: 'Testing',
         keywords: 'test, pdf, processing',
         creator: 'Test Creator',
-        producer: 'ModernPDF Test Suite',
+        producer: 'AgenticPDF Test Suite',
         creationDate: new Date(2024, 0, 1),
         modificationDate: new Date(2024, 0, 2),
         version: '1.4',
@@ -114,7 +114,7 @@ export const SAMPLE_METADATA = {
         subject: 'Advanced PDF Features',
         keywords: 'complex, multipage, forms, annotations',
         creator: 'Advanced PDF Creator',
-        producer: 'ModernPDF Advanced Test Suite',
+        producer: 'AgenticPDF Advanced Test Suite',
         creationDate: new Date('2024-01-01'),
         modificationDate: new Date('2024-01-15'),
         version: '1.7',
@@ -130,7 +130,7 @@ export const SAMPLE_METADATA = {
         subject: 'Encrypted Content',
         keywords: 'security, encryption, protected',
         creator: 'Security Creator',
-        producer: 'ModernPDF Security Test Suite',
+        producer: 'AgenticPDF Security Test Suite',
         creationDate: new Date('2024-01-01'),
         modificationDate: new Date('2024-01-10'),
         version: '1.6',

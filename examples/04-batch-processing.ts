@@ -8,7 +8,7 @@
  * - Different processing strategies
  */
 
-import ModernPDF, { SemanticChunk, PDFMetadata, DocumentType } from '../modernpdf';
+import AgenticPDF, { SemanticChunk, PDFMetadata, DocumentType } from '../neopdf';
 
 interface ProcessingResult {
     fileName: string;
@@ -124,11 +124,11 @@ export class BatchProcessor {
         const startTime = Date.now();
         console.log(`   📄 [${index + 1}/${total}] Processing: ${file.name}`);
 
-        let pdf: ModernPDF | null = null;
+        let pdf: AgenticPDF | null = null;
 
         try {
             // Load PDF with memory constraints
-            pdf = await ModernPDF.fromFile(file, {
+            pdf = await AgenticPDF.fromFile(file, {
                 lazyLoad: true,
                 maxMemoryUsage: 50 * 1024 * 1024, // 50MB per file
                 cachePages: false
@@ -181,7 +181,7 @@ export class BatchProcessor {
     }
 
     private async generateDocumentSummary(
-        pdf: ModernPDF,
+        pdf: AgenticPDF,
         chunks: SemanticChunk[],
         metadata: PDFMetadata
     ): Promise<DocumentSummary> {

@@ -3,7 +3,7 @@
  * Tests streaming APIs, progress tracking, and abort signals
  */
 
-import { ModernPDF, StreamOptions } from '../../modernpdf';
+import { AgenticPDF, StreamOptions, ProgressInfo } from '../../agenticpdf';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 
@@ -165,7 +165,7 @@ describe('Streaming Operations', () => {
         test('should create proper stream options', () => {
             const options = Mocks.Utils.createMockStreamOptions({
                 chunkSize: 2048,
-                progressCallback: (progress) => console.log(progress),
+                progressCallback: (progress: ProgressInfo) => console.log(progress),
             });
 
             expect(options.chunkSize).toBe(2048);

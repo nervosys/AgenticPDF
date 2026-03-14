@@ -116,7 +116,7 @@ This is the first stable release. For users upgrading from pre-release versions:
 
 ### Contributors
 
-- ModernPDF Team
+- NeoPDF Team
 - Community contributors
 
 ### Security
@@ -139,4 +139,4 @@ Future planned features:
 
 ---
 
-For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/modernpdf/releases).
+For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/NeoPDF/releases).

@@ -1,6 +1,6 @@
-# Contributing to ModernPDF
+# Contributing to AgenticPDF
 
-Thank you for your interest in contributing to ModernPDF! This document provides guidelines and information about contributing to the project.
+Thank you for your interest in contributing to AgenticPDF! This document provides guidelines and information about contributing to the project.
 
 ## Table of Contents
 
@@ -39,8 +39,8 @@ This project and everyone participating in it is governed by our [Code of Conduc
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/modernpdf.git
-cd modernpdf
+git clone https://github.com/YOUR_USERNAME/agenticpdf.git
+cd agenticpdf
 
 # Install dependencies
 npm install
@@ -79,9 +79,9 @@ Examples:
 
 ### Architecture Considerations
 
-ModernPDF is designed as a single-file TypeScript library. When contributing:
+AgenticPDF is designed as a single-file TypeScript library. When contributing:
 
-1. **Single File Design**: All core functionality should remain in `modernpdf.ts`
+1. **Single File Design**: All core functionality should remain in `agenticpdf.ts`
 2. **No Runtime Dependencies**: The library should remain dependency-free
 3. **Streaming-First**: New features should support streaming when applicable
 4. **Memory Efficiency**: Consider memory usage for large PDF processing
@@ -293,8 +293,8 @@ test(integration): add tests for AI features workflow
 ## Getting Help
 
 - Check the [documentation](README.md)
-- Search existing [issues](https://github.com/nervosys/modernpdf/issues)
-- Join our [discussions](https://github.com/nervosys/modernpdf/discussions)
+- Search existing [issues](https://github.com/nervosys/agenticpdf/issues)
+- Join our [discussions](https://github.com/nervosys/agenticpdf/discussions)
 - Reach out to maintainers for complex questions
 
 ## Recognition
@@ -304,4 +304,4 @@ Contributors will be recognized in:
 - README.md contributors section
 - GitHub's contributor graphs
 
-Thank you for contributing to ModernPDF! 🎉
+Thank you for contributing to AgenticPDF! 🎉

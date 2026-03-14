@@ -1,9 +1,9 @@
-# ModernPDF v1.0.0 Release Notes 🎉
+# NeoPDF v1.0.0 Release Notes 🎉
 
 **Release Date:** September 23, 2025  
 **License:** Apache 2.0  
 
-We're thrilled to announce the first stable release of ModernPDF! This comprehensive PDF processing library brings modern features, AI-native design, and seamless streaming capabilities to your applications.
+We're thrilled to announce the first stable release of NeoPDF! This comprehensive PDF processing library brings modern features, AI-native design, and seamless streaming capabilities to your applications.
 
 ## 🌟 Major Features
 
@@ -34,7 +34,7 @@ We're thrilled to announce the first stable release of ModernPDF! This comprehen
 
 ## 🎯 **Interactive Demos**
 
-Experience ModernPDF's capabilities with our comprehensive demo suite:
+Experience NeoPDF's capabilities with our comprehensive demo suite:
 
 ### Browser Demos
 - **Full PDF Viewer** (`demos/pdf-viewer.html`) - Complete viewer with theme toggle
@@ -74,16 +74,16 @@ Experience ModernPDF's capabilities with our comprehensive demo suite:
 ### Installation
 
 ```bash
-npm install modernpdf
+npm install NeoPDF
 ```
 
 ### Basic Usage
 
 ```typescript
-import ModernPDF from 'modernpdf';
+import NeoPDF from 'NeoPDF';
 
 // Load and process PDF
-const pdf = await ModernPDF.fromFile(file);
+const pdf = await NeoPDF.fromFile(file);
 
 // Create optimal viewer with theme toggle
 const viewer = pdf.createOptimalViewer(container, {
@@ -102,7 +102,7 @@ pdf.close();
 
 ```html
 <script type="module">
-  import ModernPDF from 'https://unpkg.com/modernpdf/modernpdf.ts';
+  import NeoPDF from 'https://unpkg.com/NeoPDF/NeoPDF.ts';
   // Your code here
 </script>
 ```
@@ -133,16 +133,16 @@ pdf.close();
 
 ### NPM Package
 ```bash
-npm install modernpdf
+npm install NeoPDF
 ```
 
 ### Direct Download
-- Download `modernpdf.ts` for single-file integration
+- Download `NeoPDF.ts` for single-file integration
 - Zero dependencies, maximum portability
 
 ### CDN
 ```javascript
-import ModernPDF from 'https://unpkg.com/modernpdf/modernpdf.ts';
+import NeoPDF from 'https://unpkg.com/NeoPDF/NeoPDF.ts';
 ```
 
 ## 🎉 **What's Next**
@@ -156,17 +156,17 @@ This stable 1.0.0 release provides a solid foundation for PDF processing in mode
 
 ## 🤝 **Community**
 
-- **GitHub Repository**: [nervosys/modernpdf](https://github.com/nervosys/modernpdf)
+- **GitHub Repository**: [nervosys/NeoPDF](https://github.com/nervosys/NeoPDF)
 - **Issue Tracker**: Report bugs and request features
 - **Contributing**: We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md)
 - **Security**: Report vulnerabilities via our [Security Policy](SECURITY.md)
 
 ## 📄 **License**
 
-ModernPDF is released under the **Apache 2.0 License**, providing maximum flexibility for both open source and commercial use.
+NeoPDF is released under the **Apache 2.0 License**, providing maximum flexibility for both open source and commercial use.
 
 ---
 
-**Download ModernPDF v1.0.0** and start building amazing PDF processing applications today!
+**Download NeoPDF v1.0.0** and start building amazing PDF processing applications today!
 
-For detailed documentation, examples, and API reference, visit our [GitHub repository](https://github.com/nervosys/modernpdf).
+For detailed documentation, examples, and API reference, visit our [GitHub repository](https://github.com/nervosys/NeoPDF).

@@ -3,7 +3,7 @@
  * Tests for internal classes, enums, and utility methods not covered by integration tests
  */
 
-import { ModernPDF, AnnotationType, FormFieldType, DocumentType, ChunkType } from '../../modernpdf';
+import { AgenticPDF, AnnotationType, FormFieldType, DocumentType, ChunkType } from '../../agenticpdf';
 import { MockEmbeddingProvider } from '../mocks';
 
 describe('Utility Classes and Methods Coverage', () => {
@@ -63,7 +63,7 @@ describe('Utility Classes and Methods Coverage', () => {
 
     describe('Static Methods Coverage', () => {
         it('should handle theme manager access', () => {
-            const themeManager = ModernPDF.getThemeManager();
+            const themeManager = AgenticPDF.getThemeManager();
             expect(themeManager).toBeDefined();
             expect(typeof themeManager.toggleTheme).toBe('function');
             expect(typeof themeManager.getCurrentTheme).toBe('function');
@@ -74,28 +74,28 @@ describe('Utility Classes and Methods Coverage', () => {
         it('should handle corrupted PDF data gracefully', async () => {
             const corruptedData = new Uint8Array([1, 2, 3, 4, 5]); // Invalid PDF
 
-            await expect(ModernPDF.fromBuffer(corruptedData.buffer as ArrayBuffer))
+            await expect(AgenticPDF.fromBuffer(corruptedData.buffer as ArrayBuffer))
                 .rejects.toThrow();
         });
 
         it('should handle empty buffer', async () => {
             const emptyData = new Uint8Array(0);
 
-            await expect(ModernPDF.fromBuffer(emptyData.buffer as ArrayBuffer))
+            await expect(AgenticPDF.fromBuffer(emptyData.buffer as ArrayBuffer))
                 .rejects.toThrow();
         });
 
         it('should handle invalid PDF header', async () => {
             const invalidHeader = new TextEncoder().encode('Not a PDF file');
 
-            await expect(ModernPDF.fromBuffer(invalidHeader.buffer as ArrayBuffer))
+            await expect(AgenticPDF.fromBuffer(invalidHeader.buffer as ArrayBuffer))
                 .rejects.toThrow();
         });
 
         it('should handle network errors in URL loading', async () => {
             global.fetch = jest.fn().mockRejectedValue(new Error('Network error'));
 
-            await expect(ModernPDF.fromUrl('https://invalid.url/test.pdf'))
+            await expect(AgenticPDF.fromUrl('https://invalid.url/test.pdf'))
                 .rejects.toThrow('Network error');
         });
     });

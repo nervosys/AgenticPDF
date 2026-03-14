@@ -8,7 +8,7 @@
  * - Basic memory management
  */
 
-import ModernPDF from '../modernpdf';
+import AgenticPDF from '../neopdf';
 
 async function basicPDFProcessing() {
     console.log('=== Basic PDF Processing Example ===\n');
@@ -33,7 +33,7 @@ async function basicPDFProcessing() {
     // Example 2: Load from URL
     try {
         console.log('Loading PDF from URL...');
-        const pdf = await ModernPDF.fromUrl('https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf');
+        const pdf = await AgenticPDF.fromUrl('https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf');
         await processPDF(pdf, 'URL PDF');
     } catch (error) {
         console.log('URL loading failed (expected in some environments):', (error as Error).message);
@@ -45,18 +45,18 @@ async function basicPDFProcessing() {
     console.log(`
   import fs from 'fs';
   const buffer = fs.readFileSync('document.pdf');
-  const pdf = await ModernPDF.fromBuffer(buffer.buffer);
+  const pdf = await AgenticPDF.fromBuffer(buffer.buffer);
   `);
 }
 
 async function processPDFFile(file: File) {
     console.log(`\nProcessing file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
-    let pdf: ModernPDF | null = null;
+    let pdf: AgenticPDF | null = null;
 
     try {
         // Load PDF with basic options
-        pdf = await ModernPDF.fromFile(file, {
+        pdf = await AgenticPDF.fromFile(file, {
             lazyLoad: true, // Load pages on-demand
             maxMemoryUsage: 50 * 1024 * 1024, // 50MB limit
             cachePages: false // Don't cache pages in memory
@@ -73,7 +73,7 @@ async function processPDFFile(file: File) {
     }
 }
 
-async function processPDF(pdf: ModernPDF, source: string) {
+async function processPDF(pdf: AgenticPDF, source: string) {
     console.log(`\n--- Processing PDF from ${source} ---`);
 
     // Get basic metadata

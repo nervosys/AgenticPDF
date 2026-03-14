@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Debug Render Pipeline</title>
+<style>
+body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #eee; }
+#log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+.error { color: #f44; }
+.success { color: #4f4; }
+.warn { color: #ff4; }
+canvas { border: 1px solid #555; margin: 10px 0; display: block; }
+</style>
+</head>
+<body>
+<h2>AgenticPDF Debug Render Pipeline</h2>
+<div id="log"></div>
+<div id="canvases"></div>
+
+<script src="agenticpdf-browser.js"></script>
+<script>
+const logEl = document.getElementById('log');
+function log(msg, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    console.log(msg);
+}
+
+(async function() {
+    try {
+        log('=== Debug Render Pipeline ===');
+
+        // 1. Check library
+        log(`AgenticPDF available: ${typeof AgenticPDF}`);
+        if (typeof AgenticPDF === 'undefined') {
+            log('FATAL: AgenticPDF not found', 'error');
+            return;
+        }
+
+        // 2. Fetch PDF
+        log('Fetching sample.pdf...');
+        const resp = await fetch('./sample.pdf');
+        if (!resp.ok) { log(`Fetch failed: ${resp.status}`, 'error'); return; }
+        const buf = await resp.arrayBuffer();
+        log(`Fetched ${buf.byteLength} bytes`, 'success');
+
+        // 3. Parse PDF
+        log('Parsing PDF...');
+        const pdf = await AgenticPDF.fromBuffer(buf, { lazyLoad: false });
+        log('PDF parsed', 'success');
+
+        const meta = pdf.getMetadata();
+        log(`Pages: ${meta?.pageCount}, Version: ${meta?.version}`);
+
+        // 4. Check pages
+        for (let i = 1; i <= (meta?.pageCount || 1); i++) {
+            const page = await pdf.getPage(i);
+            if (!page) {
+                log(`Page ${i}: NOT FOUND`, 'error');
+                continue;
+            }
+            log(`Page ${i}: ${page.width}x${page.height}, contents=${page.contents ? page.contents.length + ' bytes' : 'NULL/UNDEFINED'}`, page.contents ? 'success' : 'error');
+
+            if (page.contents && page.contents.length > 0) {
+                // Show first 100 bytes as text to verify it's decompressed
+                const preview = String.fromCharCode(...page.contents.slice(0, 100));
+                log(`  First 100 chars: ${JSON.stringify(preview)}`);
+
+                // Check if content looks like PDF operators (text, not binary)
+                const isText = page.contents.slice(0, 50).every(b => b < 128 || b > 160);
+                const hasOperators = preview.includes('BT') || preview.includes('Tm') || preview.includes('Tf') || preview.includes('cm') || preview.includes('re') || preview.includes('q');
+                log(`  Looks like text: ${isText}, Has operators: ${hasOperators}`, hasOperators ? 'success' : 'warn');
+
+                // Try parsing with SafeContentStreamParser
+                try {
+                    // Access SafeContentStreamParser from bundle scope
+                    // It's in the IIFE scope, not window - check if PDFRenderer can use it
+                    log('  Testing SafeContentStreamParser...');
+
+                    // We can test rendering directly
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.round(page.width * 2);
+                    canvas.height = Math.round(page.height * 2);
+
+                    log(`  Canvas created: ${canvas.width}x${canvas.height}`);
+
+                    const ctx = canvas.getContext('2d');
+                    log(`  Canvas context: ${ctx ? 'OK' : 'NULL'}`, ctx ? 'success' : 'error');
+
+                    if (ctx) {
+                        // Try rendering via renderPage
+                        log(`  Calling pdf.renderPage(${i}, canvas, {scale:1, renderScale:2})...`);
+                        try {
+                            await pdf.renderPage(i, canvas, { scale: 1, renderScale: 2, background: 'white' });
+                            log(`  renderPage SUCCESS`, 'success');
+
+                            // Check if canvas has content (not just white)
+                            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                            let nonWhitePixels = 0;
+                            for (let p = 0; p < imageData.data.length; p += 4) {
+                                if (imageData.data[p] !== 255 || imageData.data[p+1] !== 255 || imageData.data[p+2] !== 255) {
+                                    nonWhitePixels++;
+                                }
+                            }
+                            log(`  Non-white pixels: ${nonWhitePixels}`, nonWhitePixels > 0 ? 'success' : 'warn');
+
+                            // Show the canvas
+                            canvas.style.width = page.width + 'px';
+                            canvas.style.height = page.height + 'px';
+                            document.getElementById('canvases').appendChild(canvas);
+                        } catch (e) {
+                            log(`  renderPage ERROR: ${e.message}`, 'error');
+                            log(`  Stack: ${e.stack}`, 'error');
+                        }
+                    }
+                } catch (e) {
+                    log(`  Parse test error: ${e.message}`, 'error');
+                }
+            }
+
+            // Only test first 2 pages
+            if (i >= 2) {
+                log(`(Skipping remaining pages for brevity)`);
+                break;
+            }
+        }
+
+        log('=== Debug Complete ===', 'success');
+
+    } catch (e) {
+        log(`FATAL ERROR: ${e.message}`, 'error');
+        log(`Stack: ${e.stack}`, 'error');
+    }
+})();
+</script>
+</body>
+</html>

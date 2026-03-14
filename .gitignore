@@ -126,7 +126,20 @@ release/
 
 # Test output
 test-results/
+tests/test-results.json
+tests/screenshots/
+tests/diffs/
+tests/playwright-report/
 junit.xml
+
+# Browser build artifacts
+demos/modernpdf-browser.js
+demos/modernpdf-core.js
+*.js.map
+
+# Playwright
+/test-results/
+/playwright-report/
 
 # Backup files
 *.bak

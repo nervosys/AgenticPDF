@@ -4,8 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Viewer - sample.pdf</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <title>PDF Viewer - sample.pdf (AgenticPDF)</title>
+    <!-- Pako for ZLIB/FlateDecode decompression (required for most PDFs) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+    <!-- Using AgenticPDF - Our TypeScript PDF library -->
+    <script src="agenticpdf-browser.js"></script>
     <style>
         * {
             margin: 0;
@@ -286,8 +289,7 @@
     </div>
 
     <script>
-        // Configure PDF.js worker
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        // AgenticPDF will be available as window.AgenticPDF after loading agenticpdf-browser.js
 
         class PDFViewer {
             constructor() {
@@ -354,23 +356,39 @@
 
             async loadPDF() {
                 try {
-                    console.log('Starting PDF load...');
+                    console.log('=== Starting PDF load with AgenticPDF ===');
 
-                    // Try to load the actual sample.pdf file
-                    const loadingTask = pdfjsLib.getDocument({
-                        url: './sample.pdf',
-                        verbosity: 0 // Reduce console spam
+                    // Check if AgenticPDF is available
+                    if (typeof AgenticPDF === 'undefined') {
+                        console.error('AgenticPDF is not defined!');
+                        throw new Error('AgenticPDF library not loaded. Make sure agenticpdf-browser.js is included.');
+                    }
+
+                    console.log('AgenticPDF library is available');
+                    console.log('AgenticPDF.fromBuffer:', typeof AgenticPDF.fromBuffer);
+
+                    // Fetch the PDF file
+                    const response = await fetch('./sample.pdf');
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch PDF: ${response.statusText}`);
+                    }
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    console.log(`PDF file fetched (${arrayBuffer.byteLength} bytes), loading with AgenticPDF...`);
+
+                    // Load PDF using AgenticPDF
+                    this.pdfDocument = await AgenticPDF.fromBuffer(arrayBuffer, {
+                        lazyLoad: false,
+                        enableWorkers: false
                     });
 
-                    // Add progress handling
-                    loadingTask.onProgress = (progress) => {
-                        console.log(`Loading progress: ${progress.loaded}/${progress.total}`);
-                    };
+                    console.log('AgenticPDF.fromBuffer completed, pdfDocument:', this.pdfDocument);
 
-                    this.pdfDocument = await loadingTask.promise;
-                    console.log('PDF loaded successfully');
+                    console.log('PDF loaded successfully with AgenticPDF');
 
-                    this.totalPages = this.pdfDocument.numPages;
+                    const metadata = this.pdfDocument.getMetadata();  // Not async
+                    console.log('Metadata:', metadata);
+                    this.totalPages = metadata?.pageCount || 1;
                     this.totalPagesSpan.textContent = this.totalPages;
 
                     // Hide loading indicator
@@ -385,48 +403,15 @@
 
                     this.updateUI();
                 } catch (error) {
-                    console.error('PDF loading failed:', error);
+                    console.error('=== PDF loading failed ===');
+                    console.error('Error:', error);
+                    console.error('Message:', error.message);
+                    console.error('Stack:', error.stack);
 
-                    // Fallback to mock content if real PDF fails
-                    this.loadMockPDF();
-                }
-            }
-
-            loadMockPDF() {
-                console.log('Loading mock PDF content...');
-
-                // Simulate a PDF with mock content
-                this.totalPages = 3;
-                this.totalPagesSpan.textContent = this.totalPages;
-                this.pdfDocument = null; // Mark as mock
-
-                // Hide loading indicator
-                this.loadingIndicator.style.display = 'none';
-
-                // Wait a moment for layout to settle, then auto-fit to width
-                setTimeout(() => {
-                    // Fit to width then render pages
-                    this.fitToWidth();
-                    this.renderMockPages();
-                }, 200);
-
-                this.updateUI();
-            }
-
-            renderMockPages() {
-                this.viewer.innerHTML = '';
-
-                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
-                    const pageContainer = document.createElement('div');
-                    pageContainer.className = 'pdf-page';
-                    pageContainer.id = `page-${pageNum}`;
-
-                    const canvas = document.createElement('canvas');
-                    pageContainer.appendChild(canvas);
-                    this.viewer.appendChild(pageContainer);
-
-                    // Render mock page
-                    this.renderMockPage(canvas, pageNum);
+                    // Show error message
+                    this.loadingIndicator.style.display = 'block';
+                    this.loadingIndicator.textContent = `Error loading PDF: ${error.message}`;
+                    this.loadingIndicator.style.color = '#ff4444';
                 }
             }
 
@@ -449,103 +434,48 @@
 
             async renderPage(canvas, pageNumber) {
                 if (!this.pdfDocument) {
-                    // Render mock page if no real PDF loaded
-                    this.renderMockPage(canvas, pageNumber);
-                    return;
+                    throw new Error('No PDF document loaded');
                 }
 
                 try {
-                    const page = await this.pdfDocument.getPage(pageNumber);
-                    const viewport = page.getViewport({ scale: this.zoomLevel * this.renderScale });
+                    console.log(`Rendering page ${pageNumber}...`);
 
-                    canvas.width = viewport.width;
-                    canvas.height = viewport.height;
-                    canvas.style.width = `${viewport.width / this.renderScale}px`;
-                    canvas.style.height = `${viewport.height / this.renderScale}px`;
+                    // Use AgenticPDF's renderPage method
+                    await this.pdfDocument.renderPage(pageNumber, canvas, {
+                        scale: this.zoomLevel,
+                        renderScale: this.renderScale,
+                        background: 'white'  // Note: 'background', not 'backgroundColor'
+                    });
 
-                    const renderContext = {
-                        canvasContext: canvas.getContext('2d'),
-                        viewport: viewport
-                    };
+                    // Adjust canvas display size for high DPI rendering
+                    const displayWidth = canvas.width / this.renderScale;
+                    const displayHeight = canvas.height / this.renderScale;
+                    canvas.style.width = `${displayWidth}px`;
+                    canvas.style.height = `${displayHeight}px`;
 
-                    await page.render(renderContext).promise;
+                    console.log(`Page ${pageNumber} rendered successfully`);
+
                 } catch (error) {
                     console.error(`Error rendering page ${pageNumber}:`, error);
+                    console.error('Error stack:', error.stack);
                     // Fallback to show error on canvas
                     const ctx = canvas.getContext('2d');
+                    const width = 600 * this.zoomLevel * this.renderScale;
+                    const height = 800 * this.zoomLevel * this.renderScale;
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    canvas.style.width = `${width / this.renderScale}px`;
+                    canvas.style.height = `${height / this.renderScale}px`;
+
                     ctx.fillStyle = 'white';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.fillStyle = 'red';
                     ctx.font = '20px Arial';
                     ctx.textAlign = 'center';
                     ctx.fillText(`Error loading page ${pageNumber}`, canvas.width / 2, canvas.height / 2);
+                    ctx.fillText(error.message || 'Unknown error', canvas.width / 2, canvas.height / 2 + 30);
                 }
-            }
-
-            renderMockPage(canvas, pageNumber) {
-                const ctx = canvas.getContext('2d');
-
-                // Calculate dimensions based on zoom
-                const baseWidth = 600;
-                const baseHeight = 800;
-                const width = baseWidth * this.zoomLevel * this.renderScale;
-                const height = baseHeight * this.zoomLevel * this.renderScale;
-
-                canvas.width = width;
-                canvas.height = height;
-                canvas.style.width = `${baseWidth * this.zoomLevel}px`;
-                canvas.style.height = `${baseHeight * this.zoomLevel}px`;
-
-                // White background
-                ctx.fillStyle = 'white';
-                ctx.fillRect(0, 0, width, height);
-
-                // Add simple header
-                ctx.fillStyle = '#000';
-                ctx.font = `${Math.floor(width * 0.06)}px Arial`;
-                ctx.textAlign = 'center';
-                ctx.fillText(`sample.pdf (demo)`, width / 2, height * 0.12);
-
-                ctx.font = `${Math.floor(width * 0.04)}px Arial`;
-                ctx.fillText(`Page ${pageNumber}`, width / 2, height * 0.20);
-
-                // Add simple text content
-                ctx.font = `${Math.floor(width * 0.025)}px Arial`;
-                ctx.textAlign = 'left';
-                const lineHeight = width * 0.035;
-                const startY = height * 0.30;
-                const margin = width * 0.08;
-
-                const mockText = [
-                    'This is a demo version of the PDF viewer.',
-                    'The actual sample.pdf could not be loaded due to browser security restrictions.',
-                    '',
-                    'To view the real PDF:',
-                    '• Serve this file from a web server (not file://)',
-                    '• Or use a local development server',
-                    '',
-                    'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
-                    'Sed do eiusmod tempor incididunt ut labore et dolore magna',
-                    'aliqua. Ut enim ad minim veniam, quis nostrud exercitation',
-                    'ullamco laboris nisi ut aliquip ex ea commodo consequat.'
-                ];
-
-                mockText.forEach((line, index) => {
-                    if (line) {
-                        ctx.fillText(line, margin, startY + (index * lineHeight));
-                    }
-                });
-
-                // Simple border
-                ctx.strokeStyle = '#ccc';
-                ctx.lineWidth = 1;
-                ctx.strokeRect(0, 0, width, height);
-
-                // Page number at bottom
-                ctx.font = `${Math.floor(width * 0.02)}px Arial`;
-                ctx.textAlign = 'center';
-                ctx.fillStyle = '#888';
-                ctx.fillText(`${pageNumber}`, width / 2, height * 0.95);
             }
 
             previousPage() {
@@ -597,40 +527,50 @@
 
             async fitToWidth() {
                 if (!this.pdfDocument) {
-                    // For mock PDFs, use default dimensions
-                    const viewerWidth = this.viewer.clientWidth - 40;
-                    const pageWidth = 600; // Base page width for mock
-                    this.zoomLevel = viewerWidth / pageWidth;
-                    console.log(`Mock PDF fit-to-width: viewer=${viewerWidth}, page=${pageWidth}, zoom=${this.zoomLevel}`);
-                    this.rerenderPages();
-                    this.updateUI();
+                    console.error('Cannot fit to width: No PDF loaded');
                     return;
                 }
 
                 try {
-                    const page = await this.pdfDocument.getPage(1);
-                    const viewport = page.getViewport({ scale: 1.0 });
-                    const viewerWidth = this.viewer.clientWidth - 40;
-                    // Calculate zoom level to fit page width to viewer width
-                    this.zoomLevel = viewerWidth / viewport.width;
-                    console.log(`Real PDF fit-to-width: viewer=${viewerWidth}, page=${viewport.width}, zoom=${this.zoomLevel}`);
-                    this.rerenderPages();
-                    this.updateUI();
+                    // Get page dimensions from AgenticPDF
+                    const pages = await this.pdfDocument.getAllPages();
+                    if (pages && pages.length > 0) {
+                        const firstPage = pages[0];
+                        const pageWidth = firstPage.width || 612; // Default to letter size if not available
+                        const viewerWidth = this.viewer.clientWidth - 40;
+                        // Calculate zoom level to fit page width to viewer width
+                        this.zoomLevel = viewerWidth / pageWidth;
+                        console.log(`AgenticPDF fit-to-width: viewer=${viewerWidth}, page=${pageWidth}, zoom=${this.zoomLevel}`);
+                        this.rerenderPages();
+                        this.updateUI();
+                    } else {
+                        // Fallback to default dimensions
+                        const viewerWidth = this.viewer.clientWidth - 40;
+                        const pageWidth = 612; // Standard letter width in points
+                        this.zoomLevel = viewerWidth / pageWidth;
+                        this.rerenderPages();
+                        this.updateUI();
+                    }
                 } catch (error) {
                     console.error('Error in fitToWidth:', error);
+                    // Fallback to default zoom
+                    this.zoomLevel = 1.0;
+                    this.rerenderPages();
+                    this.updateUI();
                 }
             }
 
             async rerenderPages() {
+                if (!this.pdfDocument) {
+                    console.error('Cannot rerender: No PDF loaded');
+                    return;
+                }
+
                 for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
                     const pageElement = document.getElementById(`page-${pageNum}`);
                     if (pageElement) {
                         const canvas = pageElement.querySelector('canvas');
-                        if (this.pdfDocument) {
-                            await this.renderPage(canvas, pageNum);
-                        } else {
-                            this.renderMockPage(canvas, pageNum);
-                        }
+                        await this.renderPage(canvas, pageNum);
                     }
                 }
             }
@@ -704,7 +644,6 @@
                 errorDiv.innerHTML = `
                     <h3>Error</h3>
                     <p>${message}</p>
-                    <p>This is a demo viewer with mock content.</p>
                 `;
                 this.viewer.appendChild(errorDiv);
             }

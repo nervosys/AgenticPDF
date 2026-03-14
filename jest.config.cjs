@@ -8,13 +8,17 @@ module.exports = {
         '**/__tests__/**/*.ts',
         '**/?(*.)+(spec|test).ts'
     ],
+    testPathIgnorePatterns: [
+        '/node_modules/',
+        '/tests/visual/'
+    ],
     transform: {
         '^.+\\.ts$': ['ts-jest', {
             useESM: false
         }]
     },
     collectCoverageFrom: [
-        'modernpdf.ts',
+        'agenticpdf.ts',
         '!**/*.d.ts',
         '!**/node_modules/**'
     ],

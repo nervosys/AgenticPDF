@@ -1,8 +1,8 @@
 /**
- * ModernPDF Examples Index
+ * AgenticPDF Examples Index
  * 
  * This file provides easy access to all example demonstrations
- * of the ModernPDF library's capabilities.
+ * of the AgenticPDF library's capabilities.
  */
 
 // Import all examples
@@ -71,7 +71,7 @@ export const examples: ExampleRunner[] = [
 
 // Utility function to run all examples with a single file
 export async function runAllExamples(file: File, apiKey?: string): Promise<void> {
-    console.log('🚀 Running all ModernPDF examples...\n');
+    console.log('🚀 Running all AgenticPDF examples...\n');
 
     for (const example of examples) {
         console.log(`\n${'='.repeat(60)}`);
@@ -104,14 +104,14 @@ export async function runAllExamples(file: File, apiKey?: string): Promise<void>
 if (typeof window !== 'undefined') {
     document.addEventListener('DOMContentLoaded', () => {
         // Check if examples UI already exists
-        if (document.getElementById('modernpdf-examples')) return;
+        if (document.getElementById('agenticpdf-examples')) return;
 
         const container = document.createElement('div');
-        container.id = 'modernpdf-examples';
+        container.id = 'agenticpdf-examples';
         container.innerHTML = `
       <div style="max-width: 800px; margin: 20px auto; padding: 20px; font-family: Arial, sans-serif;">
-        <h1>🚀 ModernPDF Examples</h1>
-        <p>Explore the capabilities of ModernPDF with these interactive examples.</p>
+        <h1>🚀 AgenticPDF Examples</h1>
+        <p>Explore the capabilities of AgenticPDF with these interactive examples.</p>
         
         <div style="margin: 20px 0; padding: 15px; background: #f0f8ff; border-radius: 5px;">
           <h3>📁 File Selection</h3>
@@ -257,7 +257,7 @@ if (typeof window !== 'undefined') {
 // Node.js usage example
 export function showUsageExamples(): void {
     console.log(`
-ModernPDF Examples Usage:
+AgenticPDF Examples Usage:
 
 1. Import specific examples:
    import { basicPDFProcessing } from './examples/01-basic-processing';

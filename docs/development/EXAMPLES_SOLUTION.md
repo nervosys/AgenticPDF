@@ -1,4 +1,4 @@
-# ModernPDF Examples System - Solution Summary
+# AgenticPDF Examples System - Solution Summary
 
 ## Issue Resolution
 
@@ -12,7 +12,7 @@ npm run examples -- --file=sample.pdf --all
 
 1. **Missing Dependency**: The `tsx` package was listed in package.json but not actually installed
 2. **Import Compatibility**: The original `run-examples.ts` tried to import TypeScript files that depend on browser APIs not available in Node.js
-3. **File API Incompatibility**: The examples depend on the main `modernpdf.ts` file which uses browser-specific APIs like the File API
+3. **File API Incompatibility**: The examples depend on the main `agenticpdf.ts` file which uses browser-specific APIs like the File API
 
 ## Solution Implementation
 
@@ -57,7 +57,7 @@ npm install tsx --save-dev
 
 **Browser Demo** (`examples-demo.html`):
 - Complete interactive web interface
-- Actual PDF processing capabilities (when used with real ModernPDF)
+- Actual PDF processing capabilities (when used with real AgenticPDF)
 - Visual progress indicators and modern styling
 - Real-time console output
 
@@ -90,7 +90,7 @@ npm run examples:demo
 ## Architecture Overview
 
 ```
-ModernPDF Examples System
+AgenticPDF Examples System
 ├── run-examples-simple.ts     # Node.js compatible CLI runner (mock examples)
 ├── run-examples.ts           # Full CLI runner (requires browser APIs) 
 ├── examples-demo.html        # Interactive browser demo (full functionality)
@@ -153,7 +153,7 @@ $ npm run examples -- --file=sample.pdf --all
 - Clear documentation and help system
 
 ### ✅ **Educational Value**  
-- Shows all ModernPDF capabilities through mock examples
+- Shows all AgenticPDF capabilities through mock examples
 - Demonstrates proper API usage patterns
 - Provides template for real implementations
 
@@ -181,4 +181,4 @@ $ npm run examples -- --file=sample.pdf --all
 - **Cross-Platform**: Scripts and commands work on Windows, macOS, and Linux
 - **Future-Proof**: Easy to switch from mock to real examples when browser APIs are available in Node.js
 
-The solution provides multiple pathways for users to explore ModernPDF's capabilities while maintaining compatibility across different environments and use cases.
+The solution provides multiple pathways for users to explore AgenticPDF's capabilities while maintaining compatibility across different environments and use cases.

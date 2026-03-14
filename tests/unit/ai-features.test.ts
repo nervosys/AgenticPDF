@@ -3,7 +3,7 @@
  * Tests AIAnalyzer, SemanticChunker, and embedding integration
  */
 
-import { ModernPDF, EmbeddingProvider } from '../../modernpdf';
+import { AgenticPDF, EmbeddingProvider } from '../../agenticpdf';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 
@@ -183,7 +183,7 @@ describe('AI Features and Semantic Analysis', () => {
         test('should extract key entities', () => {
             const entities = {
                 people: ['John Doe', 'Jane Smith'],
-                organizations: ['ModernPDF', 'Test Corp'],
+                organizations: ['AgenticPDF', 'Test Corp'],
                 technologies: ['PDF', 'TypeScript', 'JavaScript'],
                 dates: ['2024-01-01', '2024-01-15'],
                 locations: ['New York', 'San Francisco'],
@@ -361,7 +361,7 @@ describe('AI Features and Semantic Analysis', () => {
         test('should extract key sentences', () => {
             const keySentences = [
                 {
-                    sentence: 'The ModernPDF library follows a streaming-first architecture.',
+                    sentence: 'The AgenticPDF library follows a streaming-first architecture.',
                     importance: 0.95,
                     position: 1.2,
                     pageNumber: 1,
@@ -404,7 +404,7 @@ describe('AI Features and Semantic Analysis', () => {
     describe('Advanced AI Features', () => {
         test('should perform question-answering on document content', () => {
             const qa = {
-                question: 'What is the main purpose of the ModernPDF library?',
+                question: 'What is the main purpose of the AgenticPDF library?',
                 answer: 'To provide a complete PDF processing solution with AI capabilities.',
                 confidence: 0.91,
                 sources: ['chunk-1', 'chunk-3'],

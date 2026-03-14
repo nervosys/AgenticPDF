@@ -20,13 +20,16 @@
         "emitDecoratorMetadata": true
     },
     "include": [
-        "modernpdf.ts",
+        "agenticpdf.ts",
+        "cli.ts",
+        "playwright.config.ts",
         "tests/**/*"
     ],
     "exclude": [
         "node_modules",
         "dist",
         "coverage",
-        "examples"
+        "examples",
+        "scripts"
     ]
 }

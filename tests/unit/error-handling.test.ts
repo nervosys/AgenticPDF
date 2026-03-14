@@ -1,14 +1,14 @@
 /**
- * Comprehensive error handling tests for ModernPDF
+ * Comprehensive error handling tests for AgenticPDF
  * Tests malformed PDFs, network failures, memory limits, and edge cases
  */
 
-import { ModernPDF } from '../../modernpdf';
+import { AgenticPDF } from '../../agenticpdf';
 import * as Mocks from '../mocks';
 import { TestFixtures } from '../fixtures';
 import { globalMockFetch } from '../setup';
 
-describe('ModernPDF Error Handling', () => {
+describe('AgenticPDF Error Handling', () => {
     beforeEach(() => {
         globalMockFetch.clear();
     });
@@ -22,7 +22,7 @@ describe('ModernPDF Error Handling', () => {
             const invalidPDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // Incomplete header
 
             await expect(async () => {
-                const pdf = await ModernPDF.fromBuffer(invalidPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(invalidPDF.buffer as ArrayBuffer);
                 pdf.close();
             }).rejects.toThrow();
         });
@@ -31,7 +31,7 @@ describe('ModernPDF Error Handling', () => {
             const corruptedPDF = Mocks.MockPDFGenerator.createCorruptedPDF();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(corruptedPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(corruptedPDF.buffer as ArrayBuffer);
 
                 // Operations should fail gracefully
                 try {
@@ -51,7 +51,7 @@ describe('ModernPDF Error Handling', () => {
             const noxrefPDF = Mocks.MockPDFGenerator.createPDFWithoutXref();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(noxrefPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(noxrefPDF.buffer as ArrayBuffer);
                 pdf.close();
             } catch (error) {
                 expect(error).toBeInstanceOf(Error);
@@ -63,7 +63,7 @@ describe('ModernPDF Error Handling', () => {
             const encryptedPDF = Mocks.MockPDFGenerator.createEncryptedPDF();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(encryptedPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(encryptedPDF.buffer as ArrayBuffer);
 
                 // Should fail when trying to extract content
                 try {
@@ -84,7 +84,7 @@ describe('ModernPDF Error Handling', () => {
             const invalidObjectsPDF = Mocks.MockPDFGenerator.createPDFWithInvalidObjects();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(invalidObjectsPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(invalidObjectsPDF.buffer as ArrayBuffer);
 
                 // Should handle invalid objects gracefully
                 const pages = await pdf.getPageCount();
@@ -101,7 +101,7 @@ describe('ModernPDF Error Handling', () => {
             const truncatedPDF = fullPDF.slice(0, fullPDF.length / 2);
 
             try {
-                const pdf = await ModernPDF.fromBuffer(truncatedPDF.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(truncatedPDF.buffer as ArrayBuffer);
 
                 try {
                     await pdf.extractText();
@@ -129,7 +129,7 @@ describe('ModernPDF Error Handling', () => {
                 const timeoutController = new AbortController();
                 setTimeout(() => timeoutController.abort(), 100); // Abort after 100ms
 
-                const pdf = await ModernPDF.fromUrl(url, {
+                const pdf = await AgenticPDF.fromUrl(url, {
                     streamOptions: {
                         chunkSize: 1024,
                         backpressureThreshold: 10,
@@ -149,7 +149,7 @@ describe('ModernPDF Error Handling', () => {
             globalMockFetch.setError(url, 404, 'Not Found');
 
             try {
-                const pdf = await ModernPDF.fromUrl(url);
+                const pdf = await AgenticPDF.fromUrl(url);
                 throw new Error('Should have thrown for 404');
             } catch (error) {
                 expect(error).toBeInstanceOf(Error);
@@ -162,7 +162,7 @@ describe('ModernPDF Error Handling', () => {
             globalMockFetch.setError(url, 500, 'Internal Server Error');
 
             try {
-                const pdf = await ModernPDF.fromUrl(url);
+                const pdf = await AgenticPDF.fromUrl(url);
                 throw new Error('Should have thrown for 500');
             } catch (error) {
                 expect(error).toBeInstanceOf(Error);
@@ -175,7 +175,7 @@ describe('ModernPDF Error Handling', () => {
             globalMockFetch.setNetworkError(url);
 
             try {
-                const pdf = await ModernPDF.fromUrl(url);
+                const pdf = await AgenticPDF.fromUrl(url);
                 throw new Error('Should have thrown for network error');
             } catch (error) {
                 expect(error).toBeInstanceOf(Error);
@@ -191,7 +191,7 @@ describe('ModernPDF Error Handling', () => {
             globalMockFetch.setResponseData(url, partialData);
 
             try {
-                const pdf = await ModernPDF.fromUrl(url);
+                const pdf = await AgenticPDF.fromUrl(url);
                 pdf.close();
             } catch (error) {
                 expect(error).toBeInstanceOf(Error);
@@ -209,7 +209,7 @@ describe('ModernPDF Error Handling', () => {
             };
 
             try {
-                const pdf = await ModernPDF.fromBuffer(largePDF.buffer as ArrayBuffer, options);
+                const pdf = await AgenticPDF.fromBuffer(largePDF.buffer as ArrayBuffer, options);
 
                 try {
                     await pdf.extractText();
@@ -236,7 +236,7 @@ describe('ModernPDF Error Handling', () => {
 
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer, options);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer, options);
 
                 // AI operations might use workers
                 try {
@@ -264,7 +264,7 @@ describe('ModernPDF Error Handling', () => {
             slowStream.setReadDelay(100);
 
             try {
-                const pdf = ModernPDF.fromStream(slowStream);
+                const pdf = AgenticPDF.fromStream(slowStream);
 
                 // Operations should handle backpressure gracefully
                 const metadata = await pdf.getMetadata();
@@ -297,7 +297,7 @@ describe('ModernPDF Error Handling', () => {
 
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const aiFeatures = await pdf.getAIFeatures({
                     embeddingProvider: mockProvider,
@@ -327,7 +327,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle semantic chunking failures', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 // Invalid chunking options
                 const chunks = await pdf.generateSemanticChunks({
@@ -348,7 +348,7 @@ describe('ModernPDF Error Handling', () => {
 
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const timeoutController = new AbortController();
                 setTimeout(() => timeoutController.abort(), 100); // Abort after 100ms
@@ -371,7 +371,7 @@ describe('ModernPDF Error Handling', () => {
             const pdfWithBadEncoding = Mocks.MockPDFGenerator.createPDFWithBadEncoding();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(pdfWithBadEncoding.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfWithBadEncoding.buffer as ArrayBuffer);
 
                 const text = await pdf.extractText({
                     ocrEnabled: false, // Disable OCR fallback
@@ -391,7 +391,7 @@ describe('ModernPDF Error Handling', () => {
             const pdfWithMissingFonts = Mocks.MockPDFGenerator.createPDFWithMissingFonts();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(pdfWithMissingFonts.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfWithMissingFonts.buffer as ArrayBuffer);
 
                 const text = await pdf.extractText({
                     preserveFormatting: true,
@@ -411,7 +411,7 @@ describe('ModernPDF Error Handling', () => {
             const pdfWithBadImages = Mocks.MockPDFGenerator.createPDFWithCorruptedImages();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(pdfWithBadImages.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfWithBadImages.buffer as ArrayBuffer);
 
                 const images = await pdf.extractImages();
 
@@ -428,7 +428,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle unsupported page range', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const text = await pdf.extractText({
                     pageRange: { start: 10, end: 20 }, // Pages that don't exist
@@ -449,7 +449,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle unsupported export format', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const exported = await pdf.exportAs('xml' as any); // Unsupported format
 
@@ -463,7 +463,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle rendering errors', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createCorruptedPDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const canvas = document.createElement('canvas');
                 await pdf.renderPage(1, canvas, {
@@ -483,7 +483,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle invalid render options', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 const canvas = document.createElement('canvas');
                 await pdf.renderPage(1, canvas, {
@@ -504,7 +504,7 @@ describe('ModernPDF Error Handling', () => {
             const stream = new Mocks.MockReadableStream(pdfData, 1024);
 
             try {
-                const pdf = ModernPDF.fromStream(stream);
+                const pdf = AgenticPDF.fromStream(stream);
 
                 // Start a long-running operation
                 const textPromise = pdf.streamText();
@@ -525,7 +525,7 @@ describe('ModernPDF Error Handling', () => {
         test('should handle concurrent operation conflicts', async () => {
             try {
                 const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
 
                 // Start multiple operations concurrently
                 const operations = [
@@ -551,7 +551,7 @@ describe('ModernPDF Error Handling', () => {
 
         test('should handle resource cleanup errors', async () => {
             try {
-                const pdf = await ModernPDF.fromBuffer(
+                const pdf = await AgenticPDF.fromBuffer(
                     Mocks.MockPDFGenerator.createSimplePDF().buffer as ArrayBuffer
                 );
 

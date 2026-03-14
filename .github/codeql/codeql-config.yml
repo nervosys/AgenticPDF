@@ -1,4 +1,4 @@
-name: "ModernPDF CodeQL Config"
+name: "AgenticPDF CodeQL Config"
 
 disable-default-queries: false
 
@@ -16,6 +16,6 @@ paths-ignore:
   - "**/*.spec.ts"
 
 paths:
-  - "modernpdf.ts"
+  - "AgenticPDF.ts"
   - "examples"
   - "demos"

@@ -1,13 +1,13 @@
 /**
- * Integration tests for the main ModernPDF class
+ * Integration tests for the main AgenticPDF class
  * Tests factory methods and high-level operations
  */
 
-import { ModernPDF, PDFOptions } from '../../modernpdf';
+import { AgenticPDF, PDFOptions } from '../../agenticpdf';
 import * as Mocks from '../mocks';
 import { TestFixtures } from '../fixtures';
 
-describe('ModernPDF Main Class Integration', () => {
+describe('AgenticPDF Main Class Integration', () => {
     let mockFetch: Mocks.MockFetch;
 
     beforeEach(() => {
@@ -23,7 +23,7 @@ describe('ModernPDF Main Class Integration', () => {
             const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
                 expect(pdf).toBeDefined();
 
                 // Should have basic functionality available
@@ -42,7 +42,7 @@ describe('ModernPDF Main Class Integration', () => {
             const file = Mocks.TestUtils.createMockFile('test.pdf', pdfData);
 
             try {
-                const pdf = await ModernPDF.fromFile(file);
+                const pdf = await AgenticPDF.fromFile(file);
                 expect(pdf).toBeDefined();
                 pdf.close();
             } catch (error) {
@@ -57,7 +57,7 @@ describe('ModernPDF Main Class Integration', () => {
             mockFetch.setResponseData(url, pdfData);
 
             try {
-                const pdf = await ModernPDF.fromUrl(url);
+                const pdf = await AgenticPDF.fromUrl(url);
                 expect(pdf).toBeDefined();
                 pdf.close();
             } catch (error) {
@@ -70,7 +70,7 @@ describe('ModernPDF Main Class Integration', () => {
             const stream = new Mocks.MockReadableStream(pdfData, 512);
 
             try {
-                const pdf = ModernPDF.fromStream(stream);
+                const pdf = AgenticPDF.fromStream(stream);
                 expect(pdf).toBeDefined();
                 pdf.close();
             } catch (error) {
@@ -94,7 +94,7 @@ describe('ModernPDF Main Class Integration', () => {
             const pdfData = Mocks.MockPDFGenerator.createSimplePDF();
 
             try {
-                const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer, options);
+                const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer, options);
                 expect(pdf).toBeDefined();
                 pdf.close();
             } catch (error) {
@@ -388,7 +388,7 @@ describe('ModernPDF Main Class Integration', () => {
             const partialPDFData = Mocks.MockPDFGenerator.createSimplePDF().slice(0, 200);
 
             try {
-                const pdf = await ModernPDF.fromBuffer(partialPDFData.buffer as ArrayBuffer);
+                const pdf = await AgenticPDF.fromBuffer(partialPDFData.buffer as ArrayBuffer);
                 expect(pdf).toBeDefined();
                 pdf.close();
             } catch (error) {
@@ -523,7 +523,7 @@ describe('End-to-End Workflow Tests', () => {
         const batchResults = await Promise.allSettled(
             pdfs.map(async (pdfData, index) => {
                 try {
-                    const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+                    const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
                     return {
                         index,
                         success: true,

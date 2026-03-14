@@ -3,7 +3,7 @@
  * Tests text, image, form, and annotation extraction
  */
 
-import { ModernPDF } from '../../modernpdf';
+import { AgenticPDF } from '../../agenticpdf';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 

@@ -1,9 +1,9 @@
 /**
- * Mock utilities for ModernPDF testing
+ * Mock utilities for AgenticPDF testing
  * Provides mock implementations for external dependencies
  */
 
-import { EmbeddingProvider, StreamOptions, ProgressInfo } from '../../modernpdf';
+import { EmbeddingProvider, StreamOptions, ProgressInfo } from '../../agenticpdf';
 
 /**
  * Mock embedding provider for testing AI features

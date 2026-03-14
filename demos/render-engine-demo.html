@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgenticPDF — Rendering Engine Demo</title>
+    <script src="agenticpdf-browser.js"></script>
+    <style>
+        :root {
+            --bg: #0e0e10;
+            --surface: #18181b;
+            --border: #27272a;
+            --text: #fafafa;
+            --text-muted: #a1a1aa;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #22c55e;
+            --warn: #f59e0b;
+            --error: #ef4444;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        header h1 {
+            font-size: 16px;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+        }
+        header h1 span { color: var(--accent); }
+        .badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            background: var(--accent);
+            color: white;
+            font-weight: 500;
+        }
+        .layout {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            height: calc(100vh - 49px);
+        }
+        .sidebar {
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .panel {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .panel-header {
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+        }
+        .panel-body { padding: 12px 14px; }
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 13px;
+        }
+        .metric-row .label { color: var(--text-muted); }
+        .metric-row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .metric-row .value.good { color: var(--success); }
+        .metric-row .value.warn { color: var(--warn); }
+        .metric-row .value.bad { color: var(--error); }
+
+        .control-group { margin-bottom: 12px; }
+        .control-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .control-group select,
+        .control-group input[type="range"] {
+            width: 100%;
+            background: var(--surface);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 13px;
+        }
+        .control-group input[type="range"] {
+            padding: 0;
+            height: 6px;
+            -webkit-appearance: none;
+            appearance: none;
+            border: none;
+            border-radius: 3px;
+            background: var(--border);
+            cursor: pointer;
+            margin-top: 4px;
+        }
+        .control-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+        .range-value {
+            font-size: 12px;
+            color: var(--accent);
+            float: right;
+            font-weight: 600;
+        }
+
+        button.primary {
+            width: 100%;
+            padding: 10px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        button.primary:hover { background: var(--accent-hover); }
+        button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .canvas-area {
+            position: relative;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 24px;
+            gap: 16px;
+            background: var(--bg);
+        }
+        .canvas-area canvas {
+            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+            border-radius: 2px;
+        }
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(14,14,16,0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        .spinner {
+            width: 32px; height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text {
+            margin-top: 12px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .status-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
+            padding: 6px 24px;
+            font-size: 11px;
+            color: var(--text-muted);
+            display: flex;
+            gap: 24px;
+        }
+        .status-bar .dot {
+            display: inline-block;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .dot.green { background: var(--success); }
+        .dot.yellow { background: var(--warn); }
+        .dot.red { background: var(--error); }
+
+        .perf-bar {
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .perf-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+        #logPanel {
+            font-family: 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            max-height: 200px;
+            overflow-y: auto;
+            color: var(--text-muted);
+        }
+        #logPanel .log-entry { padding: 1px 0; }
+        #logPanel .log-time { color: var(--accent); }
+        #logPanel .log-warn { color: var(--warn); }
+        #logPanel .log-error { color: var(--error); }
+        #logPanel .log-success { color: var(--success); }
+    
+        /* Zoom overlay controls */
+        .zoom-overlay {
+            position: fixed;
+            bottom: 48px;
+            right: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            z-index: 100;
+            pointer-events: auto;
+        }
+        .zoom-btn {
+            width: 36px;
+            height: 36px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            border-radius: 6px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: opacity 0.15s, background 0.15s;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            user-select: none;
+        }
+        .zoom-btn:hover { opacity: 1; background: var(--accent); color: #fff; }
+        .zoom-btn:active { transform: scale(0.92); }
+        .zoom-label {
+            font-size: 11px;
+            text-align: center;
+            color: var(--text-muted);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 0;
+            cursor: pointer;
+            user-select: none;
+        }
+        .zoom-label:hover { color: var(--text); }
+
+        .pdf-link-overlay:hover {
+            background: rgba(0, 100, 255, 0.15);
+            border-color: rgba(0, 100, 255, 0.4) !important;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1><span>AgenticPDF</span> Rendering Engine</h1>
+    <span class="badge">GPU-Accelerated</span>
+</header>
+
+<div class="layout">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <!-- Render Controls -->
+        <div class="panel">
+            <div class="panel-header">Render Settings</div>
+            <div class="panel-body">
+                <div class="control-group">
+                    <label>Render Scale (DPI) <span class="range-value" id="scaleVal">2.0x</span></label>
+                    <input type="range" id="renderScale" min="0.5" max="4" step="0.5" value="2">
+                </div>
+                <div class="control-group">
+                    <label>Zoom <span class="range-value" id="zoomVal">100%</span></label>
+                    <input type="range" id="zoom" min="25" max="400" step="25" value="100">
+                </div>
+                <div class="control-group">
+                    <label>Canvas Backend</label>
+                    <select id="canvasBackend">
+                        <option value="2d">Canvas 2D (CPU)</option>
+                        <option value="2d-accel" selected>Canvas 2D (GPU-Accelerated)</option>
+                        <option value="offscreen">OffscreenCanvas + 2D</option>
+                        <option value="bitmap">ImageBitmap Renderer</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Background</label>
+                    <select id="bgColor">
+                        <option value="white">White</option>
+                        <option value="#f5f5f4">Warm White</option>
+                        <option value="#1a1a1a">Dark</option>
+                        <option value="transparent">Transparent</option>
+                    </select>
+                </div>
+                <button class="primary" id="reRenderBtn">Re-Render</button>
+            </div>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="panel">
+            <div class="panel-header">Performance</div>
+            <div class="panel-body">
+                <div class="metric-row">
+                    <span class="label">Parse Time</span>
+                    <span class="value" id="parseTime">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Render Time</span>
+                    <span class="value" id="renderTime">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Total Frame</span>
+                    <span class="value" id="totalTime">—</span>
+                </div>
+                <div class="perf-bar"><div class="perf-bar-fill" id="perfBar" style="width:0; background:var(--success);"></div></div>
+                <div class="metric-row" style="margin-top:8px">
+                    <span class="label">Canvas Size</span>
+                    <span class="value" id="canvasSize">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Pixel Count</span>
+                    <span class="value" id="pixelCount">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Operations</span>
+                    <span class="value" id="opCount">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Backend</span>
+                    <span class="value" id="activeBackend">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">GPU Accel</span>
+                    <span class="value" id="gpuStatus">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Document Info -->
+        <div class="panel">
+            <div class="panel-header">Document</div>
+            <div class="panel-body">
+                <div class="metric-row">
+                    <span class="label">Pages</span>
+                    <span class="value" id="docPages">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">Page Size</span>
+                    <span class="value" id="docSize">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">File Size</span>
+                    <span class="value" id="docFileSize">—</span>
+                </div>
+                <div class="metric-row">
+                    <span class="label">PDF Version</span>
+                    <span class="value" id="docVersion">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Render Log -->
+        <div class="panel">
+            <div class="panel-header">Engine Log</div>
+            <div class="panel-body" id="logPanel"></div>
+        </div>
+    </div>
+
+    <!-- Canvas Area -->
+    <div class="canvas-area" id="canvasArea">
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="spinner"></div>
+            <div class="loading-text" id="loadingText">Loading sample.pdf…</div>
+        </div>
+        <div class="zoom-overlay" id="zoomOverlay" style="display:none;">
+            <button class="zoom-btn" id="zoomInBtn" title="Zoom In (Ctrl +)">+</button>
+            <span class="zoom-label" id="zoomOverlayLabel" title="Reset Zoom">100%</span>
+            <button class="zoom-btn" id="zoomOutBtn" title="Zoom Out (Ctrl -)">−</button>
+        </div>
+    </div>
+</div>
+
+<div class="status-bar">
+    <span><span class="dot green" id="statusDot"></span><span id="statusText">Ready</span></span>
+    <span id="statusBackend">Backend: —</span>
+    <span id="statusMemory"></span>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // ── State ──
+    let pdfDoc = null;
+    let pageContainers = [];
+    const startTs = performance.now();
+
+    // ── DOM ──
+    const $ = id => document.getElementById(id);
+    const renderScaleSlider = $('renderScale');
+    const zoomSlider = $('zoom');
+    const backendSelect = $('canvasBackend');
+    const bgSelect = $('bgColor');
+    const reRenderBtn = $('reRenderBtn');
+    const canvasArea = $('canvasArea');
+    const loadingOverlay = $('loadingOverlay');
+    const loadingText = $('loadingText');
+    const logPanel = $('logPanel');
+
+    // ── Logging ──
+    function log(msg, level = 'info') {
+        const ts = ((performance.now() - startTs) / 1000).toFixed(2);
+        const cls = level === 'warn' ? 'log-warn' : level === 'error' ? 'log-error' : level === 'success' ? 'log-success' : '';
+        logPanel.innerHTML += `<div class="log-entry"><span class="log-time">[${ts}s]</span> <span class="${cls}">${msg}</span></div>`;
+        logPanel.scrollTop = logPanel.scrollHeight;
+    }
+
+    // ── Debounced re-render helper ──
+    let _renderTimer = null;
+    function scheduleRerender(delay = 300) {
+        clearTimeout(_renderTimer);
+        _renderTimer = setTimeout(() => renderAllPages(), delay);
+    }
+
+    // ── Instant CSS-based zoom (no re-render) ──
+    // Tracks the zoom at which canvases were last rendered
+    let _lastRenderedZoom = 100;
+
+    function applyZoomCSS() {
+        const zoom = parseInt(zoomSlider.value) / 100;
+        for (const container of pageContainers) {
+            const canvas = container.querySelector('canvas');
+            if (!canvas) continue;
+            // Derive original page dimensions from the canvas pixel size and last render state
+            const renderScale = parseFloat(renderScaleSlider.value);
+            const pageW = canvas.width / renderScale / (_lastRenderedZoom / 100);
+            const pageH = canvas.height / renderScale / (_lastRenderedZoom / 100);
+            const displayW = pageW * zoom;
+            const displayH = pageH * zoom;
+
+            container.style.width = displayW + 'px';
+            container.style.height = displayH + 'px';
+            canvas.style.width = displayW + 'px';
+            canvas.style.height = displayH + 'px';
+
+            // Reposition annotation overlays
+            const overlays = container.querySelectorAll('.pdf-link-overlay');
+            for (const a of overlays) {
+                const ox = parseFloat(a.dataset.pdfX) || 0;
+                const oy = parseFloat(a.dataset.pdfY) || 0;
+                const ow = parseFloat(a.dataset.pdfW) || 0;
+                const oh = parseFloat(a.dataset.pdfH) || 0;
+                a.style.left = (ox * zoom) + 'px';
+                a.style.top  = (oy * zoom) + 'px';
+                a.style.width = (ow * zoom) + 'px';
+                a.style.height = (oh * zoom) + 'px';
+            }
+        }
+    }
+
+    // ── Slider Labels + auto re-render ──
+    renderScaleSlider.addEventListener('input', () => {
+        $('scaleVal').textContent = renderScaleSlider.value + 'x';
+        scheduleRerender();
+    });
+    zoomSlider.addEventListener('input', () => {
+        $('zoomVal').textContent = zoomSlider.value + '%';
+        $('zoomOverlayLabel').textContent = zoomSlider.value + '%';
+        applyZoomCSS();
+    });
+    backendSelect.addEventListener('change', () => scheduleRerender(0));
+    bgSelect.addEventListener('change', () => scheduleRerender(0));
+
+    // ── Zoom helper ──
+    const zoomSteps = [25, 50, 75, 100, 125, 150, 200, 250, 300, 400];
+    function setZoom(val) {
+        const clamped = Math.max(25, Math.min(400, Math.round(val)));
+        zoomSlider.value = clamped;
+        $('zoomVal').textContent = clamped + '%';
+        $('zoomOverlayLabel').textContent = clamped + '%';
+        applyZoomCSS();
+    }
+
+    // Zoom overlay buttons
+    $('zoomInBtn').addEventListener('click', () => {
+        const cur = parseInt(zoomSlider.value);
+        const next = zoomSteps.find(s => s > cur) || 400;
+        setZoom(next);
+    });
+    $('zoomOutBtn').addEventListener('click', () => {
+        const cur = parseInt(zoomSlider.value);
+        const prev = [...zoomSteps].reverse().find(s => s < cur) || 25;
+        setZoom(prev);
+    });
+    $('zoomOverlayLabel').addEventListener('click', () => setZoom(100));
+
+    // Ctrl+scroll wheel zoom on canvas area
+    canvasArea.addEventListener('wheel', (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        e.preventDefault();
+        const cur = parseInt(zoomSlider.value);
+        const delta = e.deltaY < 0 ? 25 : -25;
+        setZoom(cur + delta);
+    }, { passive: false });
+
+    // ── GPU Detection ──
+    function detectGPUAcceleration() {
+        try {
+            const c = document.createElement('canvas');
+            c.width = c.height = 1;
+            const gl = c.getContext('webgl2') || c.getContext('webgl');
+            if (gl) {
+                const ext = gl.getExtension('WEBGL_debug_renderer_info');
+                const renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+                const vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+                return { supported: true, renderer, vendor };
+            }
+        } catch (_) { /* ignore */ }
+        return { supported: false, renderer: 'Unknown', vendor: 'Unknown' };
+    }
+
+    const gpuInfo = detectGPUAcceleration();
+    log(`GPU: ${gpuInfo.renderer}`);
+    $('gpuStatus').textContent = gpuInfo.supported ? 'Yes' : 'No';
+    $('gpuStatus').classList.add(gpuInfo.supported ? 'good' : 'warn');
+
+    // ── Canvas Creation ──
+    function createRenderCanvas(width, height, backend) {
+        const t0 = performance.now();
+        let canvas, ctx;
+
+        if (backend === 'offscreen' && typeof OffscreenCanvas !== 'undefined') {
+            // Offscreen canvas — rendering happens off main thread
+            const offscreen = new OffscreenCanvas(width, height);
+            ctx = offscreen.getContext('2d');
+            // We'll transfer to a visible canvas after rendering
+            canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            log('Using OffscreenCanvas backend');
+            return { canvas, ctx, offscreen, backend: 'offscreen', setupTime: performance.now() - t0 };
+        }
+
+        if (backend === 'bitmap' && typeof OffscreenCanvas !== 'undefined') {
+            const offscreen = new OffscreenCanvas(width, height);
+            ctx = offscreen.getContext('2d');
+            canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            log('Using ImageBitmap renderer backend');
+            return { canvas, ctx, offscreen, backend: 'bitmap', setupTime: performance.now() - t0 };
+        }
+
+        canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        if (backend === '2d-accel') {
+            // GPU-accelerated 2D: avoid willReadFrequently (allows GPU compositing)
+            // and use desynchronized for lower-latency painting
+            ctx = canvas.getContext('2d', {
+                alpha: false,                // opaque → GPU fast-path
+                desynchronized: true,        // lower latency (skip compositor sync)
+                willReadFrequently: false     // keep textures on GPU
+            });
+            log('Using GPU-accelerated Canvas 2D (desynchronized, opaque)');
+        } else {
+            ctx = canvas.getContext('2d');
+            log('Using standard Canvas 2D (CPU)');
+        }
+
+        return { canvas, ctx, offscreen: null, backend: backend === '2d-accel' ? '2d-accel' : '2d', setupTime: performance.now() - t0 };
+    }
+
+    // ── Render Pipeline ──
+    async function renderAllPages() {
+        if (!pdfDoc) return;
+
+        const renderScale = parseFloat(renderScaleSlider.value);
+        const zoom = parseInt(zoomSlider.value) / 100;
+        _lastRenderedZoom = parseInt(zoomSlider.value);
+        const backend = backendSelect.value;
+        const bg = bgSelect.value;
+
+        // Clear previous canvases
+        pageContainers.forEach(c => c.remove());
+        pageContainers = [];
+
+        const metadata = pdfDoc.getMetadata();
+        const totalPages = metadata?.pageCount || 1;
+
+        let totalRenderMs = 0;
+
+        $('statusDot').className = 'dot yellow';
+        $('statusText').textContent = 'Rendering…';
+
+        // Build named destinations map for internal link navigation
+        let namedDests = new Map();
+        try { namedDests = pdfDoc.getNamedDestinations(); } catch(e) {}
+
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+            // Get page data for dimensions
+            const page = await pdfDoc.getPage(pageNum);
+            if (!page) {
+                log(`Page ${pageNum}: not found, skipping`, 'warn');
+                continue;
+            }
+
+            log(`Page ${pageNum}: ${page.width}x${page.height}, contents=${page.contents ? page.contents.length + ' bytes' : 'NONE'}`);
+
+            const displayWidth = page.width * zoom;
+            const displayHeight = page.height * zoom;
+            const canvasWidth = Math.round(displayWidth * renderScale);
+            const canvasHeight = Math.round(displayHeight * renderScale);
+
+            // Create a DOM canvas to render into
+            const canvas = document.createElement('canvas');
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+
+            // Render via AgenticPDF engine
+            const tRender0 = performance.now();
+
+            try {
+                // Build GPU-acceleration hints from backend selection
+                const gpuOpts = {};
+                if (backend === '2d-accel') {
+                    gpuOpts.desynchronized = true;
+                    gpuOpts.opaque = true;
+                    gpuOpts.willReadFrequently = false;
+                } else if (backend === 'offscreen') {
+                    gpuOpts.useOffscreenCanvas = true;
+                } else if (backend === 'bitmap') {
+                    gpuOpts.useImageBitmap = true;
+                }
+
+                await pdfDoc.renderPage(pageNum, canvas, {
+                    scale: zoom,
+                    renderScale: renderScale,
+                    background: bg,
+                    ...gpuOpts
+                });
+
+                const renderMs = performance.now() - tRender0;
+                totalRenderMs += renderMs;
+                log(`Page ${pageNum}: rendered in ${renderMs.toFixed(1)}ms (${backend})`, 'success');
+            } catch (e) {
+                const renderMs = performance.now() - tRender0;
+                totalRenderMs += renderMs;
+                log(`Page ${pageNum}: render error: ${e.message}`, 'error');
+                console.error('Render error:', e);
+
+                // Draw error fallback
+                const ctx2 = canvas.getContext('2d');
+                if (ctx2) {
+                    ctx2.fillStyle = bg !== 'transparent' ? bg : 'white';
+                    ctx2.fillRect(0, 0, canvasWidth, canvasHeight);
+                    ctx2.fillStyle = '#ef4444';
+                    ctx2.font = '14px system-ui';
+                    ctx2.textAlign = 'center';
+                    ctx2.fillText(`Page ${pageNum} — Render error: ${e.message}`, canvasWidth / 2, canvasHeight / 2);
+                }
+            }
+
+            // Wrap canvas in a container for annotation overlays
+            const container = document.createElement('div');
+            container.style.position = 'relative';
+            container.style.display = 'inline-block';
+            container.style.width = `${displayWidth}px`;
+            container.style.height = `${displayHeight}px`;
+
+            canvas.style.cssText = `width:${displayWidth}px;height:${displayHeight}px;position:relative;z-index:1;display:block;`;
+            container.appendChild(canvas);
+
+            // Overlay clickable link annotations
+            try {
+                const annots = await pdfDoc.getAnnotations(pageNum);
+                const links = annots.filter(a => a.type === 'Link' && a.destination);
+                for (const link of links) {
+                    const r = link.rect;
+                    // PDF coords: origin bottom-left; DOM: top-left
+                    const left = r.x * zoom;
+                    const top = (page.height - r.y - r.height) * zoom;
+                    const w = r.width * zoom;
+                    const h = r.height * zoom;
+                    const dest = link.destination;
+                    const isExternal = typeof dest === 'string' && dest.startsWith('http');
+
+                    // External links: use <a> with href
+                    // Internal refs: use <div> with onclick (no status bar noise)
+                    const el = document.createElement(isExternal ? 'a' : 'div');
+                    if (isExternal) {
+                        el.href = dest;
+                        el.target = '_blank';
+                        el.rel = 'noopener noreferrer';
+                        el.title = dest;
+                    } else {
+                        // Internal cross-reference — navigate on click
+                        const destName = typeof dest === 'string' ? dest : '';
+                        const destInfo = namedDests.get(destName);
+                        if (destInfo) {
+                            el.title = destName + ' (page ' + destInfo.page + ')';
+                        } else {
+                            el.title = 'Ref: ' + (typeof dest === 'string' ? dest : JSON.stringify(dest));
+                        }
+                        el.onclick = function() {
+                            const info = namedDests.get(destName);
+                            if (!info || info.page < 1 || info.page > pageContainers.length) return;
+                            const tgt = pageContainers[info.page - 1];
+                            if (!tgt) return;
+                            const currentZoom = parseInt(zoomSlider.value) / 100;
+                            if (info.y != null) {
+                                // PDF Y is from bottom; convert to top-down pixel offset
+                                const yFromTop = tgt.offsetHeight - info.y * currentZoom;
+                                canvasArea.scrollTo({ top: tgt.offsetTop + yFromTop - 20, behavior: 'smooth' });
+                            } else {
+                                tgt.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }
+                        };
+                    }
+                    // Store PDF-space coords for CSS-only zoom repositioning
+                    el.dataset.pdfX = r.x;
+                    el.dataset.pdfY = (page.height - r.y - r.height);
+                    el.dataset.pdfW = r.width;
+                    el.dataset.pdfH = r.height;
+                    el.style.cssText = 'position:absolute;left:' + left + 'px;top:' + top + 'px;width:' + w + 'px;height:' + h + 'px;cursor:pointer;border:1px solid transparent;border-radius:2px;z-index:10;display:block;';
+                    el.className = 'pdf-link-overlay';
+                    container.appendChild(el);
+                }                if (links.length) log(`Page ${pageNum}: ${links.length} link overlays added`);
+            } catch (e) {
+                log(`Page ${pageNum}: annotation overlay error: ${e.message}`, 'warn');
+            }
+
+            canvasArea.appendChild(container);
+            pageContainers.push(container);
+
+            // Update metrics
+            $('canvasSize').textContent = `${canvasWidth}×${canvasHeight}`;
+            $('pixelCount').textContent = formatNumber(canvasWidth * canvasHeight);
+            $('activeBackend').textContent = backend;
+            $('statusBackend').textContent = `Backend: ${backend}`;
+        }
+
+        // Update aggregate metrics
+        $('parseTime').textContent = '(internal)';
+        $('renderTime').textContent = totalRenderMs.toFixed(1) + ' ms';
+        $('totalTime').textContent = totalRenderMs.toFixed(1) + ' ms';
+        $('totalTime').className = 'value ' + (totalRenderMs < 100 ? 'good' : totalRenderMs < 500 ? 'warn' : 'bad');
+
+        // Perf bar (0-500ms scale)
+        const pct = Math.min(100, (totalRenderMs / 500) * 100);
+        $('perfBar').style.width = pct + '%';
+        $('perfBar').style.background = totalRenderMs < 100 ? 'var(--success)' : totalRenderMs < 500 ? 'var(--warn)' : 'var(--error)';
+
+        $('statusDot').className = 'dot green';
+        $('statusText').textContent = `Rendered in ${totalRenderMs.toFixed(0)} ms`;
+
+        // Memory
+        if (performance.memory) {
+            const mb = (performance.memory.usedJSHeapSize / (1024 * 1024)).toFixed(1);
+            $('statusMemory').textContent = `Heap: ${mb} MB`;
+        }
+    }
+
+    // ── Re-render button ──
+    reRenderBtn.addEventListener('click', () => renderAllPages());
+
+    // ── Load PDF ──
+    async function init() {
+        log('Initializing AgenticPDF rendering engine…');
+
+        if (typeof AgenticPDF === 'undefined') {
+            log('AgenticPDF library not found!', 'error');
+            loadingText.textContent = 'Error: agenticpdf-browser.js not loaded';
+            return;
+        }
+
+        log('AgenticPDF library loaded');
+
+        try {
+            loadingText.textContent = 'Fetching sample.pdf…';
+            log('Fetching sample.pdf…');
+
+            const resp = await fetch('./sample.pdf');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const buf = await resp.arrayBuffer();
+            const fileSizeKB = (buf.byteLength / 1024).toFixed(1);
+            log(`Fetched ${fileSizeKB} KB`);
+
+            $('docFileSize').textContent = fileSizeKB + ' KB';
+
+            loadingText.textContent = 'Parsing PDF…';
+            log('Parsing with AgenticPDF.fromBuffer…');
+
+            const t0 = performance.now();
+            pdfDoc = await AgenticPDF.fromBuffer(buf, {
+                lazyLoad: false,
+                enableWorkers: false
+            });
+            const loadMs = performance.now() - t0;
+            log(`PDF parsed in ${loadMs.toFixed(1)} ms`, 'success');
+
+            const metadata = pdfDoc.getMetadata();
+            $('docPages').textContent = metadata?.pageCount || '?';
+            $('docVersion').textContent = metadata?.version || '?';
+
+            // Get first page dimensions
+            const page1 = await pdfDoc.getPage(1);
+            if (page1) {
+                $('docSize').textContent = `${page1.width} × ${page1.height} pt`;
+            }
+
+            loadingOverlay.style.display = 'none';
+        $('zoomOverlay').style.display = '';
+            log('Starting render pipeline…');
+            await renderAllPages();
+
+        } catch (e) {
+            log(`Error: ${e.message}`, 'error');
+            loadingText.textContent = `Error: ${e.message}`;
+            $('statusDot').className = 'dot red';
+            $('statusText').textContent = 'Error';
+            console.error(e);
+        }
+    }
+
+    function formatNumber(n) {
+        if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return String(n);
+    }
+
+    init();
+})();
+</script>
+</body>
+</html>

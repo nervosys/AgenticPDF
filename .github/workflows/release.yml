@@ -53,15 +53,15 @@ jobs:
           ## Installation
           
           ```bash
-          npm install modernpdf@${{ github.ref_name }}
+          npm install AgenticPDF@${{ github.ref_name }}
           ```
           
           Or copy the single file:
           ```bash
-          curl -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/modernpdf.ts
+          curl -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/AgenticPDF.ts
           ```
         files: |
-          modernpdf.ts
+          AgenticPDF.ts
           dist/*
         draft: false
         prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,5 +1,5 @@
 name: Question
-description: Ask a question about ModernPDF
+description: Ask a question about AgenticPDF
 title: "[Question]: "
 labels: ["question", "triage"]
 assignees: []
@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Have a question about ModernPDF? We're here to help!
+        Have a question about AgenticPDF? We're here to help!
 
   - type: checkboxes
     id: terms
@@ -65,21 +65,21 @@ body:
       description: Show us what you've tried so far
       render: typescript
       placeholder: |
-        import ModernPDF from './modernpdf';
+        import AgenticPDF from './AgenticPDF';
         
         // Your code here...
 
   - type: input
     id: version
     attributes:
-      label: ModernPDF Version
+      label: AgenticPDF Version
       placeholder: "1.0.0"
 
   - type: dropdown
     id: environment
     attributes:
       label: Environment
-      description: Where are you using ModernPDF?
+      description: Where are you using AgenticPDF?
       options:
         - Node.js
         - Browser

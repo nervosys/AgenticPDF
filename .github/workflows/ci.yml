@@ -69,5 +69,5 @@ jobs:
         name: build-artifacts
         path: |
           dist/
-          modernpdf.ts
+          AgenticPDF.ts
         retention-days: 7

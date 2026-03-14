@@ -1,9 +1,9 @@
 /**
  * Unit tests for core PDF parsing functionality
- * Tests the ModernPDF library's parsing capabilities through the public API
+ * Tests the AgenticPDF library's parsing capabilities through the public API
  */
 
-import { ModernPDF, PDFOptions } from '../../modernpdf';
+import { AgenticPDF, PDFOptions } from '../../agenticpdf';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 
@@ -214,12 +214,12 @@ describe('PDF Parser Core Functionality', () => {
     });
 });
 
-describe('ModernPDF API Integration Tests', () => {
-    test('should create ModernPDF instance from buffer', async () => {
+describe('AgenticPDF API Integration Tests', () => {
+    test('should create AgenticPDF instance from buffer', async () => {
         const pdfData = Mocks.PDFGenerator.createSimplePDF();
 
         try {
-            const pdf = await ModernPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+            const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
             expect(pdf).toBeDefined();
 
             // Test basic functionality

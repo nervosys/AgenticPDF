@@ -1,7 +1,7 @@
-# ModernPDF Optimal Configuration Implementation
+# AgenticPDF Optimal Configuration Implementation
 
 ## Overview
-Successfully integrated the optimal PDF viewer configuration as the default behavior for the ModernPDF library. The configuration is based on the perfected settings from our `pdf-viewer.html` implementation.
+Successfully integrated the optimal PDF viewer configuration as the default behavior for the AgenticPDF library. The configuration is based on the perfected settings from our `pdf-viewer.html` implementation.
 
 ## Key Enhancements Made
 
@@ -45,8 +45,8 @@ Returns the optimal configuration for web-based PDF viewing:
 - Applies dark mode background automatically
 - Uses render scale for sharp text display
 
-### 3. ModernPDF Constructor Enhancement
-Modified the ModernPDF constructor to automatically apply optimal viewer settings:
+### 3. AgenticPDF Constructor Enhancement
+Modified the AgenticPDF constructor to automatically apply optimal viewer settings:
 ```typescript
 constructor(private options: PDFOptions = {}) { 
   // Apply optimal viewer defaults if no render options specified
@@ -98,14 +98,14 @@ All existing tests continue to pass:
 
 ### Automatic (Default Behavior)
 ```typescript
-// Creates ModernPDF with optimal viewer settings automatically
-const pdf = await ModernPDF.fromFile(file);
+// Creates AgenticPDF with optimal viewer settings automatically
+const pdf = await AgenticPDF.fromFile(file);
 ```
 
 ### Manual Configuration
 ```typescript
 // Override with custom settings if needed
-const pdf = await ModernPDF.fromFile(file, {
+const pdf = await AgenticPDF.fromFile(file, {
   renderOptions: {
     darkMode: false,      // Disable dark mode
     fitToWidth: false,    // Disable auto-fit
@@ -133,7 +133,7 @@ This configuration matches the optimized settings from our `pdf-viewer.html` imp
 - Matching aspect ratio preservation
 - Consistent high-quality rendering
 
-The ModernPDF library now provides the same excellent viewing experience by default that we achieved in our standalone PDF viewer.
+The AgenticPDF library now provides the same excellent viewing experience by default that we achieved in our standalone PDF viewer.
 
 ## Conclusion
-The ModernPDF library now ships with production-ready, optimal viewing settings by default, providing users with the best possible PDF viewing experience without requiring any configuration.
+The AgenticPDF library now ships with production-ready, optimal viewing settings by default, providing users with the best possible PDF viewing experience without requiring any configuration.

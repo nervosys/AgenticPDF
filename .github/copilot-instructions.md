@@ -1,13 +1,13 @@
-# ModernPDF AI Agent Instructions
+# AgenticPDF AI Agent Instructions
 
 ## Project Overview
 
-ModernPDF is a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems. This is a **single-file TypeScript library** (`modernpdf.ts`) containing a complete PDF processing implementation optimized for modern applications.
+AgenticPDF is a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems. This is a **single-file TypeScript library** (`AgenticPDF.ts`) containing a complete PDF processing implementation optimized for modern applications.
 
 ## Architecture & Core Components
 
 ### Main Class Structure
-- **`ModernPDF`** - Primary API class with factory methods (`fromFile()`, `fromUrl()`, `fromBuffer()`, `fromStream()`)
+- **`AgenticPDF`** - Primary API class with factory methods (`fromFile()`, `fromUrl()`, `fromBuffer()`, `fromStream()`)
 - **Core Parsers**: `PDFParser`, `StreamingPDFParser`, `ContentStreamParser` for handling PDF structure
 - **Extraction Classes**: `TextExtractor`, `ImageExtractor`, `FormExtractor`, `AnnotationExtractor`
 - **AI-Specific**: `AIAnalyzer`, `SemanticChunker` for intelligent content analysis
@@ -24,9 +24,9 @@ ModernPDF is a comprehensive, production-ready PDF processing library with first
 ### Loading Documents
 ```typescript
 // Factory methods for different sources
-const pdf = await ModernPDF.fromFile(file, options);
-const pdf = await ModernPDF.fromUrl(url, streamOptions);
-const pdf = ModernPDF.fromStream(stream, options);
+const pdf = await AgenticPDF.fromFile(file, options);
+const pdf = await AgenticPDF.fromUrl(url, streamOptions);
+const pdf = AgenticPDF.fromStream(stream, options);
 ```
 
 ### Streaming Operations
@@ -133,7 +133,7 @@ for await (const chunk of pdf.streamSemanticChunks()) {
 async function processPDFBatch(files: File[]) {
   const results = await Promise.allSettled(
     files.map(async (file) => {
-      const pdf = await ModernPDF.fromFile(file, { 
+      const pdf = await AgenticPDF.fromFile(file, { 
         lazyLoad: true,
         maxMemoryUsage: 100 * 1024 * 1024 // 100MB limit
       });
@@ -157,7 +157,7 @@ async function processPDFBatch(files: File[]) {
 ### Worker Thread Integration
 ```typescript
 // Use with Web Workers for CPU-intensive operations
-const pdf = await ModernPDF.fromFile(file, {
+const pdf = await AgenticPDF.fromFile(file, {
   useWebWorkers: true,
   workerUrl: '/pdf-worker.js'
 });
@@ -203,7 +203,7 @@ for await (const chunk of pdf.streamSemanticChunks({
 ### Streaming PDF Content to LLMs
 ```typescript
 // Stream semantic chunks directly to an LLM for analysis
-async function streamToLLM(pdf: ModernPDF, llmEndpoint: string) {
+async function streamToLLM(pdf: AgenticPDF, llmEndpoint: string) {
   const chunks: string[] = [];
   
   for await (const chunk of pdf.streamSemanticChunks({
@@ -229,7 +229,7 @@ async function streamToLLM(pdf: ModernPDF, llmEndpoint: string) {
 
 ### Real-time Processing with Progress Tracking
 ```typescript
-const pdf = await ModernPDF.fromUrl(url, {
+const pdf = await AgenticPDF.fromUrl(url, {
   streamOptions: {
     chunkSize: 1024 * 1024, // 1MB chunks
     progressCallback: (progress) => {
@@ -314,7 +314,7 @@ const jsonStream = await pdf.exportAs('json', {
 
 ## Project-Specific Conventions
 
-- **Single File Design**: All functionality in one `modernpdf.ts` file
+- **Single File Design**: All functionality in one `AgenticPDF.ts` file
 - **Streaming by Default**: Always prefer streaming APIs for production usage
 - **AI-Ready**: Built-in support for embeddings, chunking, and structural analysis
 - **TypeScript Native**: Full type safety without runtime dependencies

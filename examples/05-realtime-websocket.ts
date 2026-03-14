@@ -8,7 +8,7 @@
  * - Client-server communication patterns
  */
 
-import ModernPDF, { SemanticChunk, ProgressInfo } from '../modernpdf';
+import AgenticPDF, { SemanticChunk, ProgressInfo } from '../neopdf';
 
 // WebSocket message types
 interface WebSocketMessage {
@@ -128,7 +128,7 @@ export class PDFWebSocketProcessor {
 
         console.log(`🚀 Starting real-time processing: ${file.name}`);
 
-        let pdf: ModernPDF | null = null;
+        let pdf: AgenticPDF | null = null;
 
         try {
             // Send processing started message
@@ -144,7 +144,7 @@ export class PDFWebSocketProcessor {
             });
 
             // Load PDF with progress tracking
-            pdf = await ModernPDF.fromFile(file, {
+            pdf = await AgenticPDF.fromFile(file, {
                 lazyLoad: true,
                 maxMemoryUsage: 100 * 1024 * 1024, // 100MB
                 streamOptions: {
@@ -217,7 +217,7 @@ export class PDFWebSocketProcessor {
         }
     }
 
-    private async processChunksRealTime(pdf: ModernPDF): Promise<void> {
+    private async processChunksRealTime(pdf: AgenticPDF): Promise<void> {
         console.log('🌊 Starting real-time chunk processing...');
 
         this.sendProgressUpdate('Generating semantic chunks', 0);
@@ -310,7 +310,7 @@ export class PDFWebSocketProcessor {
         }
     }
 
-    private async getFinalAnalysis(pdf: ModernPDF): Promise<{ documentType: string; keyInsights: string[] }> {
+    private async getFinalAnalysis(pdf: AgenticPDF): Promise<{ documentType: string; keyInsights: string[] }> {
         try {
             this.sendProgressUpdate('Generating final analysis', 90);
 
