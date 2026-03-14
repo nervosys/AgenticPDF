@@ -1,11 +1,11 @@
 # AgenticPDF
 
-[![CI](https://github.com/nervosys/agenticpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/agenticpdf/actions/workflows/ci.yml)
+[![CI](https://github.com/nervosys/AgenticPDF/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/AgenticPDF/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-100%25-blue.svg)](https://www.typescriptlang.org/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](https://www.npmjs.com/package/agenticpdf)
 
-> Agentic-native PDF processing and rendering library for the 21st century
+**Agentic-native PDF processing and rendering library for the 21st century**
 
 ## Features
 
@@ -263,4 +263,9 @@ try {
 
 ## License
 
-[Apache 2.0](LICENSE)
+AgenticPDF is dual-licensed:
+
+- **[AGPLv3](https://www.gnu.org/licenses/agpl-3.0.html)** for open-source use
+- **[Commercial License](https://nervosys.com/licensing)** for proprietary use
+
+See [LICENSE](LICENSE) for details.

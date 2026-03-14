@@ -33,7 +33,7 @@ Key documentation files in the root directory:
 - **CONTRIBUTING.md** - Contribution guidelines
 - **CODE_OF_CONDUCT.md** - Community code of conduct
 - **SECURITY.md** - Security policy and vulnerability reporting
-- **LICENSE** - Project license (MIT)
+- **LICENSE** - Project license (AGPL-3.0 / Commercial)
 - **RELEASE_NOTES.md** - Release notes and announcements
 
 ## 🛠️ API Documentation
