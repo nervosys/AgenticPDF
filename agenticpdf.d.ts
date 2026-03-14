@@ -425,6 +425,57 @@ export interface AgentSession {
     created: string;
 }
 
+// PDF Encryption Types
+/** PDF encryption algorithm types. */
+export enum EncryptionAlgorithm {
+    RC4_40 = 'RC4-40',
+    RC4_128 = 'RC4-128',
+    AES_128 = 'AES-128',
+    AES_256 = 'AES-256',
+}
+
+/** PDF permission flags (ISO 32000-1, Table 22). */
+export enum PDFPermission {
+    Print = 4,
+    ModifyContents = 8,
+    ExtractContent = 16,
+    Annotate = 32,
+    FillForms = 256,
+    ExtractForAccessibility = 512,
+    Assemble = 1024,
+    PrintHighQuality = 2048,
+}
+
+/** Encryption dictionary parsed from the PDF trailer. */
+export interface EncryptionDict {
+    filter: string;
+    subFilter?: string;
+    version: number;
+    revision: number;
+    keyLength: number;
+    ownerKey: Uint8Array;
+    userKey: Uint8Array;
+    ownerEncryption?: Uint8Array;
+    userEncryption?: Uint8Array;
+    permissions: number;
+    encryptMetadata: boolean;
+    fileId: Uint8Array;
+}
+
+/** Result of a password authentication attempt. */
+export interface AuthResult {
+    authenticated: boolean;
+    isOwner: boolean;
+    permissions: number;
+    encryptionKey: Uint8Array;
+}
+
+/** Certificate-based encryption recipient info. */
+export interface CertificateRecipient {
+    certificate: Uint8Array;
+    permissions: number;
+}
+
 // DoD Security Types
 export interface SecurityConfig {
     maxFileSize: number;
@@ -869,7 +920,37 @@ export declare class AgenticPDF {
     /**
      * Analyze document layout: columns, tables, reading order, vertical/RTL text
      */
-    analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
+    /**
+     * Attempt to unlock a password-protected PDF
+     */
+    unlock(password: string): Promise<boolean>;
+    /**
+     * Get document permissions from the encryption dictionary
+     */
+    getPermissions(): {
+        print: boolean;
+        modify: boolean;
+        extract: boolean;
+        annotate: boolean;
+        fillForms: boolean;
+        accessibility: boolean;
+        assemble: boolean;
+        printHighQuality: boolean;
+    };
+    /**
+     * Check if a specific permission is granted
+     */
+    checkPermission(permission: PDFPermission): boolean;
+    /**
+     * Get the encryption algorithm used by this document
+     */
+    getEncryptionAlgorithm(): EncryptionAlgorithm | null;
+    /**
+     * Set a password on the document for encryption
+     */
+    setPassword(userPassword: string, ownerPassword?: string, permissions?: number): void;
+
+        analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
         pages: Array<{
             pageNumber: number;
             columns: Array<{ x: number; width: number; blockCount: number }>;

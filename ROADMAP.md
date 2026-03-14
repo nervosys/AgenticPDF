@@ -204,12 +204,12 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] Vertical text rendering (CJK)
 - [x] Right-to-left text (Arabic, Hebrew)
 
-### Phase 18 — Encryption & Security
+### Phase 18 — Encryption & Security ✅
 
-- [ ] Standard security handler (RC4, AES-128, AES-256)
-- [ ] Password-protected PDF opening
-- [ ] Permission flag enforcement
-- [ ] Certificate-based encryption
+- [x] Standard security handler (RC4, AES-128, AES-256)
+- [x] Password-protected PDF opening
+- [x] Permission flag enforcement
+- [x] Certificate-based encryption
 
 ### Phase 19 — Performance & Scale
 

@@ -698,6 +698,56 @@ export interface SecurityConfig {
   sanitizeStrings: boolean;
 }
 
+/** PDF encryption algorithm types. */
+export enum EncryptionAlgorithm {
+  RC4_40 = 'RC4-40',
+  RC4_128 = 'RC4-128',
+  AES_128 = 'AES-128',
+  AES_256 = 'AES-256',
+}
+
+/** PDF permission flags (ISO 32000-1, Table 22). */
+export enum PDFPermission {
+  Print = 1 << 2,
+  ModifyContents = 1 << 3,
+  ExtractContent = 1 << 4,
+  Annotate = 1 << 5,
+  FillForms = 1 << 8,
+  ExtractForAccessibility = 1 << 9,
+  Assemble = 1 << 10,
+  PrintHighQuality = 1 << 11,
+}
+
+/** Encryption dictionary parsed from the PDF trailer. */
+export interface EncryptionDict {
+  filter: string;          // /Standard 
+  subFilter?: string;
+  version: number;         // V value (1-5)
+  revision: number;        // R value (2-6)
+  keyLength: number;       // in bits (40-256)
+  ownerKey: Uint8Array;    // O value
+  userKey: Uint8Array;     // U value
+  ownerEncryption?: Uint8Array; // OE (R=6)
+  userEncryption?: Uint8Array;  // UE (R=6)
+  permissions: number;     // P value (signed 32-bit)
+  encryptMetadata: boolean;
+  fileId: Uint8Array;      // first element of /ID array in trailer
+}
+
+/** Result of a password authentication attempt. */
+export interface AuthResult {
+  authenticated: boolean;
+  isOwner: boolean;
+  permissions: number;
+  encryptionKey: Uint8Array;
+}
+
+/** Certificate-based encryption recipient info. */
+export interface CertificateRecipient {
+  certificate: Uint8Array;   // DER-encoded X.509 certificate
+  permissions: number;
+}
+
 /** Software Bill of Materials entry. */
 export interface SBOMEntry {
   name: string;
@@ -1659,6 +1709,84 @@ export class AgenticPDF {
    */
   isEncrypted(): boolean {
     return this.metadata?.isEncrypted || false;
+  }
+
+  /**
+   * Attempt to unlock a password-protected PDF.
+   * @returns true if authentication succeeded.
+   */
+  async unlock(password: string): Promise<boolean> {
+    if (!this.parser) return false;
+    const handler = this.parser.getSecurityHandler();
+    const encDict = this.parser.getEncryptionDict();
+    if (!handler || !encDict) return false;
+    const result = handler.authenticate(encDict, password);
+    if (result.authenticated) {
+      // Re-parse pages with decryption active
+      if (this.catalog && this.xrefTable) {
+        this.pageTree = await this.parser.parsePageTree(this.catalog);
+        this.pages.clear();
+        if (!this.options.lazyLoad && this.metadata) {
+          for (let i = 1; i <= this.metadata.pageCount; i++) {
+            this.pages.set(i, await this.parser.parsePage(i, this.pageTree));
+          }
+        }
+      }
+    }
+    return result.authenticated;
+  }
+
+  /**
+   * Get document permissions from the encryption dictionary.
+   * Returns an object describing which operations are allowed.
+   */
+  getPermissions(): { print: boolean; modify: boolean; extract: boolean; annotate: boolean; fillForms: boolean; accessibility: boolean; assemble: boolean; printHighQuality: boolean } {
+    const handler = this.parser?.getSecurityHandler();
+    if (!handler || !handler.isAuthenticated()) {
+      return { print: true, modify: true, extract: true, annotate: true, fillForms: true, accessibility: true, assemble: true, printHighQuality: true };
+    }
+    return {
+      print: handler.checkPermission(PDFPermission.Print),
+      modify: handler.checkPermission(PDFPermission.ModifyContents),
+      extract: handler.checkPermission(PDFPermission.ExtractContent),
+      annotate: handler.checkPermission(PDFPermission.Annotate),
+      fillForms: handler.checkPermission(PDFPermission.FillForms),
+      accessibility: handler.checkPermission(PDFPermission.ExtractForAccessibility),
+      assemble: handler.checkPermission(PDFPermission.Assemble),
+      printHighQuality: handler.checkPermission(PDFPermission.PrintHighQuality),
+    };
+  }
+
+  /**
+   * Check if a specific permission is granted.
+   */
+  checkPermission(permission: PDFPermission): boolean {
+    const handler = this.parser?.getSecurityHandler();
+    if (!handler || !handler.isAuthenticated()) return true;
+    return handler.checkPermission(permission);
+  }
+
+  /**
+   * Get the encryption algorithm used by this document.
+   */
+  getEncryptionAlgorithm(): EncryptionAlgorithm | null {
+    const handler = this.parser?.getSecurityHandler();
+    return handler?.getAlgorithm() || null;
+  }
+
+  /**
+   * Set a password on the document for encryption.
+   * For export via save(), this marks the document as encrypted.
+   */
+  setPassword(userPassword: string, ownerPassword?: string, permissions?: number): void {
+    if (!this.metadata) return;
+    this.metadata.isEncrypted = true;
+    // Store encryption intent for PDFWriter
+    (this as any)._encryptionConfig = {
+      userPassword,
+      ownerPassword: ownerPassword || userPassword,
+      permissions: permissions ?? 0xFFFFFFFC, // All permissions by default
+    };
   }
 
   /**
@@ -3783,6 +3911,8 @@ class PDFParser {
   private position: number = 0;
   private xrefTable?: XRefTable;
   private objectCache: Map<string, PDFObject> = new Map();
+  private securityHandler?: PDFSecurityHandler;
+  private encryptDict?: EncryptionDict;
 
   constructor(
     private buffer: ArrayBuffer,
@@ -3791,7 +3921,17 @@ class PDFParser {
     this.dataView = new DataView(buffer);
   }
 
-  async parseHeader(): Promise<string> {
+  /** Get the security handler (if encryption is present). */
+  getSecurityHandler(): PDFSecurityHandler | undefined {
+    return this.securityHandler;
+  }
+
+  /** Get the parsed encryption dictionary. */
+  getEncryptionDict(): EncryptionDict | undefined {
+    return this.encryptDict;
+  }
+
+    async parseHeader(): Promise<string> {
     const header = this.readString(0, 8);
     if (!header.startsWith('%PDF-')) {
       throw new Error('Invalid PDF header');
@@ -4166,9 +4306,27 @@ class PDFParser {
       }
     }
 
-    // Check for encryption
+    // Check for encryption and authenticate if password provided
     const encryptRef = trailer.entries.get('Encrypt');
     metadata.isEncrypted = encryptRef !== undefined;
+
+    if (encryptRef) {
+      const resolveRef = (objNum: number, genNum: number) =>
+        this.parseIndirectObject(objNum, genNum, xref);
+      const parsed = PDFSecurityHandler.parseEncryptDict(encryptRef as any, trailer as any, resolveRef as any);
+      if (parsed) {
+        this.encryptDict = parsed;
+        this.securityHandler = new PDFSecurityHandler();
+        const password = this.options.password || '';
+        const authResult = this.securityHandler.authenticate(parsed, password);
+        if (!authResult.authenticated && password === '') {
+          // Empty password didn't work — PDF requires a password
+          // Mark as encrypted but don't throw; caller can try unlock()
+        } else if (!authResult.authenticated) {
+          throw new Error('Invalid password for encrypted PDF');
+        }
+      }
+    }
 
     return metadata;
   }
@@ -5226,7 +5384,7 @@ class PDFParser {
       const streamKeyword = this.readString(this.position, 6);
       if (streamKeyword === 'stream') {
         // Parse stream
-        const streamObj = this.parseStream(obj);
+        const streamObj = this.parseStream(obj, objNum, genNum);
         this.objectCache.set(cacheKey, streamObj);
         return streamObj;
       }
@@ -5238,7 +5396,7 @@ class PDFParser {
     return obj;
   }
 
-  private parseStream(dict: PDFObject): PDFObject {
+  private parseStream(dict: PDFObject, objectNumber: number = 0, generationNumber: number = 0): PDFObject {
     if (dict.type !== PDFObjectType.Dictionary) {
       throw new Error('Stream must have dictionary');
     }
@@ -5300,6 +5458,11 @@ class PDFParser {
       } else {
         rawData = new Uint8Array(0);
       }
+    }
+
+    // Decrypt stream if encryption is active
+    if (this.securityHandler && this.securityHandler.isAuthenticated()) {
+      rawData = this.securityHandler.decryptStream(rawData, objectNumber, generationNumber);
     }
 
     // Decompress stream if needed
@@ -5685,6 +5848,956 @@ class PDFParser {
 // ============================================================================
 // Supporting Classes
 // ============================================================================
+
+// ============================================================================
+// PDF Encryption & Security Handlers
+// ============================================================================
+
+/**
+ * RC4 stream cipher (ARCFOUR) - used by PDF encryption V1-V3 (R2-R4).
+ * Operates on raw bytes with a key schedule (KSA + PRGA).
+ */
+class RC4Cipher {
+  private S: Uint8Array;
+  private i: number = 0;
+  private j: number = 0;
+
+  constructor(key: Uint8Array) {
+    // Key-Scheduling Algorithm (KSA)
+    this.S = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) this.S[i] = i;
+    let j = 0;
+    for (let i = 0; i < 256; i++) {
+      j = (j + this.S[i] + key[i % key.length]) & 0xFF;
+      [this.S[i], this.S[j]] = [this.S[j], this.S[i]];
+    }
+  }
+
+  /** Encrypt/decrypt data in-place (RC4 is symmetric). */
+  process(data: Uint8Array): Uint8Array {
+    const result = new Uint8Array(data.length);
+    let i = this.i;
+    let j = this.j;
+    const S = this.S;
+    for (let k = 0; k < data.length; k++) {
+      i = (i + 1) & 0xFF;
+      j = (j + S[i]) & 0xFF;
+      [S[i], S[j]] = [S[j], S[i]];
+      result[k] = data[k] ^ S[(S[i] + S[j]) & 0xFF];
+    }
+    this.i = i;
+    this.j = j;
+    return result;
+  }
+}
+
+/**
+ * AES cipher (128/256-bit) using Web Crypto API or pure-JS fallback.
+ * CBC mode with PKCS#7 padding as specified by PDF spec.
+ */
+class AESCipher {
+  /**
+   * Decrypt AES-CBC data. IV is the first 16 bytes of ciphertext.
+   */
+  static decrypt(key: Uint8Array, data: Uint8Array): Uint8Array {
+    if (data.length < 32) return data; // Need at least IV + 1 block
+    const iv = data.slice(0, 16);
+    const ciphertext = data.slice(16);
+    return AESCipher.decryptCBC(key, iv, ciphertext);
+  }
+
+  /**
+   * Encrypt AES-CBC data. Returns IV + ciphertext.
+   */
+  static encrypt(key: Uint8Array, plaintext: Uint8Array): Uint8Array {
+    // Generate random IV
+    const iv = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(iv);
+    } else {
+      for (let i = 0; i < 16; i++) iv[i] = Math.floor(Math.random() * 256);
+    }
+    const padded = AESCipher.pkcs7Pad(plaintext);
+    const encrypted = AESCipher.encryptCBC(key, iv, padded);
+    const result = new Uint8Array(16 + encrypted.length);
+    result.set(iv, 0);
+    result.set(encrypted, 16);
+    return result;
+  }
+
+  /**
+   * Pure-JS AES-CBC decryption (no dependencies).
+   */
+  private static decryptCBC(key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8Array {
+    const blockSize = 16;
+    if (data.length % blockSize !== 0) return data;
+    const expandedKey = AESCipher.expandKey(key);
+    const result = new Uint8Array(data.length);
+    let prevBlock = iv;
+
+    for (let offset = 0; offset < data.length; offset += blockSize) {
+      const block = data.slice(offset, offset + blockSize);
+      const decrypted = AESCipher.decryptBlock(block, expandedKey);
+      for (let i = 0; i < blockSize; i++) {
+        result[offset + i] = decrypted[i] ^ prevBlock[i];
+      }
+      prevBlock = block;
+    }
+
+    // Remove PKCS#7 padding
+    return AESCipher.pkcs7Unpad(result);
+  }
+
+  /**
+   * Pure-JS AES-CBC encryption.
+   */
+  private static encryptCBC(key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8Array {
+    const blockSize = 16;
+    const expandedKey = AESCipher.expandKey(key);
+    const result = new Uint8Array(data.length);
+    let prevBlock = iv;
+
+    for (let offset = 0; offset < data.length; offset += blockSize) {
+      const block = new Uint8Array(blockSize);
+      for (let i = 0; i < blockSize; i++) {
+        block[i] = data[offset + i] ^ prevBlock[i];
+      }
+      const encrypted = AESCipher.encryptBlock(block, expandedKey);
+      result.set(encrypted, offset);
+      prevBlock = encrypted;
+    }
+
+    return result;
+  }
+
+  // --- AES Core Operations ---
+
+  private static readonly SBOX = new Uint8Array([
+    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+  ]);
+
+  private static readonly INV_SBOX = new Uint8Array([
+    0x52,0x09,0x6a,0xd5,0x30,0x36,0xa5,0x38,0xbf,0x40,0xa3,0x9e,0x81,0xf3,0xd7,0xfb,
+    0x7c,0xe3,0x39,0x82,0x9b,0x2f,0xff,0x87,0x34,0x8e,0x43,0x44,0xc4,0xde,0xe9,0xcb,
+    0x54,0x7b,0x94,0x32,0xa6,0xc2,0x23,0x3d,0xee,0x4c,0x95,0x0b,0x42,0xfa,0xc3,0x4e,
+    0x08,0x2e,0xa1,0x66,0x28,0xd9,0x24,0xb2,0x76,0x5b,0xa2,0x49,0x6d,0x8b,0xd1,0x25,
+    0x72,0xf8,0xf6,0x64,0x86,0x68,0x98,0x16,0xd4,0xa4,0x5c,0xcc,0x5d,0x65,0xb6,0x92,
+    0x6c,0x70,0x48,0x50,0xfd,0xed,0xb9,0xda,0x5e,0x15,0x46,0x57,0xa7,0x8d,0x9d,0x84,
+    0x90,0xd8,0xab,0x00,0x8c,0xbc,0xd3,0x0a,0xf7,0xe4,0x58,0x05,0xb8,0xb3,0x45,0x06,
+    0xd0,0x2c,0x1e,0x8f,0xca,0x3f,0x0f,0x02,0xc1,0xaf,0xbd,0x03,0x01,0x13,0x8a,0x6b,
+    0x3a,0x91,0x11,0x41,0x4f,0x67,0xdc,0xea,0x97,0xf2,0xcf,0xce,0xf0,0xb4,0xe6,0x73,
+    0x96,0xac,0x74,0x22,0xe7,0xad,0x35,0x85,0xe2,0xf9,0x37,0xe8,0x1c,0x75,0xdf,0x6e,
+    0x47,0xf1,0x1a,0x71,0x1d,0x29,0xc5,0x89,0x6f,0xb7,0x62,0x0e,0xaa,0x18,0xbe,0x1b,
+    0xfc,0x56,0x3e,0x4b,0xc6,0xd2,0x79,0x20,0x9a,0xdb,0xc0,0xfe,0x78,0xcd,0x5a,0xf4,
+    0x1f,0xdd,0xa8,0x33,0x88,0x07,0xc7,0x31,0xb1,0x12,0x10,0x59,0x27,0x80,0xec,0x5f,
+    0x60,0x51,0x7f,0xa9,0x19,0xb5,0x4a,0x0d,0x2d,0xe5,0x7a,0x9f,0x93,0xc9,0x9c,0xef,
+    0xa0,0xe0,0x3b,0x4d,0xae,0x2a,0xf5,0xb0,0xc8,0xeb,0xbb,0x3c,0x83,0x53,0x99,0x61,
+    0x17,0x2b,0x04,0x7e,0xba,0x77,0xd6,0x26,0xe1,0x69,0x14,0x63,0x55,0x21,0x0c,0x7d
+  ]);
+
+  private static readonly RCON = [
+    0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36
+  ];
+
+  /** GF(2^8) multiplication used in MixColumns. */
+  private static gmul(a: number, b: number): number {
+    let result = 0;
+    let aa = a;
+    let bb = b;
+    for (let i = 0; i < 8; i++) {
+      if (bb & 1) result ^= aa;
+      const hiBit = aa & 0x80;
+      aa = (aa << 1) & 0xFF;
+      if (hiBit) aa ^= 0x1b;
+      bb >>= 1;
+    }
+    return result;
+  }
+
+  /** AES key expansion. Supports 128-bit (16 bytes) and 256-bit (32 bytes) keys. */
+  private static expandKey(key: Uint8Array): Uint8Array[] {
+    const keyLen = key.length;
+    const nk = keyLen / 4;
+    const nr = nk + 6; // 10 for AES-128, 14 for AES-256
+    const totalWords = (nr + 1) * 4;
+    const w = new Array<number>(totalWords * 4);
+
+    // Copy key into first Nk words
+    for (let i = 0; i < keyLen; i++) w[i] = key[i];
+
+    for (let i = nk; i < totalWords; i++) {
+      let t0 = w[(i - 1) * 4], t1 = w[(i - 1) * 4 + 1];
+      let t2 = w[(i - 1) * 4 + 2], t3 = w[(i - 1) * 4 + 3];
+
+      if (i % nk === 0) {
+        // RotWord + SubWord + Rcon
+        const tmp = t0;
+        t0 = AESCipher.SBOX[t1] ^ AESCipher.RCON[(i / nk) - 1];
+        t1 = AESCipher.SBOX[t2];
+        t2 = AESCipher.SBOX[t3];
+        t3 = AESCipher.SBOX[tmp];
+      } else if (nk > 6 && i % nk === 4) {
+        // Additional SubWord for AES-256
+        t0 = AESCipher.SBOX[t0];
+        t1 = AESCipher.SBOX[t1];
+        t2 = AESCipher.SBOX[t2];
+        t3 = AESCipher.SBOX[t3];
+      }
+
+      w[i * 4] = w[(i - nk) * 4] ^ t0;
+      w[i * 4 + 1] = w[(i - nk) * 4 + 1] ^ t1;
+      w[i * 4 + 2] = w[(i - nk) * 4 + 2] ^ t2;
+      w[i * 4 + 3] = w[(i - nk) * 4 + 3] ^ t3;
+    }
+
+    // Convert to round key arrays
+    const roundKeys: Uint8Array[] = [];
+    for (let r = 0; r <= nr; r++) {
+      roundKeys.push(new Uint8Array(w.slice(r * 16, r * 16 + 16)));
+    }
+    return roundKeys;
+  }
+
+  /** Decrypt a single 16-byte block. */
+  private static decryptBlock(block: Uint8Array, roundKeys: Uint8Array[]): Uint8Array {
+    const state = new Uint8Array(block);
+    const nr = roundKeys.length - 1;
+
+    // Initial round key addition
+    for (let i = 0; i < 16; i++) state[i] ^= roundKeys[nr][i];
+
+    for (let round = nr - 1; round >= 0; round--) {
+      // InvShiftRows
+      let tmp = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = tmp;
+      tmp = state[10]; state[10] = state[2]; state[2] = tmp; tmp = state[14]; state[14] = state[6]; state[6] = tmp;
+      tmp = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = tmp;
+
+      // InvSubBytes
+      for (let i = 0; i < 16; i++) state[i] = AESCipher.INV_SBOX[state[i]];
+
+      // AddRoundKey
+      for (let i = 0; i < 16; i++) state[i] ^= roundKeys[round][i];
+
+      // InvMixColumns (skip for last round)
+      if (round > 0) {
+        const s = new Uint8Array(16);
+        for (let col = 0; col < 4; col++) {
+          const c = col * 4;
+          s[c] = AESCipher.gmul(0x0e, state[c]) ^ AESCipher.gmul(0x0b, state[c+1]) ^ AESCipher.gmul(0x0d, state[c+2]) ^ AESCipher.gmul(0x09, state[c+3]);
+          s[c+1] = AESCipher.gmul(0x09, state[c]) ^ AESCipher.gmul(0x0e, state[c+1]) ^ AESCipher.gmul(0x0b, state[c+2]) ^ AESCipher.gmul(0x0d, state[c+3]);
+          s[c+2] = AESCipher.gmul(0x0d, state[c]) ^ AESCipher.gmul(0x09, state[c+1]) ^ AESCipher.gmul(0x0e, state[c+2]) ^ AESCipher.gmul(0x0b, state[c+3]);
+          s[c+3] = AESCipher.gmul(0x0b, state[c]) ^ AESCipher.gmul(0x0d, state[c+1]) ^ AESCipher.gmul(0x09, state[c+2]) ^ AESCipher.gmul(0x0e, state[c+3]);
+        }
+        state.set(s);
+      }
+    }
+    return state;
+  }
+
+  /** Encrypt a single 16-byte block. */
+  private static encryptBlock(block: Uint8Array, roundKeys: Uint8Array[]): Uint8Array {
+    const state = new Uint8Array(block);
+    const nr = roundKeys.length - 1;
+
+    // Initial round key addition
+    for (let i = 0; i < 16; i++) state[i] ^= roundKeys[0][i];
+
+    for (let round = 1; round <= nr; round++) {
+      // SubBytes
+      for (let i = 0; i < 16; i++) state[i] = AESCipher.SBOX[state[i]];
+
+      // ShiftRows
+      let tmp = state[1]; state[1] = state[5]; state[5] = state[9]; state[9] = state[13]; state[13] = tmp;
+      tmp = state[2]; state[2] = state[10]; state[10] = tmp; tmp = state[6]; state[6] = state[14]; state[14] = tmp;
+      tmp = state[15]; state[15] = state[11]; state[11] = state[7]; state[7] = state[3]; state[3] = tmp;
+
+      // MixColumns (skip for final round)
+      if (round < nr) {
+        const s = new Uint8Array(16);
+        for (let col = 0; col < 4; col++) {
+          const c = col * 4;
+          s[c] = AESCipher.gmul(2, state[c]) ^ AESCipher.gmul(3, state[c+1]) ^ state[c+2] ^ state[c+3];
+          s[c+1] = state[c] ^ AESCipher.gmul(2, state[c+1]) ^ AESCipher.gmul(3, state[c+2]) ^ state[c+3];
+          s[c+2] = state[c] ^ state[c+1] ^ AESCipher.gmul(2, state[c+2]) ^ AESCipher.gmul(3, state[c+3]);
+          s[c+3] = AESCipher.gmul(3, state[c]) ^ state[c+1] ^ state[c+2] ^ AESCipher.gmul(2, state[c+3]);
+        }
+        state.set(s);
+      }
+
+      // AddRoundKey
+      for (let i = 0; i < 16; i++) state[i] ^= roundKeys[round][i];
+    }
+    return state;
+  }
+
+  /** PKCS#7 padding. */
+  private static pkcs7Pad(data: Uint8Array): Uint8Array {
+    const padLen = 16 - (data.length % 16);
+    const padded = new Uint8Array(data.length + padLen);
+    padded.set(data);
+    for (let i = data.length; i < padded.length; i++) padded[i] = padLen;
+    return padded;
+  }
+
+  /** Remove PKCS#7 padding. */
+  private static pkcs7Unpad(data: Uint8Array): Uint8Array {
+    if (data.length === 0) return data;
+    const padLen = data[data.length - 1];
+    if (padLen < 1 || padLen > 16) return data;
+    // Validate padding bytes
+    for (let i = data.length - padLen; i < data.length; i++) {
+      if (data[i] !== padLen) return data;
+    }
+    return data.slice(0, data.length - padLen);
+  }
+}
+
+/**
+ * Minimal pure-JS MD5 implementation for PDF key derivation.
+ * PDF encryption uses MD5 extensively (Algorithm 2, 3, etc).
+ */
+class MD5 {
+  static hash(data: Uint8Array): Uint8Array {
+    const padded = MD5.pad(data);
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+    for (let offset = 0; offset < padded.length; offset += 64) {
+      const M = new Uint32Array(16);
+      for (let i = 0; i < 16; i++) {
+        M[i] = padded[offset + i * 4] |
+               (padded[offset + i * 4 + 1] << 8) |
+               (padded[offset + i * 4 + 2] << 16) |
+               (padded[offset + i * 4 + 3] << 24);
+      }
+
+      let a = a0, b = b0, c = c0, d = d0;
+
+      for (let i = 0; i < 64; i++) {
+        let f: number, g: number;
+        if (i < 16) {
+          f = (b & c) | (~b & d);
+          g = i;
+        } else if (i < 32) {
+          f = (d & b) | (~d & c);
+          g = (5 * i + 1) % 16;
+        } else if (i < 48) {
+          f = b ^ c ^ d;
+          g = (3 * i + 5) % 16;
+        } else {
+          f = c ^ (b | ~d);
+          g = (7 * i) % 16;
+        }
+
+        const temp = d;
+        d = c;
+        c = b;
+        const sum = (a + f + MD5.K[i] + M[g]) | 0;
+        b = (b + MD5.rotl(sum, MD5.S[i])) | 0;
+        a = temp;
+      }
+
+      a0 = (a0 + a) | 0;
+      b0 = (b0 + b) | 0;
+      c0 = (c0 + c) | 0;
+      d0 = (d0 + d) | 0;
+    }
+
+    const result = new Uint8Array(16);
+    MD5.putLE32(result, 0, a0);
+    MD5.putLE32(result, 4, b0);
+    MD5.putLE32(result, 8, c0);
+    MD5.putLE32(result, 12, d0);
+    return result;
+  }
+
+  private static rotl(x: number, n: number): number {
+    return ((x << n) | (x >>> (32 - n))) >>> 0;
+  }
+
+  private static putLE32(buf: Uint8Array, offset: number, val: number): void {
+    buf[offset] = val & 0xFF;
+    buf[offset + 1] = (val >>> 8) & 0xFF;
+    buf[offset + 2] = (val >>> 16) & 0xFF;
+    buf[offset + 3] = (val >>> 24) & 0xFF;
+  }
+
+  private static pad(data: Uint8Array): Uint8Array {
+    const len = data.length;
+    const paddedLen = ((len + 8) >>> 6) * 64 + 64;
+    const padded = new Uint8Array(paddedLen);
+    padded.set(data);
+    padded[len] = 0x80;
+    // Append original length in bits as 64-bit LE
+    const bitLen = len * 8;
+    padded[paddedLen - 8] = bitLen & 0xFF;
+    padded[paddedLen - 7] = (bitLen >>> 8) & 0xFF;
+    padded[paddedLen - 6] = (bitLen >>> 16) & 0xFF;
+    padded[paddedLen - 5] = (bitLen >>> 24) & 0xFF;
+    return padded;
+  }
+
+  private static readonly S = [
+    7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+    5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+    4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+    6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21
+  ];
+
+  private static readonly K = new Int32Array([
+    0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+    0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+    0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+    0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+    0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+    0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+    0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+    0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391
+  ]);
+}
+
+/**
+ * SHA-256 implementation for PDF 2.0 (AES-256, R=6) key derivation.
+ */
+class SHA256 {
+  static hash(data: Uint8Array): Uint8Array {
+    const H = new Uint32Array([
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]);
+
+    const padded = SHA256.pad(data);
+
+    for (let offset = 0; offset < padded.length; offset += 64) {
+      const W = new Uint32Array(64);
+      for (let i = 0; i < 16; i++) {
+        W[i] = (padded[offset + i * 4] << 24) |
+               (padded[offset + i * 4 + 1] << 16) |
+               (padded[offset + i * 4 + 2] << 8) |
+                padded[offset + i * 4 + 3];
+      }
+      for (let i = 16; i < 64; i++) {
+        const s0 = SHA256.rotr(W[i-15], 7) ^ SHA256.rotr(W[i-15], 18) ^ (W[i-15] >>> 3);
+        const s1 = SHA256.rotr(W[i-2], 17) ^ SHA256.rotr(W[i-2], 19) ^ (W[i-2] >>> 10);
+        W[i] = (W[i-16] + s0 + W[i-7] + s1) | 0;
+      }
+
+      let [a, b, c, d, e, f, g, h] = H;
+
+      for (let i = 0; i < 64; i++) {
+        const S1 = SHA256.rotr(e, 6) ^ SHA256.rotr(e, 11) ^ SHA256.rotr(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const temp1 = (h + S1 + ch + SHA256.K[i] + W[i]) | 0;
+        const S0 = SHA256.rotr(a, 2) ^ SHA256.rotr(a, 13) ^ SHA256.rotr(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const temp2 = (S0 + maj) | 0;
+
+        h = g; g = f; f = e; e = (d + temp1) | 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+      }
+
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0;
+      H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0;
+      H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+
+    const result = new Uint8Array(32);
+    for (let i = 0; i < 8; i++) {
+      result[i * 4] = (H[i] >>> 24) & 0xFF;
+      result[i * 4 + 1] = (H[i] >>> 16) & 0xFF;
+      result[i * 4 + 2] = (H[i] >>> 8) & 0xFF;
+      result[i * 4 + 3] = H[i] & 0xFF;
+    }
+    return result;
+  }
+
+  private static rotr(x: number, n: number): number {
+    return ((x >>> n) | (x << (32 - n))) >>> 0;
+  }
+
+  private static pad(data: Uint8Array): Uint8Array {
+    const len = data.length;
+    const paddedLen = ((len + 8) >>> 6) * 64 + 64;
+    const padded = new Uint8Array(paddedLen);
+    padded.set(data);
+    padded[len] = 0x80;
+    const bitLen = len * 8;
+    padded[paddedLen - 4] = (bitLen >>> 24) & 0xFF;
+    padded[paddedLen - 3] = (bitLen >>> 16) & 0xFF;
+    padded[paddedLen - 2] = (bitLen >>> 8) & 0xFF;
+    padded[paddedLen - 1] = bitLen & 0xFF;
+    return padded;
+  }
+
+  private static readonly K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ]);
+}
+
+/**
+ * PDF Standard Security Handler (ISO 32000-1 Section 7.6).
+ * Supports encryption algorithms V1-V5, revisions R2-R6.
+ * Handles password authentication, key derivation, and object decryption.
+ */
+class PDFSecurityHandler {
+  private encryptionKey?: Uint8Array;
+  private encryptDict?: EncryptionDict;
+  private isOwnerAuth: boolean = false;
+
+  /** Padding string used by PDF encryption (Algorithm 2). */
+  private static readonly PADDING = new Uint8Array([
+    0x28, 0xBF, 0x4E, 0x5E, 0x4D, 0x75, 0x8A, 0x41,
+    0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
+    0x2E, 0x2E, 0x00, 0xB6, 0xD0, 0x68, 0x3E, 0x80,
+    0x2F, 0x0C, 0xA9, 0xFE, 0x64, 0x53, 0x69, 0x7A
+  ]);
+
+  /** Parse the /Encrypt dictionary from a trailer. */
+  static parseEncryptDict(
+    encryptObj: { type: number; value: any },
+    trailer: { entries: Map<string, any> },
+    resolveRef: (objNum: number, genNum: number) => { type: number; value: any }
+  ): EncryptionDict | null {
+    let encDict: any;
+
+    // Resolve reference if needed
+    if (encryptObj.type === 5 /* Reference */) {
+      const ref = encryptObj.value;
+      const resolved = resolveRef(ref.objectNumber, ref.generationNumber);
+      if (resolved.type !== 3 /* Dictionary */) return null;
+      encDict = resolved.value;
+    } else if (encryptObj.type === 3 /* Dictionary */) {
+      encDict = encryptObj.value;
+    } else {
+      return null;
+    }
+
+    const getStr = (key: string): string => {
+      const v = encDict.entries.get(key);
+      return v ? String(v.value || '') : '';
+    };
+    const getNum = (key: string, def: number = 0): number => {
+      const v = encDict.entries.get(key);
+      return v && v.type === 1 /* Number */ ? (v.value as number) : def;
+    };
+    const getBytes = (key: string): Uint8Array => {
+      const v = encDict.entries.get(key);
+      if (!v) return new Uint8Array(0);
+      const s = String(v.value || '');
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xFF;
+      return bytes;
+    };
+
+    const filter = getStr('Filter');
+    if (filter !== 'Standard') return null; // Only Standard handler supported
+
+    const version = getNum('V', 0);
+    const revision = getNum('R', 2);
+    let keyLength = getNum('Length', 40);
+    if (keyLength > 32) keyLength = keyLength / 8; // Specified in bits, convert to bytes
+
+    // Extract file ID from trailer
+    let fileId = new Uint8Array(0);
+    const idObj = trailer.entries.get('ID');
+    if (idObj && idObj.type === 4 /* Array */) {
+      const arr = idObj.value as any[];
+      if (arr.length > 0) {
+        const first = arr[0];
+        const s = String(first.value || '');
+        fileId = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) fileId[i] = s.charCodeAt(i) & 0xFF;
+      }
+    }
+
+    // EncryptMetadata flag (default true)
+    const emObj = encDict.entries.get('EncryptMetadata');
+    const encryptMetadata = !emObj || emObj.value !== false;
+
+    return {
+      filter,
+      version,
+      revision,
+      keyLength,
+      ownerKey: getBytes('O'),
+      userKey: getBytes('U'),
+      ownerEncryption: version >= 5 ? getBytes('OE') : undefined,
+      userEncryption: version >= 5 ? getBytes('UE') : undefined,
+      permissions: getNum('P', 0),
+      encryptMetadata,
+      fileId,
+    };
+  }
+
+  /** Authenticate with a password. Returns the encryption key if successful. */
+  authenticate(encryptDict: EncryptionDict, password: string = ''): AuthResult {
+    this.encryptDict = encryptDict;
+
+    // Convert password to bytes (Latin-1 for R<=4, UTF-8 for R>=5)
+    const pwBytes = this.passwordToBytes(password, encryptDict.revision);
+
+    // Try user password first, then owner password
+    let result = this.tryUserPassword(encryptDict, pwBytes);
+    if (result.authenticated) {
+      this.encryptionKey = result.encryptionKey;
+      this.isOwnerAuth = false;
+      return result;
+    }
+
+    result = this.tryOwnerPassword(encryptDict, pwBytes);
+    if (result.authenticated) {
+      this.encryptionKey = result.encryptionKey;
+      this.isOwnerAuth = true;
+      return result;
+    }
+
+    return { authenticated: false, isOwner: false, permissions: 0, encryptionKey: new Uint8Array(0) };
+  }
+
+  /** Decrypt an object's data given its object/generation number. */
+  decryptObject(data: Uint8Array, objNum: number, genNum: number): Uint8Array {
+    if (!this.encryptionKey || !this.encryptDict) return data;
+    if (data.length === 0) return data;
+
+    const objKey = this.computeObjectKey(objNum, genNum);
+
+    if (this.encryptDict.version >= 4) {
+      // AES decryption
+      return AESCipher.decrypt(objKey, data);
+    } else {
+      // RC4 decryption
+      const rc4 = new RC4Cipher(objKey);
+      return rc4.process(data);
+    }
+  }
+
+  /** Decrypt a string value. */
+  decryptString(data: Uint8Array, objNum: number, genNum: number): Uint8Array {
+    return this.decryptObject(data, objNum, genNum);
+  }
+
+  /** Decrypt a stream's data. */
+  decryptStream(data: Uint8Array, objNum: number, genNum: number): Uint8Array {
+    return this.decryptObject(data, objNum, genNum);
+  }
+
+  /** Get the permissions from the encryption dictionary. */
+  getPermissions(): number {
+    return this.encryptDict?.permissions || 0;
+  }
+
+  /** Check if a specific permission is granted. */
+  checkPermission(perm: PDFPermission): boolean {
+    if (this.isOwnerAuth) return true; // Owner has all permissions
+    return (this.getPermissions() & perm) !== 0;
+  }
+
+  /** Get encryption algorithm info. */
+  getAlgorithm(): EncryptionAlgorithm | null {
+    if (!this.encryptDict) return null;
+    const { version, keyLength } = this.encryptDict;
+    if (version <= 1) return EncryptionAlgorithm.RC4_40;
+    if (version <= 3) return EncryptionAlgorithm.RC4_128;
+    if (version === 4) return EncryptionAlgorithm.AES_128;
+    if (version === 5) return EncryptionAlgorithm.AES_256;
+    return null;
+  }
+
+  /** Whether authentication succeeded. */
+  isAuthenticated(): boolean {
+    return this.encryptionKey !== undefined;
+  }
+
+  // --- Private Key Derivation ---
+
+  /** Convert password string to bytes per PDF spec. */
+  private passwordToBytes(password: string, revision: number): Uint8Array {
+    if (revision >= 5) {
+      // R5/R6: SASLprep (simplified: UTF-8)
+      return new TextEncoder().encode(password);
+    }
+    // R2-R4: Latin-1 encoding, padded/truncated to 32 bytes
+    const bytes = new Uint8Array(32);
+    const len = Math.min(password.length, 32);
+    for (let i = 0; i < len; i++) bytes[i] = password.charCodeAt(i) & 0xFF;
+    bytes.set(PDFSecurityHandler.PADDING.slice(0, 32 - len), len);
+    return bytes;
+  }
+
+  /**
+   * Compute encryption key (Algorithm 2 from PDF spec).
+   * Used for R2-R4 (Standard handler).
+   */
+  private computeEncryptionKey(encryptDict: EncryptionDict, password: Uint8Array): Uint8Array {
+    // Step a: password (already padded to 32 bytes)
+    const input = new Uint8Array(
+      password.length + encryptDict.ownerKey.length + 4 + encryptDict.fileId.length +
+      (encryptDict.encryptMetadata ? 0 : 4)
+    );
+    let offset = 0;
+    input.set(password, offset); offset += password.length;
+    // Step b: O value
+    input.set(encryptDict.ownerKey, offset); offset += encryptDict.ownerKey.length;
+    // Step c: P value (low-order 32 bits)
+    const p = encryptDict.permissions;
+    input[offset++] = p & 0xFF;
+    input[offset++] = (p >> 8) & 0xFF;
+    input[offset++] = (p >> 16) & 0xFF;
+    input[offset++] = (p >> 24) & 0xFF;
+    // Step d: file ID
+    input.set(encryptDict.fileId, offset); offset += encryptDict.fileId.length;
+    // Step e: if R>=4 and metadata is not encrypted
+    if (!encryptDict.encryptMetadata && encryptDict.revision >= 4) {
+      input[offset++] = 0xFF; input[offset++] = 0xFF;
+      input[offset++] = 0xFF; input[offset++] = 0xFF;
+    }
+
+    // Step f: MD5 hash
+    let hash = MD5.hash(input.slice(0, offset));
+
+    // Step g: For R>=3, re-hash 50 times
+    const keyLen = encryptDict.keyLength;
+    if (encryptDict.revision >= 3) {
+      for (let i = 0; i < 50; i++) {
+        hash = MD5.hash(hash.slice(0, keyLen));
+      }
+    }
+
+    return hash.slice(0, keyLen);
+  }
+
+  /**
+   * Try to authenticate with the user password (Algorithm 6).
+   */
+  private tryUserPassword(encryptDict: EncryptionDict, password: Uint8Array): AuthResult {
+    if (encryptDict.revision >= 5) {
+      return this.tryUserPasswordR5R6(encryptDict, password);
+    }
+
+    const key = this.computeEncryptionKey(encryptDict, password);
+
+    if (encryptDict.revision === 2) {
+      // Algorithm 4: encrypt padding with key, compare to U
+      const rc4 = new RC4Cipher(key);
+      const computed = rc4.process(new Uint8Array(PDFSecurityHandler.PADDING));
+      if (this.arraysEqual(computed, encryptDict.userKey.slice(0, 32))) {
+        return { authenticated: true, isOwner: false, permissions: encryptDict.permissions, encryptionKey: key };
+      }
+    } else {
+      // Algorithm 5: MD5(padding + fileID), then 20 rounds of RC4 with modified keys
+      const hashInput = new Uint8Array(32 + encryptDict.fileId.length);
+      hashInput.set(PDFSecurityHandler.PADDING);
+      hashInput.set(encryptDict.fileId, 32);
+      let hash = MD5.hash(hashInput);
+
+      const rc4 = new RC4Cipher(key);
+      hash = rc4.process(hash);
+
+      for (let i = 1; i <= 19; i++) {
+        const modKey = new Uint8Array(key.length);
+        for (let j = 0; j < key.length; j++) modKey[j] = key[j] ^ i;
+        const rc4i = new RC4Cipher(modKey);
+        hash = rc4i.process(hash);
+      }
+
+      // Compare first 16 bytes
+      if (this.arraysEqual(hash.slice(0, 16), encryptDict.userKey.slice(0, 16))) {
+        return { authenticated: true, isOwner: false, permissions: encryptDict.permissions, encryptionKey: key };
+      }
+    }
+
+    return { authenticated: false, isOwner: false, permissions: 0, encryptionKey: new Uint8Array(0) };
+  }
+
+  /**
+   * Try user password for R5/R6 (AES-256, Algorithm 2.A/2.B from ISO 32000-2).
+   */
+  private tryUserPasswordR5R6(encryptDict: EncryptionDict, password: Uint8Array): AuthResult {
+    // U = 32-byte hash + 8-byte validation salt + 8-byte key salt
+    const uHash = encryptDict.userKey.slice(0, 32);
+    const uValidationSalt = encryptDict.userKey.slice(32, 40);
+
+    // Compute hash: SHA-256(password + validation salt)
+    const input = new Uint8Array(password.length + 8);
+    input.set(password);
+    input.set(uValidationSalt, password.length);
+    const computed = SHA256.hash(input);
+
+    if (!this.arraysEqual(computed, uHash)) {
+      return { authenticated: false, isOwner: false, permissions: 0, encryptionKey: new Uint8Array(0) };
+    }
+
+    // Derive the file encryption key from UE
+    const uKeySalt = encryptDict.userKey.slice(40, 48);
+    const keyInput = new Uint8Array(password.length + 8);
+    keyInput.set(password);
+    keyInput.set(uKeySalt, password.length);
+    const keyHash = SHA256.hash(keyInput);
+
+    // Decrypt UE with keyHash using AES-CBC with zero IV
+    const ue = encryptDict.userEncryption || new Uint8Array(32);
+    const zeroIV = new Uint8Array(16);
+    const ueWithIV = new Uint8Array(16 + ue.length);
+    ueWithIV.set(zeroIV);
+    ueWithIV.set(ue, 16);
+    const fileKey = AESCipher.decrypt(keyHash, ueWithIV);
+
+    return { authenticated: true, isOwner: false, permissions: encryptDict.permissions, encryptionKey: fileKey.slice(0, 32) };
+  }
+
+  /**
+   * Try to authenticate with the owner password (Algorithm 7).
+   */
+  private tryOwnerPassword(encryptDict: EncryptionDict, password: Uint8Array): AuthResult {
+    if (encryptDict.revision >= 5) {
+      return this.tryOwnerPasswordR5R6(encryptDict, password);
+    }
+
+    // Algorithm 3: recover user password from O value
+    // Step a: pad password
+    const paddedPw = new Uint8Array(32);
+    const len = Math.min(password.length, 32);
+    paddedPw.set(password.slice(0, len));
+    paddedPw.set(PDFSecurityHandler.PADDING.slice(0, 32 - len), len);
+
+    // Step b: MD5 hash
+    let hash = MD5.hash(paddedPw);
+
+    // Step c: for R>=3, re-hash 50 times
+    const keyLen = encryptDict.keyLength;
+    if (encryptDict.revision >= 3) {
+      for (let i = 0; i < 50; i++) {
+        hash = MD5.hash(hash.slice(0, keyLen));
+      }
+    }
+    const ownerKey = hash.slice(0, keyLen);
+
+    // Step d/e: decrypt O value
+    let decrypted: Uint8Array = Uint8Array.from(encryptDict.ownerKey);
+    if (encryptDict.revision === 2) {
+      const rc4 = new RC4Cipher(ownerKey);
+      decrypted = Uint8Array.from(rc4.process(decrypted));
+    } else {
+      // R>=3: 20 rounds in reverse
+      for (let i = 19; i >= 0; i--) {
+        const modKey = new Uint8Array(ownerKey.length);
+        for (let j = 0; j < ownerKey.length; j++) modKey[j] = ownerKey[j] ^ i;
+        const rc4 = new RC4Cipher(modKey);
+        decrypted = Uint8Array.from(rc4.process(decrypted));
+      }
+    }
+
+    // decrypted is now the padded user password — try it
+    const result = this.tryUserPassword(encryptDict, decrypted);
+    if (result.authenticated) {
+      return { ...result, isOwner: true };
+    }
+    return { authenticated: false, isOwner: false, permissions: 0, encryptionKey: new Uint8Array(0) };
+  }
+
+  /**
+   * Try owner password for R5/R6 (AES-256).
+   */
+  private tryOwnerPasswordR5R6(encryptDict: EncryptionDict, password: Uint8Array): AuthResult {
+    const oHash = encryptDict.ownerKey.slice(0, 32);
+    const oValidationSalt = encryptDict.ownerKey.slice(32, 40);
+
+    // SHA-256(password + validation salt + U)
+    const input = new Uint8Array(password.length + 8 + 48);
+    input.set(password);
+    input.set(oValidationSalt, password.length);
+    input.set(encryptDict.userKey.slice(0, 48), password.length + 8);
+    const computed = SHA256.hash(input);
+
+    if (!this.arraysEqual(computed, oHash)) {
+      return { authenticated: false, isOwner: false, permissions: 0, encryptionKey: new Uint8Array(0) };
+    }
+
+    // Derive file encryption key from OE
+    const oKeySalt = encryptDict.ownerKey.slice(40, 48);
+    const keyInput = new Uint8Array(password.length + 8 + 48);
+    keyInput.set(password);
+    keyInput.set(oKeySalt, password.length);
+    keyInput.set(encryptDict.userKey.slice(0, 48), password.length + 8);
+    const keyHash = SHA256.hash(keyInput);
+
+    const oe = encryptDict.ownerEncryption || new Uint8Array(32);
+    const zeroIV = new Uint8Array(16);
+    const oeWithIV = new Uint8Array(16 + oe.length);
+    oeWithIV.set(zeroIV);
+    oeWithIV.set(oe, 16);
+    const fileKey = AESCipher.decrypt(keyHash, oeWithIV);
+
+    return { authenticated: true, isOwner: true, permissions: encryptDict.permissions, encryptionKey: fileKey.slice(0, 32) };
+  }
+
+  /**
+   * Compute per-object encryption key (Algorithm 1 from PDF spec).
+   */
+  private computeObjectKey(objNum: number, genNum: number): Uint8Array {
+    if (!this.encryptionKey || !this.encryptDict) return new Uint8Array(0);
+
+    if (this.encryptDict.version >= 5) {
+      // AES-256: use file encryption key directly
+      return this.encryptionKey;
+    }
+
+    // Algorithm 1: MD5(key + objNum(3 bytes LE) + genNum(2 bytes LE) [+ "sAlT" for AES])
+    const isAES = this.encryptDict.version === 4;
+    const extra = isAES ? 4 : 0;
+    const input = new Uint8Array(this.encryptionKey.length + 5 + extra);
+    input.set(this.encryptionKey);
+    const keyLen = this.encryptionKey.length;
+    input[keyLen] = objNum & 0xFF;
+    input[keyLen + 1] = (objNum >> 8) & 0xFF;
+    input[keyLen + 2] = (objNum >> 16) & 0xFF;
+    input[keyLen + 3] = genNum & 0xFF;
+    input[keyLen + 4] = (genNum >> 8) & 0xFF;
+
+    if (isAES) {
+      // AES-128 uses "sAlT" suffix
+      input[keyLen + 5] = 0x73; // s
+      input[keyLen + 6] = 0x41; // A
+      input[keyLen + 7] = 0x6C; // l
+      input[keyLen + 8] = 0x54; // T
+    }
+
+    const hash = MD5.hash(input);
+    // Key length is min(n+5, 16)
+    const objKeyLen = Math.min(keyLen + 5, 16);
+    return hash.slice(0, objKeyLen);
+  }
+
+  /** Constant-time(ish) array comparison. */
+  private arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    return diff === 0;
+  }
+}
 
 /**
  * Built-in DEFLATE decompressor (RFC 1951)
