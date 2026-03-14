@@ -195,14 +195,14 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] Glossary override support for domain-specific term translation
 - [x] Abort signal and progress callback on all operations
 
-### Phase 17 — Advanced Text & Layout
+### Phase 17 — Advanced Text & Layout ✅
 
-- [ ] Multi-column layout detection
-- [ ] Table structure extraction (rows, cells, headers)
-- [ ] Reading order reconstruction
-- [ ] Ligature and complex script handling
-- [ ] Vertical text rendering (CJK)
-- [ ] Right-to-left text (Arabic, Hebrew)
+- [x] Multi-column layout detection
+- [x] Table structure extraction (rows, cells, headers)
+- [x] Reading order reconstruction
+- [x] Ligature and complex script handling
+- [x] Vertical text rendering (CJK)
+- [x] Right-to-left text (Arabic, Hebrew)
 
 ### Phase 18 — Encryption & Security
 

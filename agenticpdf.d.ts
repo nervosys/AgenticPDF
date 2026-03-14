@@ -867,6 +867,20 @@ export declare class AgenticPDF {
     exportTranslation(provider: TranslationProvider, options: TranslationOptions & { format?: 'text' | 'json' | 'srt' }): Promise<string>;
 
     /**
+     * Analyze document layout: columns, tables, reading order, vertical/RTL text
+     */
+    analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
+        pages: Array<{
+            pageNumber: number;
+            columns: Array<{ x: number; width: number; blockCount: number }>;
+            tables: Table[];
+            readingOrder: TextContent[];
+            verticalTextBlocks: TextContent[];
+            rtlBlocks: TextContent[];
+        }>;
+    }>;
+
+    /**
      * Describes the loaded document's available operations and recommended workflows
      */
     describeDocument(): DocumentCapabilityReport | undefined;

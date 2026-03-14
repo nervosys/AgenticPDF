@@ -3283,6 +3283,75 @@ export class AgenticPDF {
   }
 
   // ==========================================================================
+  // Advanced Text & Layout Analysis
+  // ==========================================================================
+
+  /**
+   * Analyze page layout to detect columns, tables, and reading order.
+   * Returns structured layout information for each page.
+   */
+  async analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
+    pages: Array<{
+      pageNumber: number;
+      columns: Array<{ x: number; width: number; blockCount: number }>;
+      tables: Table[];
+      readingOrder: TextContent[];
+      verticalTextBlocks: TextContent[];
+      rtlBlocks: TextContent[];
+    }>;
+  }> {
+    const result: {
+      pages: Array<{
+        pageNumber: number;
+        columns: Array<{ x: number; width: number; blockCount: number }>;
+        tables: Table[];
+        readingOrder: TextContent[];
+        verticalTextBlocks: TextContent[];
+        rtlBlocks: TextContent[];
+      }>;
+    } = { pages: [] };
+
+    const pageCount = this.getPageCount();
+    const startPage = pageRange?.start ?? 1;
+    const endPage = pageRange?.end ?? pageCount;
+
+    for (let p = startPage; p <= endPage; p++) {
+      const page = await this.getPage(p);
+      if (!page) continue;
+
+      const blocks = await this.extractText({ pageRange: { start: p, end: p } });
+      const pageWidth = page.width || 612;
+
+      // Column detection
+      const columns = LayoutAnalyzer.detectColumns(blocks, pageWidth);
+
+      // Table detection
+      const tables = LayoutAnalyzer.detectTables(blocks, p);
+
+      // Reading order reconstruction
+      const readingOrder = LayoutAnalyzer.reconstructReadingOrder(blocks, pageWidth);
+
+      // Vertical CJK text detection
+      const { vertical, horizontal: _ } = LayoutAnalyzer.detectVerticalText(blocks);
+
+      // RTL text detection
+      const rtlBlocks = blocks.filter(b => LayoutAnalyzer.detectTextDirection(b.text) === 'rtl');
+
+      result.pages.push({
+        pageNumber: p,
+        columns: columns.map(c => ({ x: c.x, width: c.width, blockCount: c.blocks.length })),
+        tables,
+        readingOrder,
+        verticalTextBlocks: vertical,
+        rtlBlocks
+      });
+    }
+
+    return result;
+  }
+
+
+  // ==========================================================================
   // Real-Time Translation & Text-to-Speech
   // ==========================================================================
 
@@ -6135,7 +6204,29 @@ class TextExtractor {
     for (let i = 1; i <= metadata.pageCount; i++) {
       const page = await this.pdf.getPage(i);
       if (page) {
-        const pageText = await this.extractPageText(page);
+        let pageText = await this.extractPageText(page);
+
+        // Decompose ligatures
+        pageText = pageText.map(b => ({ ...b, text: LayoutAnalyzer.decomposeLigatures(b.text) }));
+
+        // Detect text direction (RTL/LTR)
+        pageText = pageText.map(b => ({
+          ...b,
+          direction: LayoutAnalyzer.detectTextDirection(b.text)
+        }));
+
+        // Detect and label vertical CJK text
+        if (pageText.some(b => b.direction === 'ltr' || b.direction === 'rtl')) {
+          const { vertical, horizontal } = LayoutAnalyzer.detectVerticalText(pageText);
+          pageText = [...horizontal, ...vertical];
+        }
+
+        // Multi-column reading order reconstruction
+        if (this.options?.detectColumns) {
+          const pageWidth = page.width || 612;
+          pageText = LayoutAnalyzer.reconstructReadingOrder(pageText, pageWidth);
+        }
+
         results.push(...pageText);
       }
     }
@@ -6434,6 +6525,456 @@ class TextExtractor {
     return merged;
   }
 }
+
+
+// ============================================================================
+// Layout Analysis Engine — Multi-Column, Table, Reading Order
+// ============================================================================
+
+/** Represents a detected column region on a page. */
+interface ColumnRegion {
+  x: number;
+  width: number;
+  blocks: TextContent[];
+}
+
+/** Represents a detected text line from multiple text blocks. */
+interface TextLine {
+  y: number;
+  blocks: TextContent[];
+  minX: number;
+  maxX: number;
+  pageNumber: number;
+}
+
+class LayoutAnalyzer {
+  /**
+   * Detect multi-column layout from text blocks.
+   * Uses gap analysis: finds significant vertical gaps in content to split columns.
+   */
+  static detectColumns(blocks: TextContent[], pageWidth: number): ColumnRegion[] {
+    if (blocks.length < 2) {
+      return [{ x: 0, width: pageWidth, blocks }];
+    }
+
+    // Collect all x-positions to build a horizontal density histogram
+    const margin = 20;
+    const binSize = 5;
+    const binCount = Math.ceil(pageWidth / binSize);
+    const density = new Float32Array(binCount);
+
+    for (const b of blocks) {
+      const startBin = Math.max(0, Math.floor(b.x / binSize));
+      const endBin = Math.min(binCount - 1, Math.floor((b.x + b.width) / binSize));
+      for (let i = startBin; i <= endBin; i++) {
+        density[i]++;
+      }
+    }
+
+    // Find gaps: contiguous runs of zero density wider than a threshold
+    const minGapWidth = 20; // Minimum gap in points to qualify as column separator
+    const gaps: { start: number; end: number; center: number }[] = [];
+    let gapStart = -1;
+
+    for (let i = 0; i < binCount; i++) {
+      const x = i * binSize;
+      if (x < margin || x > pageWidth - margin) continue;
+
+      if (density[i] === 0) {
+        if (gapStart < 0) gapStart = i;
+      } else {
+        if (gapStart >= 0) {
+          const gapWidth = (i - gapStart) * binSize;
+          if (gapWidth >= minGapWidth) {
+            gaps.push({
+              start: gapStart * binSize,
+              end: i * binSize,
+              center: ((gapStart + i) / 2) * binSize
+            });
+          }
+          gapStart = -1;
+        }
+      }
+    }
+
+    if (gaps.length === 0) {
+      return [{ x: 0, width: pageWidth, blocks }];
+    }
+
+    // Build column regions from gap positions
+    const boundaries = [0, ...gaps.map(g => g.center), pageWidth];
+    const columns: ColumnRegion[] = [];
+
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const colX = boundaries[i];
+      const colW = boundaries[i + 1] - colX;
+      const colBlocks = blocks.filter(b => {
+        const bCenter = b.x + b.width / 2;
+        return bCenter >= colX && bCenter < colX + colW;
+      });
+      if (colBlocks.length > 0) {
+        columns.push({ x: colX, width: colW, blocks: colBlocks });
+      }
+    }
+
+    return columns.length > 0 ? columns : [{ x: 0, width: pageWidth, blocks }];
+  }
+
+  /**
+   * Reconstruct reading order from text blocks.
+   * For multi-column layouts: reads column 1 top-to-bottom, then column 2, etc.
+   * For single column: reads top-to-bottom, left-to-right within each line.
+   */
+  static reconstructReadingOrder(blocks: TextContent[], pageWidth: number): TextContent[] {
+    if (blocks.length <= 1) return blocks;
+
+    const columns = LayoutAnalyzer.detectColumns(blocks, pageWidth);
+
+    if (columns.length <= 1) {
+      // Single column: sort top-to-bottom, then left-to-right
+      return LayoutAnalyzer.sortBlocksNatural(blocks);
+    }
+
+    // Multi-column: sort columns left-to-right, then each column top-to-bottom
+    columns.sort((a, b) => a.x - b.x);
+    const ordered: TextContent[] = [];
+    for (const col of columns) {
+      ordered.push(...LayoutAnalyzer.sortBlocksNatural(col.blocks));
+    }
+    return ordered;
+  }
+
+  /** Sort blocks in natural reading order: top-to-bottom, left-to-right within lines. */
+  static sortBlocksNatural(blocks: TextContent[]): TextContent[] {
+    if (blocks.length <= 1) return [...blocks];
+
+    // Group into lines (blocks with similar Y coordinates)
+    const lines = LayoutAnalyzer.groupIntoLines(blocks);
+
+    // Sort lines top-to-bottom (ascending Y since Y is flipped), then blocks left-to-right
+    lines.sort((a, b) => a.y - b.y);
+    const result: TextContent[] = [];
+    for (const line of lines) {
+      line.blocks.sort((a, b) => a.x - b.x);
+      result.push(...line.blocks);
+    }
+    return result;
+  }
+
+  /** Group text blocks into horizontal lines based on Y-coordinate proximity. */
+  static groupIntoLines(blocks: TextContent[]): TextLine[] {
+    if (blocks.length === 0) return [];
+
+    const sorted = [...blocks].sort((a, b) => a.y - b.y);
+    const lines: TextLine[] = [];
+    let currentLine: TextLine = {
+      y: sorted[0].y,
+      blocks: [sorted[0]],
+      minX: sorted[0].x,
+      maxX: sorted[0].x + sorted[0].width,
+      pageNumber: sorted[0].pageNumber
+    };
+
+    for (let i = 1; i < sorted.length; i++) {
+      const b = sorted[i];
+      const lineThreshold = Math.max(currentLine.blocks[0].fontSize * 0.4, 3);
+
+      if (Math.abs(b.y - currentLine.y) <= lineThreshold && b.pageNumber === currentLine.pageNumber) {
+        currentLine.blocks.push(b);
+        currentLine.minX = Math.min(currentLine.minX, b.x);
+        currentLine.maxX = Math.max(currentLine.maxX, b.x + b.width);
+      } else {
+        lines.push(currentLine);
+        currentLine = {
+          y: b.y,
+          blocks: [b],
+          minX: b.x,
+          maxX: b.x + b.width,
+          pageNumber: b.pageNumber
+        };
+      }
+    }
+    lines.push(currentLine);
+    return lines;
+  }
+
+  /**
+   * Detect tables from text blocks using alignment analysis.
+   * Finds groups of text that form grid patterns (aligned columns and rows).
+   */
+  static detectTables(blocks: TextContent[], pageNumber: number): Table[] {
+    if (blocks.length < 4) return []; // Need at least 2x2 for a table
+
+    const lines = LayoutAnalyzer.groupIntoLines(blocks);
+    if (lines.length < 2) return [];
+
+    // Find column anchors: X positions where text starts across multiple lines
+    const xPositions: number[] = [];
+    for (const line of lines) {
+      for (const b of line.blocks) {
+        xPositions.push(Math.round(b.x));
+      }
+    }
+
+    // Count frequency of each rounded X position
+    const xFreq = new Map<number, number>();
+    const snapTolerance = 5;
+    for (const x of xPositions) {
+      const snapped = Math.round(x / snapTolerance) * snapTolerance;
+      xFreq.set(snapped, (xFreq.get(snapped) || 0) + 1);
+    }
+
+    // Column anchors: X positions that appear in many lines (> 30% of lines)
+    const minFreq = Math.max(2, Math.floor(lines.length * 0.3));
+    const columnAnchors = [...xFreq.entries()]
+      .filter(([_, freq]) => freq >= minFreq)
+      .map(([x]) => x)
+      .sort((a, b) => a - b);
+
+    if (columnAnchors.length < 2) return []; // Need at least 2 column anchors
+
+    // Merge close anchors
+    const mergedAnchors: number[] = [columnAnchors[0]];
+    for (let i = 1; i < columnAnchors.length; i++) {
+      if (columnAnchors[i] - mergedAnchors[mergedAnchors.length - 1] > snapTolerance * 3) {
+        mergedAnchors.push(columnAnchors[i]);
+      }
+    }
+
+    if (mergedAnchors.length < 2) return [];
+
+    // Find runs of consecutive lines that have blocks aligned to the column anchors
+    const tables: Table[] = [];
+    let tableStartIdx = -1;
+    let tableLines: TextLine[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Count how many column anchors this line's blocks align to
+      let alignedCols = 0;
+      for (const anchor of mergedAnchors) {
+        const hasBlock = line.blocks.some(b => Math.abs(Math.round(b.x / snapTolerance) * snapTolerance - anchor) <= snapTolerance);
+        if (hasBlock) alignedCols++;
+      }
+
+      const isTableRow = alignedCols >= 2;
+
+      if (isTableRow) {
+        if (tableStartIdx < 0) tableStartIdx = i;
+        tableLines.push(line);
+      } else {
+        if (tableLines.length >= 2) {
+          const table = LayoutAnalyzer.buildTable(tableLines, mergedAnchors, pageNumber, tables.length);
+          if (table) tables.push(table);
+        }
+        tableStartIdx = -1;
+        tableLines = [];
+      }
+    }
+
+    // Handle table at end of page
+    if (tableLines.length >= 2) {
+      const table = LayoutAnalyzer.buildTable(tableLines, mergedAnchors, pageNumber, tables.length);
+      if (table) tables.push(table);
+    }
+
+    return tables;
+  }
+
+  /** Build a Table object from detected table lines and column anchors. */
+  private static buildTable(lines: TextLine[], anchors: number[], pageNumber: number, tableIdx: number): Table | null {
+    const numCols = anchors.length;
+    const numRows = lines.length;
+    const cells: TableCell[][] = [];
+
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+
+    for (let row = 0; row < numRows; row++) {
+      const rowCells: TableCell[] = [];
+      const line = lines[row];
+
+      for (let col = 0; col < numCols; col++) {
+        const anchorX = anchors[col];
+        const nextAnchorX = col < numCols - 1 ? anchors[col + 1] : anchorX + 200;
+
+        // Find blocks that belong to this cell
+        const cellBlocks = line.blocks.filter(b => {
+          const bx = Math.round(b.x / 5) * 5;
+          return bx >= anchorX - 5 && bx < nextAnchorX - 5;
+        });
+
+        const cellText = cellBlocks.map(b => b.text).join(' ').trim();
+        const isHeader = row === 0;
+
+        let cellBox: Rectangle | undefined;
+        if (cellBlocks.length > 0) {
+          const cx = Math.min(...cellBlocks.map(b => b.x));
+          const cy = Math.min(...cellBlocks.map(b => b.y));
+          const cx2 = Math.max(...cellBlocks.map(b => b.x + b.width));
+          const cy2 = Math.max(...cellBlocks.map(b => b.y + b.height));
+          cellBox = { x: cx, y: cy, width: cx2 - cx, height: cy2 - cy };
+          minX = Math.min(minX, cx);
+          minY = Math.min(minY, cy);
+          maxX = Math.max(maxX, cx2);
+          maxY = Math.max(maxY, cy2);
+        }
+
+        rowCells.push({
+          rowSpan: 1,
+          colSpan: 1,
+          text: cellText,
+          isHeader,
+          boundingBox: cellBox
+        });
+      }
+      cells.push(rowCells);
+    }
+
+    if (cells.length < 2) return null;
+
+    const headers = cells[0].map(c => c.text);
+
+    return {
+      id: `table_${pageNumber}_${tableIdx}`,
+      pageNumber,
+      boundingBox: {
+        x: isFinite(minX) ? minX : 0,
+        y: isFinite(minY) ? minY : 0,
+        width: isFinite(maxX - minX) ? maxX - minX : 0,
+        height: isFinite(maxY - minY) ? maxY - minY : 0
+      },
+      rows: numRows,
+      columns: numCols,
+      cells,
+      headers
+    };
+  }
+
+  /**
+   * Detect vertical text (CJK vertical writing mode).
+   * Vertical text has blocks where Y changes rapidly but X stays constant.
+   */
+  static detectVerticalText(blocks: TextContent[]): { vertical: TextContent[]; horizontal: TextContent[] } {
+    const vertical: TextContent[] = [];
+    const horizontal: TextContent[] = [];
+
+    // CJK Unicode ranges
+    const isCJK = (text: string): boolean => {
+      for (let i = 0; i < text.length; i++) {
+        const cp = text.codePointAt(i)!;
+        if ((cp >= 0x4E00 && cp <= 0x9FFF) ||   // CJK Unified Ideographs
+            (cp >= 0x3400 && cp <= 0x4DBF) ||   // CJK Extension A
+            (cp >= 0x3040 && cp <= 0x309F) ||   // Hiragana
+            (cp >= 0x30A0 && cp <= 0x30FF) ||   // Katakana
+            (cp >= 0xAC00 && cp <= 0xD7AF)) {   // Hangul
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Group by similar X to detect vertical runs
+    const xThreshold = 5;
+    const xGroups = new Map<number, TextContent[]>();
+    for (const b of blocks) {
+      if (!isCJK(b.text)) {
+        horizontal.push(b);
+        continue;
+      }
+      const key = Math.round(b.x / xThreshold);
+      const group = xGroups.get(key) || [];
+      group.push(b);
+      xGroups.set(key, group);
+    }
+
+    for (const [_, group] of xGroups) {
+      if (group.length >= 3) {
+        // Check if blocks form a vertical column (sorted by Y, single-char each)
+        const sorted = [...group].sort((a, b) => a.y - b.y);
+        const avgCharsPerBlock = sorted.reduce((s, b) => s + b.text.length, 0) / sorted.length;
+        if (avgCharsPerBlock <= 2) {
+          // Mark as vertical and update direction
+          for (const b of sorted) {
+            vertical.push({ ...b, direction: 'ttb' });
+          }
+          continue;
+        }
+      }
+      horizontal.push(...group);
+    }
+
+    return { vertical, horizontal };
+  }
+
+  /**
+   * Detect RTL text direction for a text block.
+   * Returns 'rtl' if the majority of characters are in RTL scripts.
+   */
+  static detectTextDirection(text: string): 'ltr' | 'rtl' {
+    let rtlCount = 0;
+    let ltrCount = 0;
+
+    for (let i = 0; i < text.length; i++) {
+      const cp = text.codePointAt(i)!;
+      if (cp > 0xFFFF) { i++; } // Skip surrogate pair
+
+      if ((cp >= 0x0590 && cp <= 0x05FF) ||   // Hebrew
+          (cp >= 0x0600 && cp <= 0x06FF) ||   // Arabic
+          (cp >= 0x0700 && cp <= 0x074F) ||   // Syriac
+          (cp >= 0x0780 && cp <= 0x07BF) ||   // Thaana
+          (cp >= 0x08A0 && cp <= 0x08FF) ||   // Arabic Extended-A
+          (cp >= 0xFB50 && cp <= 0xFDFF) ||   // Arabic Presentation Forms-A
+          (cp >= 0xFE70 && cp <= 0xFEFF)) {   // Arabic Presentation Forms-B
+        rtlCount++;
+      } else if ((cp >= 0x0041 && cp <= 0x005A) || // Latin uppercase
+                 (cp >= 0x0061 && cp <= 0x007A) || // Latin lowercase
+                 (cp >= 0x00C0 && cp <= 0x024F)) { // Latin Extended
+        ltrCount++;
+      }
+    }
+
+    return rtlCount > ltrCount ? 'rtl' : 'ltr';
+  }
+
+  /**
+   * Decompose common ligatures into their constituent characters.
+   */
+  static decomposeLigatures(text: string): string {
+    // Standard ligatures
+    const ligatureMap: Record<string, string> = {
+      '\uFB00': 'ff',
+      '\uFB01': 'fi',
+      '\uFB02': 'fl',
+      '\uFB03': 'ffi',
+      '\uFB04': 'ffl',
+      '\uFB05': 'st',  // ſt (long s + t)
+      '\uFB06': 'st',
+      // Latin ligatures
+      '\u0132': 'IJ',
+      '\u0133': 'ij',
+      '\u0152': 'OE',
+      '\u0153': 'oe',
+      '\u00C6': 'AE',
+      '\u00E6': 'ae',
+      // German
+      '\u1E9E': 'SS',
+      '\u00DF': 'ss',
+    };
+
+    let result = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const replacement = ligatureMap[ch];
+      if (replacement) {
+        result += replacement;
+      } else {
+        result += ch;
+      }
+    }
+    return result;
+  }
+}
+
 
 class ContentStreamParser {
   private position: number = 0;
@@ -7558,10 +8099,18 @@ class AIAnalyzer {
   }
 
   private async extractTables(): Promise<Table[]> {
-    const tables: Table[] = [];
-    // Table extraction logic would go here
-    // This would analyze page layout to detect tabular structures
-    return tables;
+    const allTables: Table[] = [];
+    const metadata = this.pdf.getMetadata();
+    if (!metadata) return allTables;
+
+    for (let p = 1; p <= metadata.pageCount; p++) {
+      const pageText = await this.pdf.extractText({ pageRange: { start: p, end: p } });
+      if (pageText.length >= 4) {
+        const pageTables = LayoutAnalyzer.detectTables(pageText, p);
+        allTables.push(...pageTables);
+      }
+    }
+    return allTables;
   }
 
   private async extractFigures(): Promise<Figure[]> {
