@@ -361,6 +361,59 @@
             transform: rotate(90deg);
         }
 
+        /* Image gallery */
+        .image-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 4px;
+        }
+        .image-gallery-item {
+            position: relative;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+        .image-gallery-item:hover {
+            border-color: var(--accent);
+        }
+        .image-gallery-item img {
+            width: 100%;
+            height: 80px;
+            object-fit: contain;
+            background: #fff;
+            display: block;
+        }
+        .image-gallery-item .img-info {
+            padding: 4px 6px;
+            font-size: 10px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .image-lightbox {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 200;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .image-lightbox img {
+            max-width: 90vw;
+            max-height: 90vh;
+            border-radius: 4px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+        }
+
         /* Form field overlay */
         .pdf-form-overlay {
             position: absolute;
@@ -523,6 +576,15 @@
             </div>
         </div>
 
+
+        <!-- Image Gallery -->
+        <div class="panel" id="imagePanel" style="display:none;">
+            <div class="panel-header">Images</div>
+            <div class="panel-body">
+                <div id="imageInfo" style="font-size:13px;color:var(--text-muted);margin-bottom:8px;">Extracting images…</div>
+                <div class="image-gallery" id="imageGallery"></div>
+            </div>
+        </div>
 
         <!-- Form Fields -->
         <div class="panel" id="formPanel" style="display:none;">
@@ -1088,6 +1150,62 @@
         return ul;
     }
 
+    // ── Image Gallery ──
+    async function buildImageGallery(pdfDoc) {
+        try {
+            const images = await pdfDoc.extractImages();
+            if (!images || images.length === 0) return;
+
+            const panel = $('imagePanel');
+            const gallery = $('imageGallery');
+            const info = $('imageInfo');
+            if (!panel || !gallery) return;
+
+            panel.style.display = '';
+            info.textContent = images.length + ' image(s) found';
+            gallery.innerHTML = '';
+
+            let converted = 0;
+            for (const img of images) {
+                const dataURL = pdfDoc.imageToDataURL(img, 'png');
+                if (!dataURL) continue;
+                converted++;
+
+                const item = document.createElement('div');
+                item.className = 'image-gallery-item';
+
+                const imgEl = document.createElement('img');
+                imgEl.src = dataURL;
+                imgEl.alt = img.id;
+                imgEl.title = img.id + ' (' + img.width + '×' + img.height + ', ' + img.mimeType + ')';
+                item.appendChild(imgEl);
+
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'img-info';
+                infoDiv.textContent = img.width + '×' + img.height + ' p.' + img.pageNumber;
+                item.appendChild(infoDiv);
+
+                // Lightbox on click
+                item.addEventListener('click', function() {
+                    const lb = document.createElement('div');
+                    lb.className = 'image-lightbox';
+                    const lbImg = document.createElement('img');
+                    lbImg.src = dataURL;
+                    lb.appendChild(lbImg);
+                    lb.addEventListener('click', function() { lb.remove(); });
+                    document.body.appendChild(lb);
+                });
+
+                gallery.appendChild(item);
+            }
+
+            info.textContent = converted + ' of ' + images.length + ' image(s) displayed';
+            log('Image gallery: ' + converted + ' images extracted', 'success');
+        } catch (e) {
+            log('Image gallery error: ' + e.message, 'warn');
+        }
+    }
+
     // ── Form Field Overlays ──
     let formFieldElements = [];
 
@@ -1259,6 +1377,7 @@
             await renderAllPages();
             buildOutlinePanel(pdfDoc);
             initFormPanel(pdfDoc);
+            buildImageGallery(pdfDoc);
 
         } catch (e) {
             log(`Error: ${e.message}`, 'error');

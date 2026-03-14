@@ -67,6 +67,10 @@ export interface ImageResource {
     colorSpace: string;
     filter?: string[];
     data: Uint8Array;
+    decodeParms?: Record<string, any>;
+    smaskData?: Uint8Array;
+    smaskWidth?: number;
+    smaskHeight?: number;
 }
 export interface ColorSpace {
     name: string;
@@ -531,6 +535,14 @@ export declare class AgenticPDF {
      * Get current form data (original + filled values)
      */
     getFormData(): Promise<Record<string, any>>;
+    /**
+     * Convert an extracted image to a data URL for display
+     */
+    imageToDataURL(image: ImageContent, format?: 'png' | 'jpeg' | 'webp', quality?: number): Promise<string>;
+    /**
+     * Extract all images and return as display-ready data URLs
+     */
+    exportImageAsDataURL(options?: ImageExtractionOptions): Promise<Array<{ image: ImageContent; dataUrl: string }>>;
     /**
      * Get annotations
      */

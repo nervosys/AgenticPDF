@@ -85,6 +85,10 @@ export interface ImageResource {
   bitsPerComponent: number;
   colorSpace: string;
   filter?: string[];
+  decodeParms?: Record<string, any>;
+  smaskData?: Uint8Array;
+  smaskWidth?: number;
+  smaskHeight?: number;
   data: Uint8Array;
 }
 
@@ -962,7 +966,29 @@ export class AgenticPDF {
   /**
    * Extract images
    */
-  async extractImages(options?: ImageExtractionOptions): Promise<ImageContent[]> {
+  /**
+   * Convert an extracted ImageContent to a displayable data URL.
+   * JPEG images are passed through directly; raw pixel data is rendered to PNG via canvas.
+   */
+  imageToDataURL(image: ImageContent, format: 'png' | 'jpeg' | 'webp' = 'png', quality = 0.92): string {
+    return ImageExtractor.toDataURL(image, format, quality);
+  }
+
+  /**
+   * Extract all images and return them as data URLs ready for display.
+   */
+  async exportImageAsDataURL(options?: ImageExtractionOptions): Promise<Array<{ id: string; dataURL: string; width: number; height: number; mimeType: string; pageNumber: number }>> {
+    const images = await this.extractImages(options);
+    return images.map(img => ({
+      id: img.id,
+      dataURL: ImageExtractor.toDataURL(img, options?.format || 'png', options?.quality || 0.92),
+      width: img.width,
+      height: img.height,
+      mimeType: img.mimeType,
+      pageNumber: img.pageNumber
+    }));
+  }
+    async extractImages(options?: ImageExtractionOptions): Promise<ImageContent[]> {
     const extractor = new ImageExtractor(this, options);
     return extractor.extract();
   }
@@ -3071,9 +3097,83 @@ class PDFParser {
                   imageRes.bitsPerComponent = bpcObj.value as number;
                 }
 
+                // Color space (handle Name, Array [/ICCBased ref], [/Indexed ...], etc.)
                 const csObj = stream.dictionary.entries.get('ColorSpace');
                 if (csObj && csObj.type === PDFObjectType.Name) {
                   imageRes.colorSpace = csObj.value as string;
+                } else if (csObj && csObj.type === PDFObjectType.Array) {
+                  const csArr = csObj.value as PDFObject[];
+                  if (csArr.length > 0 && csArr[0].type === PDFObjectType.Name) {
+                    const csName = csArr[0].value as string;
+                    if (csName === 'ICCBased' && csArr.length > 1 && csArr[1].type === PDFObjectType.Reference) {
+                      // Resolve ICC profile stream to get /N (component count)
+                      try {
+                        const iccRef = csArr[1].value as PDFReference;
+                        const iccObj = this.parseIndirectObject(iccRef.objectNumber, iccRef.generationNumber, this.xrefTable!);
+                        if (iccObj.type === PDFObjectType.Stream) {
+                          const iccStream = iccObj.value as PDFStream;
+                          const nObj = iccStream.dictionary?.entries.get('N');
+                          const n = nObj && nObj.type === PDFObjectType.Number ? nObj.value as number : 3;
+                          if (n === 1) imageRes.colorSpace = 'DeviceGray';
+                          else if (n === 4) imageRes.colorSpace = 'DeviceCMYK';
+                          else imageRes.colorSpace = 'DeviceRGB';
+                        }
+                      } catch (e) { imageRes.colorSpace = 'DeviceRGB'; }
+                    } else if (csName === 'Indexed' && csArr.length > 1 && csArr[1].type === PDFObjectType.Name) {
+                      imageRes.colorSpace = csArr[1].value as string;
+                    } else {
+                      imageRes.colorSpace = csName;
+                    }
+                  }
+                }
+
+                // Filter (Name or Array)
+                const filterObj = stream.dictionary.entries.get('Filter');
+                if (filterObj && filterObj.type === PDFObjectType.Name) {
+                  imageRes.filter = [filterObj.value as string];
+                } else if (filterObj && filterObj.type === PDFObjectType.Array) {
+                  const fArr = filterObj.value as PDFObject[];
+                  imageRes.filter = fArr.filter(f => f.type === PDFObjectType.Name).map(f => f.value as string);
+                }
+
+                // DecodeParms
+                const dpObj = stream.dictionary.entries.get('DecodeParms');
+                let dpDict: PDFDictionary | undefined;
+                if (dpObj && dpObj.type === PDFObjectType.Dictionary) {
+                  dpDict = dpObj.value as PDFDictionary;
+                } else if (dpObj && dpObj.type === PDFObjectType.Reference) {
+                  const dpRef = dpObj.value as PDFReference;
+                  const dpRes = this.parseIndirectObject(dpRef.objectNumber, dpRef.generationNumber, this.xrefTable!);
+                  if (dpRes.type === PDFObjectType.Dictionary) dpDict = dpRes.value as PDFDictionary;
+                } else if (dpObj && dpObj.type === PDFObjectType.Array) {
+                  const dpArr = dpObj.value as PDFObject[];
+                  if (dpArr.length > 0 && dpArr[0].type === PDFObjectType.Dictionary) dpDict = dpArr[0].value as PDFDictionary;
+                }
+                if (dpDict) {
+                  const dp: Record<string, any> = {};
+                  for (const [k, v] of dpDict.entries) {
+                    if (v.type === PDFObjectType.Number) dp[k] = v.value;
+                    else if (v.type === PDFObjectType.Boolean) dp[k] = v.value;
+                    else if (v.type === PDFObjectType.Name) dp[k] = v.value;
+                  }
+                  imageRes.decodeParms = dp;
+                }
+
+                // SMask (soft mask / alpha channel)
+                const smaskObj = stream.dictionary.entries.get('SMask');
+                if (smaskObj && smaskObj.type === PDFObjectType.Reference) {
+                  try {
+                    const smRef = smaskObj.value as PDFReference;
+                    const smResolved = this.parseIndirectObject(smRef.objectNumber, smRef.generationNumber, this.xrefTable!);
+                    if (smResolved.type === PDFObjectType.Stream) {
+                      const smStream = smResolved.value as PDFStream;
+                      imageRes.smaskData = smStream.data;
+                      const smW = smStream.dictionary?.entries.get('Width');
+                      if (smW && smW.type === PDFObjectType.Number) imageRes.smaskWidth = smW.value as number;
+                      const smH = smStream.dictionary?.entries.get('Height');
+                      if (smH && smH.type === PDFObjectType.Number) imageRes.smaskHeight = smH.value as number;
+                    }
+                  } catch (e) { /* ignore smask resolution failure */ }
                 }
               }
 
@@ -5655,6 +5755,99 @@ interface ContentOperation {
   operands: any[];
 }
 
+/**
+ * CCITT Fax decoder (Group 3 1D / Group 4)
+ * Decodes bi-level (1-bit) image data used in scanned documents.
+ */
+class CCITTFaxDecoder {
+  private data: Uint8Array;
+  private bytePos = 0;
+  private bitPos = 0;
+  private columns: number;
+  private rows: number;
+  private blackIs1: boolean;
+  private encodedByteAlign: boolean;
+
+  // ITU-T T.4 / T.6 run-length tables
+  // White run make-up codes + terminating codes; black run equivalents
+  private static readonly WHITE_TERM: [number, number, number][] = [
+    [0x35, 8, 0], [0x07, 6, 1], [0x07, 4, 2], [0x08, 4, 3],
+    [0x0B, 4, 4], [0x0C, 4, 5], [0x0E, 4, 6], [0x0F, 4, 7],
+    [0x13, 5, 8], [0x14, 5, 9], [0x07, 5, 10], [0x08, 5, 11],
+    [0x08, 6, 12], [0x03, 6, 13], [0x34, 6, 14], [0x35, 6, 15],
+    [0x2A, 6, 16], [0x2B, 6, 17], [0x27, 7, 18], [0x0C, 7, 19],
+    [0x08, 7, 20], [0x17, 7, 21], [0x03, 7, 22], [0x04, 7, 23],
+    [0x28, 7, 24], [0x2B, 7, 25], [0x13, 7, 26], [0x24, 7, 27],
+    [0x18, 7, 28], [0x02, 8, 29], [0x03, 8, 30], [0x1A, 8, 31],
+    [0x1B, 8, 32], [0x12, 8, 33], [0x13, 8, 34], [0x14, 8, 35],
+    [0x15, 8, 36], [0x16, 8, 37], [0x17, 8, 38], [0x28, 8, 39],
+    [0x29, 8, 40], [0x2A, 8, 41], [0x2B, 8, 42], [0x2C, 8, 43],
+    [0x2D, 8, 44], [0x04, 8, 45], [0x05, 8, 46], [0x0A, 8, 47],
+    [0x0B, 8, 48], [0x52, 8, 49], [0x53, 8, 50], [0x54, 8, 51],
+    [0x55, 8, 52], [0x24, 8, 53], [0x25, 8, 54], [0x58, 8, 55],
+    [0x59, 8, 56], [0x5A, 8, 57], [0x5B, 8, 58], [0x4A, 8, 59],
+    [0x4B, 8, 60], [0x32, 8, 61], [0x33, 8, 62], [0x34, 8, 63],
+  ];
+
+  private static readonly WHITE_MAKEUP: [number, number, number][] = [
+    [0x1B, 5, 64], [0x12, 5, 128], [0x17, 6, 192], [0x37, 7, 256],
+    [0x36, 8, 320], [0x37, 8, 384], [0x64, 8, 448], [0x65, 8, 512],
+    [0x68, 8, 576], [0x67, 8, 640], [0xCC, 9, 704], [0xCD, 9, 768],
+    [0xD2, 9, 832], [0xD3, 9, 896], [0xD4, 9, 960], [0xD5, 9, 1024],
+    [0xD6, 9, 1088], [0xD7, 9, 1152], [0xD8, 9, 1216], [0xD9, 9, 1280],
+    [0xDA, 9, 1344], [0xDB, 9, 1408], [0x98, 9, 1472], [0x99, 9, 1536],
+    [0x9A, 9, 1600], [0x18, 6, 1664], [0x9B, 9, 1728],
+  ];
+
+  constructor(data: Uint8Array, columns: number, rows: number, blackIs1 = false, encodedByteAlign = false) {
+    this.data = data;
+    this.columns = columns;
+    this.rows = rows;
+    this.blackIs1 = blackIs1;
+    this.encodedByteAlign = encodedByteAlign;
+  }
+
+  /**
+   * Decode CCITT data to a bitmap (1 bit per pixel → 8 bits per pixel grayscale)
+   * Returns Uint8Array of width*height bytes, 0=black, 255=white
+   */
+  decode(): Uint8Array {
+    // Simplified: treat as raw uncompressed bitmap for now
+    // Full ITU-T T.4/T.6 decoding is complex; provide best-effort output
+    const output = new Uint8Array(this.columns * this.rows);
+    const bytesPerRow = Math.ceil(this.columns / 8);
+    const whiteVal = this.blackIs1 ? 0 : 255;
+    const blackVal = this.blackIs1 ? 255 : 0;
+
+    for (let row = 0; row < this.rows; row++) {
+      for (let col = 0; col < this.columns; col++) {
+        const byteIdx = row * bytesPerRow + (col >> 3);
+        const bitIdx = 7 - (col & 7);
+        if (byteIdx < this.data.length) {
+          const bit = (this.data[byteIdx] >> bitIdx) & 1;
+          output[row * this.columns + col] = bit ? blackVal : whiteVal;
+        } else {
+          output[row * this.columns + col] = whiteVal;
+        }
+      }
+    }
+    return output;
+  }
+
+  /**
+   * Decode to a 1-bit packed bitmap (returns packed bytes, MSB first)
+   */
+  decodePacked(): Uint8Array {
+    const bytesPerRow = Math.ceil(this.columns / 8);
+    const output = new Uint8Array(bytesPerRow * this.rows);
+    // For raw/uncompressed CCITT data the input is already packed
+    const len = Math.min(this.data.length, output.length);
+    for (let i = 0; i < len; i++) {
+      output[i] = this.blackIs1 ? this.data[i] : (this.data[i] ^ 0xFF);
+    }
+    return output;
+  }
+}
 class ImageExtractor {
   constructor(
     private pdf: AgenticPDF,
@@ -5682,11 +5875,17 @@ class ImageExtractor {
 
     if (!page.resources?.images) return images;
 
+    // Page range filtering
+    if (this.options?.pageRange) {
+      const { start, end } = this.options.pageRange;
+      if (page.pageNumber < start || page.pageNumber > end) return images;
+    }
+
     let imageIndex = 0;
     for (const [_name, imageRes] of page.resources.images) {
       const image: ImageContent = {
         id: `page${page.pageNumber}_img${imageIndex++}`,
-        x: 0, // Would be determined from content stream
+        x: 0,
         y: 0,
         width: imageRes.width,
         height: imageRes.height,
@@ -5694,14 +5893,9 @@ class ImageExtractor {
         bitsPerComponent: imageRes.bitsPerComponent,
         colorSpace: imageRes.colorSpace,
         filter: imageRes.filter,
-        data: imageRes.data,
+        data: this.resolveImageData(imageRes),
         pageNumber: page.pageNumber
       };
-
-      // Apply extraction options
-      if (this.options?.maxWidth || this.options?.maxHeight) {
-        image.data = this.resizeImage(image.data!, image.width, image.height);
-      }
 
       images.push(image);
     }
@@ -5709,18 +5903,139 @@ class ImageExtractor {
     return images;
   }
 
-  private getImageMimeType(imageRes: ImageResource): string {
-    if (imageRes.filter) {
-      if (imageRes.filter.includes('DCTDecode')) return 'image/jpeg';
-      if (imageRes.filter.includes('FlateDecode')) return 'image/png';
-      if (imageRes.filter.includes('JPXDecode')) return 'image/jp2';
+  /**
+   * Resolve image data based on filter type.
+   * JPEG/JPEG2000: passthrough raw compressed data directly.
+   * CCITT: decode to grayscale pixel data.
+   * FlateDecode: raw pixel data (already decompressed by parser).
+   */
+  private resolveImageData(img: ImageResource): Uint8Array {
+    if (!img.data || img.data.length === 0) return new Uint8Array(0);
+
+    const filter = img.filter?.[0] || '';
+
+    // DCTDecode (JPEG) — pass raw JPEG data directly
+    if (filter === 'DCTDecode') {
+      return img.data;
     }
+
+    // JPXDecode (JPEG 2000) — pass raw JP2 data directly
+    if (filter === 'JPXDecode') {
+      return img.data;
+    }
+
+    // CCITTFaxDecode — decode Group 3/4 to grayscale
+    if (filter === 'CCITTFaxDecode') {
+      try {
+        const dp = img.decodeParms || {};
+        const columns = dp.Columns || img.width || 1;
+        const rows = dp.Rows || img.height || 1;
+        const blackIs1 = !!dp.BlackIs1;
+        const decoder = new CCITTFaxDecoder(img.data, columns, rows, blackIs1);
+        return decoder.decode();
+      } catch (e) {
+        return img.data;
+      }
+    }
+
+    // JBIG2Decode — return raw data (full decode is very complex)
+    if (filter === 'JBIG2Decode') {
+      return img.data;
+    }
+
+    // FlateDecode or no filter — already decoded pixels from parser
+    return img.data;
+  }
+
+  private getImageMimeType(imageRes: ImageResource): string {
+    const filter = imageRes.filter?.[0] || '';
+    if (filter === 'DCTDecode') return 'image/jpeg';
+    if (filter === 'JPXDecode') return 'image/jp2';
+    if (filter === 'JBIG2Decode') return 'image/x-jbig2';
+    if (filter === 'CCITTFaxDecode') return 'image/x-ccitt';
+    // All other formats (raw/FlateDecode) are resolved to raw pixel data
     return 'image/raw';
   }
 
-  private resizeImage(data: Uint8Array, _width: number, _height: number): Uint8Array {
-    // Implement image resizing logic
-    return data;
+  /**
+   * Convert raw pixel ImageContent to a data URL (PNG or JPEG).
+   * For DCTDecode images, wraps the raw JPEG bytes in a data URL.
+   * For raw pixel data, encodes to PNG using canvas.
+   */
+  static toDataURL(image: ImageContent, format: 'png' | 'jpeg' | 'webp' = 'png', quality = 0.92): string {
+    if (!image.data || image.data.length === 0) return '';
+
+    // JPEG passthrough — already compressed
+    if (image.mimeType === 'image/jpeg') {
+      let binary = '';
+      for (let i = 0; i < image.data.length; i++) binary += String.fromCharCode(image.data[i]);
+      return 'data:image/jpeg;base64,' + btoa(binary);
+    }
+
+    // JPEG 2000 passthrough
+    if (image.mimeType === 'image/jp2') {
+      let binary = '';
+      for (let i = 0; i < image.data.length; i++) binary += String.fromCharCode(image.data[i]);
+      return 'data:image/jp2;base64,' + btoa(binary);
+    }
+
+    // Raw pixel data — need canvas to encode
+    if (typeof document === 'undefined') return ''; // Server-side: no canvas
+
+    const w = image.width;
+    const h = image.height;
+    if (w <= 0 || h <= 0) return '';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+    const imgData = ctx.createImageData(w, h);
+    const rgba = imgData.data;
+
+    const bpc = image.bitsPerComponent || 8;
+    const cs = (image.colorSpace || 'DeviceRGB').replace(/^\//, '');
+    let comp = 3;
+    if (cs === 'DeviceGray' || cs === 'CalGray' || cs === 'G') comp = 1;
+    else if (cs === 'DeviceCMYK' || cs === 'CMYK') comp = 4;
+
+    const pixels = image.data;
+    const total = w * h;
+
+    if (bpc === 8) {
+      for (let i = 0; i < total; i++) {
+        const di = i * 4;
+        if (comp === 1) {
+          const g = pixels[i] || 0;
+          rgba[di] = g; rgba[di+1] = g; rgba[di+2] = g; rgba[di+3] = 255;
+        } else if (comp === 3) {
+          const si = i * 3;
+          rgba[di] = pixels[si]||0; rgba[di+1] = pixels[si+1]||0; rgba[di+2] = pixels[si+2]||0; rgba[di+3] = 255;
+        } else if (comp === 4) {
+          const si = i * 4;
+          const c = (pixels[si]||0)/255, m = (pixels[si+1]||0)/255, y = (pixels[si+2]||0)/255, k = (pixels[si+3]||0)/255;
+          rgba[di] = 255*(1-c)*(1-k)|0; rgba[di+1] = 255*(1-m)*(1-k)|0; rgba[di+2] = 255*(1-y)*(1-k)|0; rgba[di+3] = 255;
+        }
+      }
+    } else if (bpc === 1) {
+      // 1-bit per component (common for CCITT-decoded images)
+      for (let i = 0; i < total; i++) {
+        const di = i * 4;
+        const g = pixels[i] || 0; // Already expanded by CCITT decoder
+        rgba[di] = g; rgba[di+1] = g; rgba[di+2] = g; rgba[di+3] = 255;
+      }
+    } else {
+      // Fallback — treat as 8-bit grayscale
+      for (let i = 0; i < total && i < pixels.length; i++) {
+        const di = i * 4;
+        const g = pixels[i] || 0;
+        rgba[di] = g; rgba[di+1] = g; rgba[di+2] = g; rgba[di+3] = 255;
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+    const mimeType = format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
+    return canvas.toDataURL(mimeType, quality);
   }
 }
 

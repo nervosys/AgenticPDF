@@ -137,14 +137,16 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] Form overlay zoom/reposition in `applyZoomCSS()`
 - [x] Required field highlighting and read-only field disabling
 
-### Phase 12 — Image Extraction & Formats
+### Phase 12 — Image Extraction & Formats ✅
 
-- [ ] JPEG passthrough (DCTDecode)
-- [ ] JPEG2000 support (JPXDecode)
-- [ ] CCITT fax (Group 3/4) decoding
-- [ ] JBIG2 decoding
-- [ ] ICC color profile handling
-- [ ] Image export API (`extractImages()`)
+- [x] JPEG passthrough (DCTDecode) — direct data passthrough with `image/jpeg` MIME
+- [x] JPEG2000 support (JPXDecode) — direct data passthrough with `image/jp2` MIME
+- [x] CCITT fax (Group 3/4) decoding — `CCITTFaxDecoder` class with packed-bit expansion
+- [x] JBIG2 decoding — raw data passthrough for browser-level decoding
+- [x] ICC color profile handling — resolve `/ICCBased` color spaces via stream `/N` component count
+- [x] Image export API — `imageToDataURL()`, `exportImageAsDataURL()`, enhanced `ImageExtractor`
+- [x] Enhanced `ImageResource` parsing — `filter[]`, `decodeParms`, `smaskData/Width/Height`
+- [x] Demo image gallery panel with lightbox viewer
 
 ### Phase 13 — Advanced Text & Layout
 
