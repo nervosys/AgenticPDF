@@ -181,7 +181,21 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [x] `SECURITY_AUDIT.md` comprehensive report
 - [x] Supply chain security documentation
 
-### Phase 16 — Advanced Text & Layout
+### Phase 16 — Real-Time Translation & Text-to-Speech ✅
+
+- [x] `TranslationProvider` interface for pluggable translation engines
+- [x] `TTSProvider` interface for pluggable text-to-speech engines
+- [x] `translateDocument()` — batch translation preserving positional metadata
+- [x] `streamTranslation()` — streaming page-by-page translation
+- [x] `synthesizeSpeech()` — batch TTS with sentence-boundary splitting
+- [x] `streamSpeechSynthesis()` — streaming TTS for real-time playback
+- [x] `exportTranslation()` — export as text, JSON, or SRT subtitle format
+- [x] Cross-lingual TTS pipeline (translate → synthesize in single call)
+- [x] Word-level timing support (`TTSWordTiming`) for synchronized highlighting
+- [x] Glossary override support for domain-specific term translation
+- [x] Abort signal and progress callback on all operations
+
+### Phase 17 — Advanced Text & Layout
 
 - [ ] Multi-column layout detection
 - [ ] Table structure extraction (rows, cells, headers)
@@ -190,14 +204,14 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Vertical text rendering (CJK)
 - [ ] Right-to-left text (Arabic, Hebrew)
 
-### Phase 17 — Encryption & Security
+### Phase 18 — Encryption & Security
 
 - [ ] Standard security handler (RC4, AES-128, AES-256)
 - [ ] Password-protected PDF opening
 - [ ] Permission flag enforcement
 - [ ] Certificate-based encryption
 
-### Phase 18 — Performance & Scale
+### Phase 19 — Performance & Scale
 
 - [ ] Web Worker rendering pipeline
 - [ ] Tile-based rendering for large pages
@@ -205,7 +219,7 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Virtual scroll for 1000+ page documents
 - [ ] Incremental parsing for append-mode PDFs
 
-### Phase 19 — PDF Writing & Modification
+### Phase 20 — PDF Writing & Modification
 
 - [ ] Incremental save (append changes without rewriting)
 - [ ] Page insertion / deletion / reordering
@@ -213,7 +227,7 @@ Interactive demo at `demos/render-engine-demo.html`.
 - [ ] Digital signature support
 - [ ] PDF/A conformance output
 
-### Phase 20 — AI & RAG Enhancements
+### Phase 21 — AI & RAG Enhancements
 
 - [ ] Embedding generation via `EmbeddingProvider` interface
 - [ ] Vector store integration helpers

@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-14T19:42:30.873Z
+ * Compiled: 2026-03-14T21:41:45.163Z
  */
 
 (function(global) {
@@ -2344,6 +2344,359 @@ class AgenticPDF {
         };
         return map[tsType] || 'string';
     }
+    // ==========================================================================
+    // Real-Time Translation & Text-to-Speech
+    // ==========================================================================
+    /**
+     * Translate all text content in the PDF using a TranslationProvider.
+     * Returns translated pages preserving positional metadata for each segment.
+     */
+    async translateDocument(provider, options) {
+        const pages = [];
+        const batchSize = options.batchSize ?? 50;
+        const srcLang = options.sourceLanguage ?? null;
+        const targetLang = options.targetLanguage;
+        const textOptions = {};
+        if (options.pageRange) {
+            textOptions.pageRange = options.pageRange;
+        }
+        // Group TextContent by page
+        const allText = await this.extractText(textOptions);
+        const pageMap = new Map();
+        for (const tc of allText) {
+            const arr = pageMap.get(tc.pageNumber) || [];
+            arr.push(tc);
+            pageMap.set(tc.pageNumber, arr);
+        }
+        let segmentsTranslated = 0;
+        const totalPages = pageMap.size;
+        let pagesComplete = 0;
+        for (const [pageNum, segments] of pageMap) {
+            if (options.abortSignal?.aborted)
+                break;
+            const translatedSegments = [];
+            // Process in batches
+            for (let i = 0; i < segments.length; i += batchSize) {
+                if (options.abortSignal?.aborted)
+                    break;
+                const batch = segments.slice(i, i + batchSize);
+                const texts = batch.map(s => s.text).filter(t => t.trim().length > 0);
+                if (texts.length === 0)
+                    continue;
+                // Apply glossary substitutions before translation
+                const processedTexts = options.glossary
+                    ? texts.map(t => {
+                        let result = t;
+                        for (const [term, replacement] of Object.entries(options.glossary)) {
+                            result = result.split(term).join(replacement);
+                        }
+                        return result;
+                    })
+                    : texts;
+                const results = await provider.translateBatch(processedTexts, srcLang, targetLang);
+                let resultIdx = 0;
+                for (const seg of batch) {
+                    if (seg.text.trim().length === 0) {
+                        translatedSegments.push({ original: seg, translatedText: seg.text, confidence: 1.0 });
+                    }
+                    else {
+                        const result = results[resultIdx++];
+                        translatedSegments.push({
+                            original: seg,
+                            translatedText: result.translatedText,
+                            confidence: result.confidence
+                        });
+                    }
+                    segmentsTranslated++;
+                }
+            }
+            const detectedLang = srcLang || (translatedSegments.length > 0 ? 'auto' : 'unknown');
+            pages.push({
+                pageNumber: pageNum,
+                sourceLanguage: detectedLang,
+                targetLanguage: targetLang,
+                segments: translatedSegments
+            });
+            pagesComplete++;
+            options.progressCallback?.({ pagesComplete, totalPages, segmentsTranslated });
+        }
+        return pages;
+    }
+    /**
+     * Stream translated pages one at a time for memory-efficient processing.
+     * Yields each TranslatedPage as soon as it is ready.
+     */
+    async *streamTranslation(provider, options) {
+        const batchSize = options.batchSize ?? 50;
+        const srcLang = options.sourceLanguage ?? null;
+        const targetLang = options.targetLanguage;
+        const pageCount = this.getPageCount();
+        const startPage = options.pageRange?.start ?? 1;
+        const endPage = options.pageRange?.end ?? pageCount;
+        let segmentsTranslated = 0;
+        let pagesComplete = 0;
+        const totalPages = endPage - startPage + 1;
+        for (let p = startPage; p <= endPage; p++) {
+            if (options.abortSignal?.aborted)
+                return;
+            const pageText = await this.extractText({ pageRange: { start: p, end: p } });
+            if (pageText.length === 0) {
+                pagesComplete++;
+                continue;
+            }
+            const translatedSegments = [];
+            for (let i = 0; i < pageText.length; i += batchSize) {
+                if (options.abortSignal?.aborted)
+                    return;
+                const batch = pageText.slice(i, i + batchSize);
+                const texts = batch.map(s => s.text).filter(t => t.trim().length > 0);
+                if (texts.length === 0)
+                    continue;
+                const processedTexts = options.glossary
+                    ? texts.map(t => {
+                        let result = t;
+                        for (const [term, replacement] of Object.entries(options.glossary)) {
+                            result = result.split(term).join(replacement);
+                        }
+                        return result;
+                    })
+                    : texts;
+                const results = await provider.translateBatch(processedTexts, srcLang, targetLang);
+                let resultIdx = 0;
+                for (const seg of batch) {
+                    if (seg.text.trim().length === 0) {
+                        translatedSegments.push({ original: seg, translatedText: seg.text, confidence: 1.0 });
+                    }
+                    else {
+                        const result = results[resultIdx++];
+                        translatedSegments.push({
+                            original: seg,
+                            translatedText: result.translatedText,
+                            confidence: result.confidence
+                        });
+                    }
+                    segmentsTranslated++;
+                }
+            }
+            pagesComplete++;
+            options.progressCallback?.({ pagesComplete, totalPages, segmentsTranslated });
+            yield {
+                pageNumber: p,
+                sourceLanguage: srcLang || 'auto',
+                targetLanguage: targetLang,
+                segments: translatedSegments
+            };
+        }
+    }
+    /**
+     * Synthesize text-to-speech audio for the document.
+     * Returns an array of audio segments, one per page or content chunk.
+     */
+    async synthesizeSpeech(options) {
+        const segments = [];
+        const maxChars = options.maxCharsPerRequest ?? 4096;
+        const pageCount = this.getPageCount();
+        const startPage = options.pageRange?.start ?? 1;
+        const endPage = options.pageRange?.end ?? pageCount;
+        let segmentsSynthesized = 0;
+        let totalDurationMs = 0;
+        const totalPages = endPage - startPage + 1;
+        let pagesComplete = 0;
+        for (let p = startPage; p <= endPage; p++) {
+            if (options.abortSignal?.aborted)
+                break;
+            let pageTexts = await this.extractText({ pageRange: { start: p, end: p } });
+            let pageContent = pageTexts.map(tc => tc.text).join(' ').trim();
+            // Optionally translate before synthesis
+            if (options.translateFirst && options.translationProvider && options.translationTargetLanguage) {
+                const result = await options.translationProvider.translate(pageContent, null, options.translationTargetLanguage);
+                pageContent = result.translatedText;
+            }
+            if (pageContent.length === 0) {
+                pagesComplete++;
+                continue;
+            }
+            // Split into chunks respecting sentence boundaries
+            const chunks = this._splitTextForTTS(pageContent, maxChars);
+            for (const chunk of chunks) {
+                if (options.abortSignal?.aborted)
+                    break;
+                const audioSeg = await options.provider.synthesize(chunk, {
+                    voiceId: options.voiceId,
+                    rate: options.rate,
+                    pitch: options.pitch,
+                    format: options.format ?? 'mp3',
+                    sampleRate: options.sampleRate ?? 24000
+                });
+                // Ensure page number is attached
+                audioSeg.pageNumber = p;
+                segments.push(audioSeg);
+                segmentsSynthesized++;
+                totalDurationMs += audioSeg.durationMs;
+            }
+            pagesComplete++;
+            options.progressCallback?.({ pagesComplete, totalPages, segmentsSynthesized, totalDurationMs });
+        }
+        return segments;
+    }
+    /**
+     * Stream TTS audio segments as they are synthesized.
+     * Yields one TTSAudioSegment at a time for real-time playback pipelines.
+     */
+    async *streamSpeechSynthesis(options) {
+        const maxChars = options.maxCharsPerRequest ?? 4096;
+        const pageCount = this.getPageCount();
+        const startPage = options.pageRange?.start ?? 1;
+        const endPage = options.pageRange?.end ?? pageCount;
+        let segmentsSynthesized = 0;
+        let totalDurationMs = 0;
+        const totalPages = endPage - startPage + 1;
+        let pagesComplete = 0;
+        for (let p = startPage; p <= endPage; p++) {
+            if (options.abortSignal?.aborted)
+                return;
+            let pageTexts = await this.extractText({ pageRange: { start: p, end: p } });
+            let pageContent = pageTexts.map(tc => tc.text).join(' ').trim();
+            if (options.translateFirst && options.translationProvider && options.translationTargetLanguage) {
+                const result = await options.translationProvider.translate(pageContent, null, options.translationTargetLanguage);
+                pageContent = result.translatedText;
+            }
+            if (pageContent.length === 0) {
+                pagesComplete++;
+                continue;
+            }
+            const chunks = this._splitTextForTTS(pageContent, maxChars);
+            for (const chunk of chunks) {
+                if (options.abortSignal?.aborted)
+                    return;
+                // If provider supports streaming, use it for sub-chunk audio
+                if (options.provider.synthesizeStream) {
+                    const audioChunks = [];
+                    let totalLen = 0;
+                    for await (const part of options.provider.synthesizeStream(chunk, {
+                        voiceId: options.voiceId,
+                        rate: options.rate,
+                        pitch: options.pitch,
+                        format: options.format ?? 'mp3',
+                        sampleRate: options.sampleRate ?? 24000
+                    })) {
+                        audioChunks.push(part);
+                        totalLen += part.length;
+                    }
+                    // Merge streaming chunks into one segment
+                    const merged = new Uint8Array(totalLen);
+                    let offset = 0;
+                    for (const ac of audioChunks) {
+                        merged.set(ac, offset);
+                        offset += ac.length;
+                    }
+                    const seg = {
+                        audioData: merged,
+                        format: options.format ?? 'mp3',
+                        durationMs: 0, // Duration not known from raw streaming
+                        sampleRate: options.sampleRate ?? 24000,
+                        pageNumber: p,
+                        text: chunk
+                    };
+                    segmentsSynthesized++;
+                    yield seg;
+                }
+                else {
+                    const audioSeg = await options.provider.synthesize(chunk, {
+                        voiceId: options.voiceId,
+                        rate: options.rate,
+                        pitch: options.pitch,
+                        format: options.format ?? 'mp3',
+                        sampleRate: options.sampleRate ?? 24000
+                    });
+                    audioSeg.pageNumber = p;
+                    segmentsSynthesized++;
+                    totalDurationMs += audioSeg.durationMs;
+                    yield audioSeg;
+                }
+            }
+            pagesComplete++;
+            options.progressCallback?.({ pagesComplete, totalPages, segmentsSynthesized, totalDurationMs });
+        }
+    }
+    /**
+     * Export translated document as formatted text, preserving page structure.
+     */
+    async exportTranslation(provider, options) {
+        const pages = await this.translateDocument(provider, options);
+        const fmt = options.format ?? 'text';
+        if (fmt === 'json') {
+            return JSON.stringify(pages, null, 2);
+        }
+        if (fmt === 'srt') {
+            // SubRip subtitle format — one entry per segment
+            let srtIdx = 1;
+            const lines = [];
+            for (const page of pages) {
+                for (const seg of page.segments) {
+                    const startSec = (srtIdx - 1) * 3;
+                    const endSec = startSec + 3;
+                    lines.push(String(srtIdx));
+                    lines.push(`${_formatSrtTime(startSec)} --> ${_formatSrtTime(endSec)}`);
+                    lines.push(seg.translatedText);
+                    lines.push('');
+                    srtIdx++;
+                }
+            }
+            return lines.join('\n');
+        }
+        // Default: plain text page-by-page
+        const lines = [];
+        for (const page of pages) {
+            lines.push(`--- Page ${page.pageNumber} [${page.sourceLanguage} → ${page.targetLanguage}] ---`);
+            for (const seg of page.segments) {
+                lines.push(seg.translatedText);
+            }
+            lines.push('');
+        }
+        return lines.join('\n');
+    }
+    /** Split text into chunks at sentence boundaries for TTS. */
+    _splitTextForTTS(text, maxChars) {
+        if (text.length <= maxChars)
+            return [text];
+        const chunks = [];
+        let remaining = text;
+        while (remaining.length > 0) {
+            if (remaining.length <= maxChars) {
+                chunks.push(remaining);
+                break;
+            }
+            // Try to split at sentence boundary
+            let splitIdx = -1;
+            const searchRange = remaining.substring(0, maxChars);
+            const sentenceEnders = ['. ', '! ', '? ', '.\n', '!\n', '?\n'];
+            for (const ender of sentenceEnders) {
+                const idx = searchRange.lastIndexOf(ender);
+                if (idx > splitIdx)
+                    splitIdx = idx + ender.length;
+            }
+            // Fall back to word boundary
+            if (splitIdx <= 0) {
+                splitIdx = searchRange.lastIndexOf(' ');
+            }
+            // Last resort: hard cut
+            if (splitIdx <= 0) {
+                splitIdx = maxChars;
+            }
+            chunks.push(remaining.substring(0, splitIdx).trim());
+            remaining = remaining.substring(splitIdx).trim();
+        }
+        return chunks;
+    }
+}
+/** Format seconds to SRT timestamp (HH:MM:SS,mmm). */
+function _formatSrtTime(totalSeconds) {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = Math.floor(totalSeconds % 60);
+    const ms = Math.round((totalSeconds % 1) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
 }
 // ============================================================================
 // PDF Parser Implementation

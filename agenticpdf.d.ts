@@ -465,6 +465,107 @@ export interface SBOM {
 
 export declare const DEFAULT_SECURITY_CONFIG: SecurityConfig;
 
+// Real-Time Translation & Text-to-Speech Types
+
+export interface TranslationProvider {
+    name: string;
+    supportedSourceLanguages: string[];
+    supportedTargetLanguages: string[];
+    translate(text: string, from: string | null, to: string): Promise<TranslationResult>;
+    translateBatch(texts: string[], from: string | null, to: string): Promise<TranslationResult[]>;
+    detectLanguage?(text: string): Promise<{ language: string; confidence: number }>;
+}
+
+export interface TranslationResult {
+    sourceText: string;
+    translatedText: string;
+    sourceLanguage: string;
+    targetLanguage: string;
+    confidence: number;
+    alternatives?: string[];
+}
+
+export interface TranslatedPage {
+    pageNumber: number;
+    sourceLanguage: string;
+    targetLanguage: string;
+    segments: TranslatedSegment[];
+}
+
+export interface TranslatedSegment {
+    original: TextContent;
+    translatedText: string;
+    confidence: number;
+}
+
+export interface TranslationOptions {
+    targetLanguage: string;
+    sourceLanguage?: string | null;
+    pageRange?: { start: number; end: number };
+    batchSize?: number;
+    preserveFormatting?: boolean;
+    glossary?: Record<string, string>;
+    abortSignal?: AbortSignal;
+    progressCallback?: (progress: { pagesComplete: number; totalPages: number; segmentsTranslated: number }) => void;
+}
+
+export interface TTSProvider {
+    name: string;
+    availableVoices: TTSVoice[];
+    synthesize(text: string, options: TTSSynthesisOptions): Promise<TTSAudioSegment>;
+    synthesizeStream?(text: string, options: TTSSynthesisOptions): AsyncGenerator<Uint8Array>;
+}
+
+export interface TTSVoice {
+    id: string;
+    name: string;
+    language: string;
+    gender?: 'male' | 'female' | 'neutral';
+    style?: string;
+}
+
+export interface TTSSynthesisOptions {
+    voiceId: string;
+    rate?: number;
+    pitch?: number;
+    format?: 'mp3' | 'wav' | 'ogg' | 'opus' | 'pcm';
+    sampleRate?: number;
+}
+
+export interface TTSAudioSegment {
+    audioData: Uint8Array;
+    format: string;
+    durationMs: number;
+    sampleRate: number;
+    pageNumber: number;
+    text: string;
+    wordTimings?: TTSWordTiming[];
+}
+
+export interface TTSWordTiming {
+    word: string;
+    startMs: number;
+    endMs: number;
+    startOffset: number;
+    endOffset: number;
+}
+
+export interface TTSOptions {
+    provider: TTSProvider;
+    voiceId: string;
+    pageRange?: { start: number; end: number };
+    rate?: number;
+    pitch?: number;
+    format?: 'mp3' | 'wav' | 'ogg' | 'opus' | 'pcm';
+    sampleRate?: number;
+    maxCharsPerRequest?: number;
+    translateFirst?: boolean;
+    translationProvider?: TranslationProvider;
+    translationTargetLanguage?: string;
+    abortSignal?: AbortSignal;
+    progressCallback?: (progress: { pagesComplete: number; totalPages: number; segmentsSynthesized: number; totalDurationMs: number }) => void;
+}
+
 // Ontology & AI Agent Discovery Types
 export interface OntologyConcept {
     id: string;
@@ -744,6 +845,27 @@ export declare class AgenticPDF {
      * Create an agent session context for tool orchestration
      */
     createAgentSession(): AgentSession;
+    /**
+     * Translate all text content using a TranslationProvider
+     */
+    translateDocument(provider: TranslationProvider, options: TranslationOptions): Promise<TranslatedPage[]>;
+    /**
+     * Stream translated pages one at a time
+     */
+    streamTranslation(provider: TranslationProvider, options: TranslationOptions): AsyncGenerator<TranslatedPage>;
+    /**
+     * Synthesize text-to-speech audio for the document
+     */
+    synthesizeSpeech(options: TTSOptions): Promise<TTSAudioSegment[]>;
+    /**
+     * Stream TTS audio segments as they are synthesized
+     */
+    streamSpeechSynthesis(options: TTSOptions): AsyncGenerator<TTSAudioSegment>;
+    /**
+     * Export translated document as formatted text
+     */
+    exportTranslation(provider: TranslationProvider, options: TranslationOptions & { format?: 'text' | 'json' | 'srt' }): Promise<string>;
+
     /**
      * Describes the loaded document's available operations and recommended workflows
      */

@@ -470,6 +470,156 @@ export interface EmbeddingProvider {
 }
 
 
+
+// ============================================================================
+// Real-Time Translation & Text-to-Speech Types
+// ============================================================================
+
+/** Provider interface for real-time translation of PDF content. */
+export interface TranslationProvider {
+  /** Unique name of the translation engine (e.g. 'google', 'deepl', 'azure'). */
+  name: string;
+  /** Supported source languages (ISO 639-1 codes). Empty = auto-detect. */
+  supportedSourceLanguages: string[];
+  /** Supported target languages (ISO 639-1 codes). */
+  supportedTargetLanguages: string[];
+  /** Translate a single text segment. */
+  translate(text: string, from: string | null, to: string): Promise<TranslationResult>;
+  /** Translate a batch of text segments. */
+  translateBatch(texts: string[], from: string | null, to: string): Promise<TranslationResult[]>;
+  /** Optional: detect the source language. */
+  detectLanguage?(text: string): Promise<{ language: string; confidence: number }>;
+}
+
+/** Result of a single translation operation. */
+export interface TranslationResult {
+  sourceText: string;
+  translatedText: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  confidence: number;
+  alternatives?: string[];
+}
+
+/** A translated page with all its text segments. */
+export interface TranslatedPage {
+  pageNumber: number;
+  sourceLanguage: string;
+  targetLanguage: string;
+  segments: TranslatedSegment[];
+}
+
+/** A translated text segment preserving positional metadata. */
+export interface TranslatedSegment {
+  original: TextContent;
+  translatedText: string;
+  confidence: number;
+}
+
+/** Options for controlling translation operations. */
+export interface TranslationOptions {
+  /** Target language (ISO 639-1 code, e.g. 'es', 'de', 'ja'). */
+  targetLanguage: string;
+  /** Source language. Null = auto-detect. */
+  sourceLanguage?: string | null;
+  /** Page range to translate. */
+  pageRange?: { start: number; end: number };
+  /** Batch size for translation requests (default: 50). */
+  batchSize?: number;
+  /** Preserve original formatting metadata in output. */
+  preserveFormatting?: boolean;
+  /** Glossary of domain-specific term overrides. */
+  glossary?: Record<string, string>;
+  /** Abort signal for cancellation. */
+  abortSignal?: AbortSignal;
+  /** Progress callback. */
+  progressCallback?: (progress: { pagesComplete: number; totalPages: number; segmentsTranslated: number }) => void;
+}
+
+/** Provider interface for text-to-speech synthesis from PDF content. */
+export interface TTSProvider {
+  /** Unique name of the TTS engine (e.g. 'openai-tts', 'azure-tts', 'elevenlabs'). */
+  name: string;
+  /** Available voice identifiers. */
+  availableVoices: TTSVoice[];
+  /** Synthesize speech from text and return audio data. */
+  synthesize(text: string, options: TTSSynthesisOptions): Promise<TTSAudioSegment>;
+  /** Stream speech synthesis for long text. */
+  synthesizeStream?(text: string, options: TTSSynthesisOptions): AsyncGenerator<Uint8Array>;
+}
+
+/** A voice configuration for TTS synthesis. */
+export interface TTSVoice {
+  id: string;
+  name: string;
+  language: string;
+  gender?: 'male' | 'female' | 'neutral';
+  style?: string;
+}
+
+/** Options passed to the TTS provider for a single synthesis call. */
+export interface TTSSynthesisOptions {
+  voiceId: string;
+  /** Speech rate multiplier (0.5 = half speed, 2.0 = double speed). */
+  rate?: number;
+  /** Pitch adjustment (-1.0 to 1.0). */
+  pitch?: number;
+  /** Output audio format. */
+  format?: 'mp3' | 'wav' | 'ogg' | 'opus' | 'pcm';
+  /** Sample rate in Hz (e.g. 24000). */
+  sampleRate?: number;
+}
+
+/** A synthesized audio segment tied to a page and text range. */
+export interface TTSAudioSegment {
+  audioData: Uint8Array;
+  format: string;
+  durationMs: number;
+  sampleRate: number;
+  pageNumber: number;
+  text: string;
+  wordTimings?: TTSWordTiming[];
+}
+
+/** Word-level timing for synchronized highlighting. */
+export interface TTSWordTiming {
+  word: string;
+  startMs: number;
+  endMs: number;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** Options for controlling TTS operations on a PDF document. */
+export interface TTSOptions {
+  /** TTS provider instance. */
+  provider: TTSProvider;
+  /** Voice to use. */
+  voiceId: string;
+  /** Page range to synthesize. */
+  pageRange?: { start: number; end: number };
+  /** Speech rate multiplier (default: 1.0). */
+  rate?: number;
+  /** Pitch adjustment (default: 0). */
+  pitch?: number;
+  /** Output audio format (default: 'mp3'). */
+  format?: 'mp3' | 'wav' | 'ogg' | 'opus' | 'pcm';
+  /** Sample rate in Hz (default: 24000). */
+  sampleRate?: number;
+  /** Maximum characters per synthesis call (default: 4096). */
+  maxCharsPerRequest?: number;
+  /** Whether to translate before synthesizing (requires translationProvider). */
+  translateFirst?: boolean;
+  /** Translation provider for cross-lingual TTS. */
+  translationProvider?: TranslationProvider;
+  /** Target language for translation before TTS. */
+  translationTargetLanguage?: string;
+  /** Abort signal for cancellation. */
+  abortSignal?: AbortSignal;
+  /** Progress callback. */
+  progressCallback?: (progress: { pagesComplete: number; totalPages: number; segmentsSynthesized: number; totalDurationMs: number }) => void;
+}
+
 // ============================================================================
 // Ontology & AI Agent Discovery Types
 // ============================================================================
@@ -3132,7 +3282,428 @@ export class AgenticPDF {
     return map[tsType] || 'string';
   }
 
+  // ==========================================================================
+  // Real-Time Translation & Text-to-Speech
+  // ==========================================================================
+
+  /**
+   * Translate all text content in the PDF using a TranslationProvider.
+   * Returns translated pages preserving positional metadata for each segment.
+   */
+  async translateDocument(
+    provider: TranslationProvider,
+    options: TranslationOptions
+  ): Promise<TranslatedPage[]> {
+    const pages: TranslatedPage[] = [];
+    const batchSize = options.batchSize ?? 50;
+    const srcLang = options.sourceLanguage ?? null;
+    const targetLang = options.targetLanguage;
+
+    const textOptions: TextExtractionOptions = {};
+    if (options.pageRange) {
+      textOptions.pageRange = options.pageRange;
+    }
+
+    // Group TextContent by page
+    const allText = await this.extractText(textOptions);
+    const pageMap = new Map<number, TextContent[]>();
+    for (const tc of allText) {
+      const arr = pageMap.get(tc.pageNumber) || [];
+      arr.push(tc);
+      pageMap.set(tc.pageNumber, arr);
+    }
+
+    let segmentsTranslated = 0;
+    const totalPages = pageMap.size;
+    let pagesComplete = 0;
+
+    for (const [pageNum, segments] of pageMap) {
+      if (options.abortSignal?.aborted) break;
+
+      const translatedSegments: TranslatedSegment[] = [];
+
+      // Process in batches
+      for (let i = 0; i < segments.length; i += batchSize) {
+        if (options.abortSignal?.aborted) break;
+        const batch = segments.slice(i, i + batchSize);
+        const texts = batch.map(s => s.text).filter(t => t.trim().length > 0);
+
+        if (texts.length === 0) continue;
+
+        // Apply glossary substitutions before translation
+        const processedTexts = options.glossary
+          ? texts.map(t => {
+              let result = t;
+              for (const [term, replacement] of Object.entries(options.glossary!)) {
+                result = result.split(term).join(replacement);
+              }
+              return result;
+            })
+          : texts;
+
+        const results = await provider.translateBatch(processedTexts, srcLang, targetLang);
+
+        let resultIdx = 0;
+        for (const seg of batch) {
+          if (seg.text.trim().length === 0) {
+            translatedSegments.push({ original: seg, translatedText: seg.text, confidence: 1.0 });
+          } else {
+            const result = results[resultIdx++];
+            translatedSegments.push({
+              original: seg,
+              translatedText: result.translatedText,
+              confidence: result.confidence
+            });
+          }
+          segmentsTranslated++;
+        }
+      }
+
+      const detectedLang = srcLang || (translatedSegments.length > 0 ? 'auto' : 'unknown');
+
+      pages.push({
+        pageNumber: pageNum,
+        sourceLanguage: detectedLang,
+        targetLanguage: targetLang,
+        segments: translatedSegments
+      });
+
+      pagesComplete++;
+      options.progressCallback?.({ pagesComplete, totalPages, segmentsTranslated });
+    }
+
+    return pages;
+  }
+
+  /**
+   * Stream translated pages one at a time for memory-efficient processing.
+   * Yields each TranslatedPage as soon as it is ready.
+   */
+  async *streamTranslation(
+    provider: TranslationProvider,
+    options: TranslationOptions
+  ): AsyncGenerator<TranslatedPage> {
+    const batchSize = options.batchSize ?? 50;
+    const srcLang = options.sourceLanguage ?? null;
+    const targetLang = options.targetLanguage;
+    const pageCount = this.getPageCount();
+
+    const startPage = options.pageRange?.start ?? 1;
+    const endPage = options.pageRange?.end ?? pageCount;
+
+    let segmentsTranslated = 0;
+    let pagesComplete = 0;
+    const totalPages = endPage - startPage + 1;
+
+    for (let p = startPage; p <= endPage; p++) {
+      if (options.abortSignal?.aborted) return;
+
+      const pageText = await this.extractText({ pageRange: { start: p, end: p } });
+      if (pageText.length === 0) {
+        pagesComplete++;
+        continue;
+      }
+
+      const translatedSegments: TranslatedSegment[] = [];
+
+      for (let i = 0; i < pageText.length; i += batchSize) {
+        if (options.abortSignal?.aborted) return;
+        const batch = pageText.slice(i, i + batchSize);
+        const texts = batch.map(s => s.text).filter(t => t.trim().length > 0);
+
+        if (texts.length === 0) continue;
+
+        const processedTexts = options.glossary
+          ? texts.map(t => {
+              let result = t;
+              for (const [term, replacement] of Object.entries(options.glossary!)) {
+                result = result.split(term).join(replacement);
+              }
+              return result;
+            })
+          : texts;
+
+        const results = await provider.translateBatch(processedTexts, srcLang, targetLang);
+
+        let resultIdx = 0;
+        for (const seg of batch) {
+          if (seg.text.trim().length === 0) {
+            translatedSegments.push({ original: seg, translatedText: seg.text, confidence: 1.0 });
+          } else {
+            const result = results[resultIdx++];
+            translatedSegments.push({
+              original: seg,
+              translatedText: result.translatedText,
+              confidence: result.confidence
+            });
+          }
+          segmentsTranslated++;
+        }
+      }
+
+      pagesComplete++;
+      options.progressCallback?.({ pagesComplete, totalPages, segmentsTranslated });
+
+      yield {
+        pageNumber: p,
+        sourceLanguage: srcLang || 'auto',
+        targetLanguage: targetLang,
+        segments: translatedSegments
+      };
+    }
+  }
+
+  /**
+   * Synthesize text-to-speech audio for the document.
+   * Returns an array of audio segments, one per page or content chunk.
+   */
+  async synthesizeSpeech(options: TTSOptions): Promise<TTSAudioSegment[]> {
+    const segments: TTSAudioSegment[] = [];
+    const maxChars = options.maxCharsPerRequest ?? 4096;
+    const pageCount = this.getPageCount();
+    const startPage = options.pageRange?.start ?? 1;
+    const endPage = options.pageRange?.end ?? pageCount;
+
+    let segmentsSynthesized = 0;
+    let totalDurationMs = 0;
+    const totalPages = endPage - startPage + 1;
+    let pagesComplete = 0;
+
+    for (let p = startPage; p <= endPage; p++) {
+      if (options.abortSignal?.aborted) break;
+
+      let pageTexts = await this.extractText({ pageRange: { start: p, end: p } });
+      let pageContent = pageTexts.map(tc => tc.text).join(' ').trim();
+
+      // Optionally translate before synthesis
+      if (options.translateFirst && options.translationProvider && options.translationTargetLanguage) {
+        const result = await options.translationProvider.translate(
+          pageContent,
+          null,
+          options.translationTargetLanguage
+        );
+        pageContent = result.translatedText;
+      }
+
+      if (pageContent.length === 0) {
+        pagesComplete++;
+        continue;
+      }
+
+      // Split into chunks respecting sentence boundaries
+      const chunks = this._splitTextForTTS(pageContent, maxChars);
+
+      for (const chunk of chunks) {
+        if (options.abortSignal?.aborted) break;
+
+        const audioSeg = await options.provider.synthesize(chunk, {
+          voiceId: options.voiceId,
+          rate: options.rate,
+          pitch: options.pitch,
+          format: options.format ?? 'mp3',
+          sampleRate: options.sampleRate ?? 24000
+        });
+
+        // Ensure page number is attached
+        audioSeg.pageNumber = p;
+        segments.push(audioSeg);
+        segmentsSynthesized++;
+        totalDurationMs += audioSeg.durationMs;
+      }
+
+      pagesComplete++;
+      options.progressCallback?.({ pagesComplete, totalPages, segmentsSynthesized, totalDurationMs });
+    }
+
+    return segments;
+  }
+
+  /**
+   * Stream TTS audio segments as they are synthesized.
+   * Yields one TTSAudioSegment at a time for real-time playback pipelines.
+   */
+  async *streamSpeechSynthesis(options: TTSOptions): AsyncGenerator<TTSAudioSegment> {
+    const maxChars = options.maxCharsPerRequest ?? 4096;
+    const pageCount = this.getPageCount();
+    const startPage = options.pageRange?.start ?? 1;
+    const endPage = options.pageRange?.end ?? pageCount;
+
+    let segmentsSynthesized = 0;
+    let totalDurationMs = 0;
+    const totalPages = endPage - startPage + 1;
+    let pagesComplete = 0;
+
+    for (let p = startPage; p <= endPage; p++) {
+      if (options.abortSignal?.aborted) return;
+
+      let pageTexts = await this.extractText({ pageRange: { start: p, end: p } });
+      let pageContent = pageTexts.map(tc => tc.text).join(' ').trim();
+
+      if (options.translateFirst && options.translationProvider && options.translationTargetLanguage) {
+        const result = await options.translationProvider.translate(
+          pageContent,
+          null,
+          options.translationTargetLanguage
+        );
+        pageContent = result.translatedText;
+      }
+
+      if (pageContent.length === 0) {
+        pagesComplete++;
+        continue;
+      }
+
+      const chunks = this._splitTextForTTS(pageContent, maxChars);
+
+      for (const chunk of chunks) {
+        if (options.abortSignal?.aborted) return;
+
+        // If provider supports streaming, use it for sub-chunk audio
+        if (options.provider.synthesizeStream) {
+          const audioChunks: Uint8Array[] = [];
+          let totalLen = 0;
+          for await (const part of options.provider.synthesizeStream(chunk, {
+            voiceId: options.voiceId,
+            rate: options.rate,
+            pitch: options.pitch,
+            format: options.format ?? 'mp3',
+            sampleRate: options.sampleRate ?? 24000
+          })) {
+            audioChunks.push(part);
+            totalLen += part.length;
+          }
+          // Merge streaming chunks into one segment
+          const merged = new Uint8Array(totalLen);
+          let offset = 0;
+          for (const ac of audioChunks) {
+            merged.set(ac, offset);
+            offset += ac.length;
+          }
+          const seg: TTSAudioSegment = {
+            audioData: merged,
+            format: options.format ?? 'mp3',
+            durationMs: 0, // Duration not known from raw streaming
+            sampleRate: options.sampleRate ?? 24000,
+            pageNumber: p,
+            text: chunk
+          };
+          segmentsSynthesized++;
+          yield seg;
+        } else {
+          const audioSeg = await options.provider.synthesize(chunk, {
+            voiceId: options.voiceId,
+            rate: options.rate,
+            pitch: options.pitch,
+            format: options.format ?? 'mp3',
+            sampleRate: options.sampleRate ?? 24000
+          });
+          audioSeg.pageNumber = p;
+          segmentsSynthesized++;
+          totalDurationMs += audioSeg.durationMs;
+          yield audioSeg;
+        }
+      }
+
+      pagesComplete++;
+      options.progressCallback?.({ pagesComplete, totalPages, segmentsSynthesized, totalDurationMs });
+    }
+  }
+
+  /**
+   * Export translated document as formatted text, preserving page structure.
+   */
+  async exportTranslation(
+    provider: TranslationProvider,
+    options: TranslationOptions & { format?: 'text' | 'json' | 'srt' }
+  ): Promise<string> {
+    const pages = await this.translateDocument(provider, options);
+    const fmt = options.format ?? 'text';
+
+    if (fmt === 'json') {
+      return JSON.stringify(pages, null, 2);
+    }
+
+    if (fmt === 'srt') {
+      // SubRip subtitle format — one entry per segment
+      let srtIdx = 1;
+      const lines: string[] = [];
+      for (const page of pages) {
+        for (const seg of page.segments) {
+          const startSec = (srtIdx - 1) * 3;
+          const endSec = startSec + 3;
+          lines.push(String(srtIdx));
+          lines.push(`${_formatSrtTime(startSec)} --> ${_formatSrtTime(endSec)}`);
+          lines.push(seg.translatedText);
+          lines.push('');
+          srtIdx++;
+        }
+      }
+      return lines.join('\n');
+    }
+
+    // Default: plain text page-by-page
+    const lines: string[] = [];
+    for (const page of pages) {
+      lines.push(`--- Page ${page.pageNumber} [${page.sourceLanguage} → ${page.targetLanguage}] ---`);
+      for (const seg of page.segments) {
+        lines.push(seg.translatedText);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  /** Split text into chunks at sentence boundaries for TTS. */
+  private _splitTextForTTS(text: string, maxChars: number): string[] {
+    if (text.length <= maxChars) return [text];
+
+    const chunks: string[] = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= maxChars) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Try to split at sentence boundary
+      let splitIdx = -1;
+      const searchRange = remaining.substring(0, maxChars);
+      const sentenceEnders = ['. ', '! ', '? ', '.\n', '!\n', '?\n'];
+      for (const ender of sentenceEnders) {
+        const idx = searchRange.lastIndexOf(ender);
+        if (idx > splitIdx) splitIdx = idx + ender.length;
+      }
+
+      // Fall back to word boundary
+      if (splitIdx <= 0) {
+        splitIdx = searchRange.lastIndexOf(' ');
+      }
+
+      // Last resort: hard cut
+      if (splitIdx <= 0) {
+        splitIdx = maxChars;
+      }
+
+      chunks.push(remaining.substring(0, splitIdx).trim());
+      remaining = remaining.substring(splitIdx).trim();
+    }
+
+    return chunks;
+  }
+
 }
+
+/** Format seconds to SRT timestamp (HH:MM:SS,mmm). */
+function _formatSrtTime(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  const ms = Math.round((totalSeconds % 1) * 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+
 
 // ============================================================================
 // PDF Parser Implementation
