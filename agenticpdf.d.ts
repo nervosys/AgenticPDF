@@ -360,6 +360,64 @@ export interface NLPReadyContent {
     summary?: string;
     keywords?: string[];
 }
+// Ontology & AI Agent Discovery Types
+export interface OntologyConcept {
+    id: string;
+    label: string;
+    description: string;
+    properties: { name: string; type: string; description: string }[];
+    relationships: { type: string; target: string; description: string }[];
+}
+
+export interface Capability {
+    id: string;
+    name: string;
+    description: string;
+    category: 'loading' | 'extraction' | 'rendering' | 'analysis' | 'search' | 'forms' | 'annotations' | 'export' | 'memory' | 'streaming';
+    methods: MethodDescriptor[];
+    inputTypes: string[];
+    outputTypes: string[];
+    streaming: boolean;
+}
+
+export interface MethodDescriptor {
+    name: string;
+    description: string;
+    parameters: { name: string; type: string; required: boolean; description: string }[];
+    returnType: string;
+    async: boolean;
+    streaming: boolean;
+    static: boolean;
+    example?: string;
+}
+
+export interface Workflow {
+    id: string;
+    name: string;
+    description: string;
+    steps: { order: number; method: string; description: string; example?: string }[];
+}
+
+export interface LibraryOntology {
+    '@context': string;
+    '@type': string;
+    name: string;
+    version: string;
+    license: string;
+    description: string;
+    concepts: OntologyConcept[];
+    capabilities: Capability[];
+    workflows: Workflow[];
+    enums: Record<string, string[]>;
+}
+
+export interface DocumentCapabilityReport {
+    documentInfo: { pageCount: number; fileSize: number; version: string; encrypted: boolean };
+    availableOperations: string[];
+    recommendedWorkflows: string[];
+    estimatedComplexity: 'simple' | 'moderate' | 'complex';
+}
+
 export interface EmbeddingProvider {
     model: string;
     dimensions: number;
@@ -381,7 +439,7 @@ export interface ProgressInfo {
     timeElapsed: number;
     estimatedTimeRemaining?: number;
 }
-export declare class ModernPDF {
+export declare class AgenticPDF {
     private options;
     private buffer?;
     private stream?;
@@ -507,6 +565,26 @@ export declare class ModernPDF {
         storageKey?: string;
         persistTheme?: boolean;
     }): ThemeManager;
+        /**
+     * Returns a complete machine-readable ontology describing the library
+     */
+    static describe(): LibraryOntology;
+    /**
+     * Returns the library's capability map organized by category
+     */
+    static getCapabilities(): Capability[];
+    /**
+     * Returns all method signatures for code generation
+     */
+    static getMethodSignatures(): MethodDescriptor[];
+    /**
+     * Returns pre-built workflow templates for common operations
+     */
+    static getWorkflows(): Workflow[];
+    /**
+     * Describes the loaded document's available operations and recommended workflows
+     */
+    describeDocument(): DocumentCapabilityReport | undefined;
     /**
      * Close and cleanup resources
      */
@@ -698,4 +776,4 @@ export interface ExportOptions {
 }
 export type ExportFormat = 'text' | 'html' | 'markdown' | 'json' | 'xml' | 'csv';
 export { ThemeManager };
-export default ModernPDF;
+export default AgenticPDF;

@@ -312,6 +312,51 @@ const jsonStream = await pdf.exportAs('json', {
 });
 ```
 
+## Ontology & AI Agent Discovery
+
+AgenticPDF includes a built-in ontology and introspection API that allows AI agents to programmatically discover capabilities, understand the type system, and generate code.
+
+### Discovery API
+
+```typescript
+// Get full machine-readable ontology (JSON-LD style)
+const ontology = AgenticPDF.describe();
+// Returns: LibraryOntology with concepts, capabilities, workflows, enums
+
+// Get capability map organized by category
+const capabilities = AgenticPDF.getCapabilities();
+// Returns: Capability[] with methods, input/output types, streaming support
+
+// Get all method signatures for code generation
+const methods = AgenticPDF.getMethodSignatures();
+// Returns: MethodDescriptor[] with parameters, return types, examples
+
+// Get pre-built workflow templates
+const workflows = AgenticPDF.getWorkflows();
+// Returns: Workflow[] with step-by-step instructions and code examples
+
+// Instance-level: describe what's possible with the loaded document
+const report = pdf.describeDocument();
+// Returns: DocumentCapabilityReport with recommended workflows and complexity
+```
+
+### Ontology Concepts
+The ontology models 9 core concepts: Document, Page, TextContent, ImageContent, SemanticChunk, AIFeatures, Annotation, FormField, StructuralAnalysis — each with properties and relationships.
+
+### Capability Categories
+Capabilities are organized into: loading, extraction, rendering, analysis, search, forms, annotations, export, memory, streaming.
+
+### Pre-built Workflows
+7 workflow templates: basic-text-extraction, rag-pipeline, document-analysis, form-processing, streaming-large-document, multi-format-export, llm-streaming.
+
+### Ontology Types
+- **`LibraryOntology`** - Top-level ontology with JSON-LD `@context`
+- **`OntologyConcept`** - Domain concept with properties and relationships
+- **`Capability`** - Library capability with methods and I/O types
+- **`MethodDescriptor`** - Method signature with parameters and examples
+- **`Workflow`** - Multi-step workflow template
+- **`DocumentCapabilityReport`** - Instance-level document analysis
+
 ## Project-Specific Conventions
 
 - **Single File Design**: All functionality in one `AgenticPDF.ts` file

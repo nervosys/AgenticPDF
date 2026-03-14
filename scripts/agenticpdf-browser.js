@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-14T04:48:07.036Z
+ * Compiled: 2026-03-14T05:49:36.317Z
  */
 
 (function(global) {
@@ -738,6 +738,705 @@ class AgenticPDF {
      */
     getVersion() {
         return this.metadata?.version || '1.0';
+    }
+    // ==========================================================================
+    // Ontology & AI Agent Discovery
+    // ==========================================================================
+    /**
+     * Returns a complete machine-readable ontology describing the library's
+     * concepts, capabilities, workflows, and type hierarchy.
+     * Designed for AI agent discovery and automated code generation.
+     */
+    static describe() {
+        return {
+            '@context': 'https://schema.org',
+            '@type': 'SoftwareApplication',
+            name: 'AgenticPDF',
+            version: '1.0.0',
+            license: 'AGPL-3.0-or-later',
+            description: 'Zero-dependency TypeScript PDF processing library with streaming-first architecture, semantic chunking, and built-in AI integration for agentic workflows.',
+            concepts: AgenticPDF._getConcepts(),
+            capabilities: AgenticPDF.getCapabilities(),
+            workflows: AgenticPDF.getWorkflows(),
+            enums: {
+                DocumentType: ['Article', 'Book', 'Report', 'Form', 'Invoice', 'Resume', 'Presentation', 'Manual', 'Other'],
+                ChunkType: ['Title', 'Header', 'Paragraph', 'List', 'Table', 'Figure', 'Code', 'Quote', 'Footnote'],
+                AnnotationType: ['Text', 'Link', 'FreeText', 'Line', 'Square', 'Circle', 'Polygon', 'PolyLine', 'Highlight', 'Underline', 'Squiggly', 'StrikeOut', 'Stamp', 'Caret', 'Ink', 'Popup', 'FileAttachment', 'Sound', 'Movie', 'Widget', 'Screen', 'PrinterMark', 'TrapNet', 'Watermark', 'Redact'],
+                FormFieldType: ['Button', 'Text', 'Choice', 'Signature'],
+                ExportFormat: ['text', 'html', 'markdown', 'json', 'xml', 'csv']
+            }
+        };
+    }
+    /**
+     * Returns the library's capability map organized by category.
+     * Each capability includes its methods, input/output types, and streaming support.
+     */
+    static getCapabilities() {
+        return [
+            {
+                id: 'load',
+                name: 'Document Loading',
+                description: 'Load PDF documents from multiple sources including files, URLs, buffers, and streams with optional streaming and lazy loading.',
+                category: 'loading',
+                streaming: true,
+                inputTypes: ['File', 'Blob', 'string (URL)', 'ArrayBuffer', 'ReadableStream<Uint8Array>'],
+                outputTypes: ['AgenticPDF'],
+                methods: [
+                    {
+                        name: 'fromFile',
+                        description: 'Load PDF from a File or Blob object',
+                        parameters: [
+                            { name: 'file', type: 'File | Blob', required: true, description: 'The file or blob to load' },
+                            { name: 'options', type: 'PDFOptions', required: false, description: 'Loading and parsing options' }
+                        ],
+                        returnType: 'Promise<AgenticPDF>',
+                        async: true, streaming: false, static: true,
+                        example: "const pdf = await AgenticPDF.fromFile(file);"
+                    },
+                    {
+                        name: 'fromUrl',
+                        description: 'Load PDF from a URL with optional streaming support',
+                        parameters: [
+                            { name: 'url', type: 'string', required: true, description: 'URL to fetch the PDF from' },
+                            { name: 'options', type: 'PDFOptions', required: false, description: 'Loading options including streamOptions for progress tracking' }
+                        ],
+                        returnType: 'Promise<AgenticPDF>',
+                        async: true, streaming: true, static: true,
+                        example: "const pdf = await AgenticPDF.fromUrl('https://example.com/doc.pdf');"
+                    },
+                    {
+                        name: 'fromBuffer',
+                        description: 'Load PDF from an ArrayBuffer',
+                        parameters: [
+                            { name: 'buffer', type: 'ArrayBuffer', required: true, description: 'Raw PDF data' },
+                            { name: 'options', type: 'PDFOptions', required: false, description: 'Parsing options' }
+                        ],
+                        returnType: 'Promise<AgenticPDF>',
+                        async: true, streaming: false, static: true,
+                        example: "const pdf = await AgenticPDF.fromBuffer(buffer);"
+                    },
+                    {
+                        name: 'fromStream',
+                        description: 'Load PDF from a ReadableStream for memory-efficient processing',
+                        parameters: [
+                            { name: 'stream', type: 'ReadableStream<Uint8Array>', required: true, description: 'Readable stream of PDF data' },
+                            { name: 'options', type: 'PDFOptions', required: false, description: 'Stream processing options' }
+                        ],
+                        returnType: 'AgenticPDF',
+                        async: false, streaming: true, static: true,
+                        example: "const pdf = AgenticPDF.fromStream(stream);"
+                    }
+                ]
+            },
+            {
+                id: 'text-extraction',
+                name: 'Text Extraction',
+                description: 'Extract text content with positioning, styling, and font information. Supports both batch and streaming modes.',
+                category: 'extraction',
+                streaming: true,
+                inputTypes: ['TextExtractionOptions'],
+                outputTypes: ['TextContent[]', 'AsyncGenerator<TextContent>'],
+                methods: [
+                    {
+                        name: 'extractText',
+                        description: 'Extract all text content with positioning and style information',
+                        parameters: [
+                            { name: 'options', type: 'TextExtractionOptions', required: false, description: 'Options for formatting, tables, OCR, and page range' }
+                        ],
+                        returnType: 'Promise<TextContent[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const text = await pdf.extractText({ preserveFormatting: true });"
+                    },
+                    {
+                        name: 'streamText',
+                        description: 'Stream text content page-by-page for memory-efficient processing of large documents',
+                        parameters: [
+                            { name: 'options', type: 'TextExtractionOptions', required: false, description: 'Extraction options' }
+                        ],
+                        returnType: 'AsyncGenerator<TextContent>',
+                        async: true, streaming: true, static: false,
+                        example: "for await (const text of pdf.streamText()) { process(text); }"
+                    }
+                ]
+            },
+            {
+                id: 'image-extraction',
+                name: 'Image Extraction',
+                description: 'Extract embedded images from PDF pages with metadata and optional format conversion.',
+                category: 'extraction',
+                streaming: false,
+                inputTypes: ['ImageExtractionOptions'],
+                outputTypes: ['ImageContent[]'],
+                methods: [
+                    {
+                        name: 'extractImages',
+                        description: 'Extract all images with metadata and pixel data',
+                        parameters: [
+                            { name: 'options', type: 'ImageExtractionOptions', required: false, description: 'Format, quality, size, and page range options' }
+                        ],
+                        returnType: 'Promise<ImageContent[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const images = await pdf.extractImages({ format: 'png' });"
+                    }
+                ]
+            },
+            {
+                id: 'ai-analysis',
+                name: 'AI & Semantic Analysis',
+                description: 'Structural analysis, semantic chunking, NER, summarization, and embedding generation for RAG and LLM integration.',
+                category: 'analysis',
+                streaming: true,
+                inputTypes: ['AIOptions', 'ChunkingOptions', 'EmbeddingProvider'],
+                outputTypes: ['AIFeatures', 'SemanticChunk[]', 'AsyncGenerator<SemanticChunk>'],
+                methods: [
+                    {
+                        name: 'getAIFeatures',
+                        description: 'Run full AI analysis: structural analysis, semantic chunking, NER, summarization',
+                        parameters: [
+                            { name: 'options', type: 'AIOptions', required: false, description: 'AI feature configuration including embedding provider' }
+                        ],
+                        returnType: 'Promise<AIFeatures>',
+                        async: true, streaming: false, static: false,
+                        example: "const ai = await pdf.getAIFeatures({ enableStructuralAnalysis: true });"
+                    },
+                    {
+                        name: 'generateSemanticChunks',
+                        description: 'Generate semantic chunks optimized for RAG systems and vector stores',
+                        parameters: [
+                            { name: 'options', type: 'ChunkingOptions', required: false, description: 'Chunking strategy, size, and overlap settings' }
+                        ],
+                        returnType: 'Promise<SemanticChunk[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const chunks = await pdf.generateSemanticChunks({ strategy: 'semantic', maxChunkSize: 1000 });"
+                    },
+                    {
+                        name: 'streamSemanticChunks',
+                        description: 'Stream semantic chunks for memory-efficient RAG pipeline processing',
+                        parameters: [
+                            { name: 'options', type: 'ChunkingOptions', required: false, description: 'Chunking configuration' }
+                        ],
+                        returnType: 'AsyncGenerator<SemanticChunk>',
+                        async: true, streaming: true, static: false,
+                        example: "for await (const chunk of pdf.streamSemanticChunks()) { await vectorStore.add(chunk); }"
+                    }
+                ]
+            },
+            {
+                id: 'search',
+                name: 'Text Search',
+                description: 'Full-text search with regex support, case sensitivity, whole-word matching, and context extraction.',
+                category: 'search',
+                streaming: false,
+                inputTypes: ['string', 'SearchOptions'],
+                outputTypes: ['SearchResult[]'],
+                methods: [
+                    {
+                        name: 'search',
+                        description: 'Search document text with regex, case sensitivity, and context options',
+                        parameters: [
+                            { name: 'query', type: 'string', required: true, description: 'Search query or regex pattern' },
+                            { name: 'options', type: 'SearchOptions', required: false, description: 'Case sensitivity, whole word, regex, context length' }
+                        ],
+                        returnType: 'Promise<SearchResult[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const results = await pdf.search('revenue', { caseSensitive: false });"
+                    }
+                ]
+            },
+            {
+                id: 'forms',
+                name: 'Form Processing',
+                description: 'Extract, read, and fill interactive PDF form fields including text inputs, checkboxes, dropdowns, and signatures.',
+                category: 'forms',
+                streaming: false,
+                inputTypes: ['Record<string, any>'],
+                outputTypes: ['FormField[]'],
+                methods: [
+                    {
+                        name: 'getFormFields',
+                        description: 'Extract all form fields with their types, values, and validation rules',
+                        parameters: [],
+                        returnType: 'Promise<FormField[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const fields = await pdf.getFormFields();"
+                    },
+                    {
+                        name: 'fillForm',
+                        description: 'Fill form fields with provided key-value data',
+                        parameters: [
+                            { name: 'data', type: 'Record<string, any>', required: true, description: 'Field name to value mapping' }
+                        ],
+                        returnType: 'Promise<void>',
+                        async: true, streaming: false, static: false,
+                        example: "await pdf.fillForm({ name: 'John', email: 'john@example.com' });"
+                    }
+                ]
+            },
+            {
+                id: 'annotations',
+                name: 'Annotations',
+                description: 'Read and create PDF annotations including highlights, notes, links, stamps, and redactions.',
+                category: 'annotations',
+                streaming: false,
+                inputTypes: ['Partial<Annotation>'],
+                outputTypes: ['Annotation[]', 'string'],
+                methods: [
+                    {
+                        name: 'getAnnotations',
+                        description: 'Get annotations from all pages or a specific page',
+                        parameters: [
+                            { name: 'pageNumber', type: 'number', required: false, description: 'Specific page number, or omit for all pages' }
+                        ],
+                        returnType: 'Promise<Annotation[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const annotations = await pdf.getAnnotations(1);"
+                    },
+                    {
+                        name: 'addAnnotation',
+                        description: 'Add a new annotation to the document',
+                        parameters: [
+                            { name: 'annotation', type: 'Partial<Annotation>', required: true, description: 'Annotation data including type, rect, and content' }
+                        ],
+                        returnType: 'Promise<string>',
+                        async: true, streaming: false, static: false,
+                        example: "const id = await pdf.addAnnotation({ type: AnnotationType.Highlight, rect: { x: 0, y: 0, width: 100, height: 20 } });"
+                    }
+                ]
+            },
+            {
+                id: 'rendering',
+                name: 'Page Rendering',
+                description: 'Render PDF pages to HTML canvas or image blobs with configurable quality, scale, and theme support.',
+                category: 'rendering',
+                streaming: false,
+                inputTypes: ['HTMLCanvasElement', 'RenderOptions'],
+                outputTypes: ['void', 'Blob'],
+                methods: [
+                    {
+                        name: 'renderPage',
+                        description: 'Render a page to an HTML canvas element',
+                        parameters: [
+                            { name: 'pageNumber', type: 'number', required: true, description: 'Page number (1-based)' },
+                            { name: 'canvas', type: 'HTMLCanvasElement', required: true, description: 'Target canvas element' },
+                            { name: 'options', type: 'RenderOptions', required: false, description: 'Scale, quality, and viewer options' }
+                        ],
+                        returnType: 'Promise<void>',
+                        async: true, streaming: false, static: false,
+                        example: "await pdf.renderPage(1, canvas, { scale: 2.0 });"
+                    },
+                    {
+                        name: 'renderPageToImage',
+                        description: 'Render a page to an image blob in PNG, JPEG, or WebP format',
+                        parameters: [
+                            { name: 'pageNumber', type: 'number', required: true, description: 'Page number (1-based)' },
+                            { name: 'format', type: "'png' | 'jpeg' | 'webp'", required: false, description: 'Image format (default: png)' },
+                            { name: 'options', type: 'RenderOptions', required: false, description: 'Scale and quality options' }
+                        ],
+                        returnType: 'Promise<Blob>',
+                        async: true, streaming: false, static: false,
+                        example: "const blob = await pdf.renderPageToImage(1, 'png');"
+                    }
+                ]
+            },
+            {
+                id: 'export',
+                name: 'Multi-Format Export',
+                description: 'Export PDF content to text, HTML, Markdown, JSON, XML, or CSV formats with configurable options.',
+                category: 'export',
+                streaming: false,
+                inputTypes: ['ExportFormat', 'ExportOptions'],
+                outputTypes: ['Blob', 'string'],
+                methods: [
+                    {
+                        name: 'exportAs',
+                        description: 'Export document to a specified format',
+                        parameters: [
+                            { name: 'format', type: "ExportFormat", required: true, description: "Target format: 'text' | 'html' | 'markdown' | 'json' | 'xml' | 'csv'" },
+                            { name: 'options', type: 'ExportOptions', required: false, description: 'Metadata, annotations, images, and page range options' }
+                        ],
+                        returnType: 'Promise<Blob | string>',
+                        async: true, streaming: false, static: false,
+                        example: "const md = await pdf.exportAs('markdown', { includeImages: true });"
+                    },
+                    {
+                        name: 'save',
+                        description: 'Save the modified PDF document as a Blob',
+                        parameters: [],
+                        returnType: 'Promise<Blob>',
+                        async: true, streaming: false, static: false,
+                        example: "const blob = await pdf.save();"
+                    }
+                ]
+            },
+            {
+                id: 'memory',
+                name: 'Memory Management',
+                description: 'Resource lifecycle management including page unloading, cache clearing, and memory usage monitoring.',
+                category: 'memory',
+                streaming: false,
+                inputTypes: ['number[]'],
+                outputTypes: ['void', '{ pagesCached: number; objectsCached: number }'],
+                methods: [
+                    {
+                        name: 'close',
+                        description: 'Release all resources held by this PDF instance',
+                        parameters: [],
+                        returnType: 'void',
+                        async: false, streaming: false, static: false,
+                        example: "pdf.close();"
+                    },
+                    {
+                        name: 'unloadPages',
+                        description: 'Unload cached pages to free memory, optionally keeping specified pages',
+                        parameters: [
+                            { name: 'keepPages', type: 'number[]', required: false, description: 'Page numbers to keep in cache' }
+                        ],
+                        returnType: 'void',
+                        async: false, streaming: false, static: false,
+                        example: "pdf.unloadPages([1, 2]); // keep pages 1-2, unload the rest"
+                    },
+                    {
+                        name: 'getMemoryStats',
+                        description: 'Get current memory usage statistics',
+                        parameters: [],
+                        returnType: '{ pagesCached: number; objectsCached: number }',
+                        async: false, streaming: false, static: false,
+                        example: "const stats = pdf.getMemoryStats();"
+                    }
+                ]
+            },
+            {
+                id: 'navigation',
+                name: 'Document Navigation',
+                description: 'Access document structure including named destinations, page metadata, and document outline.',
+                category: 'extraction',
+                streaming: false,
+                inputTypes: ['number'],
+                outputTypes: ['PDFMetadata', 'PDFPage', 'Map<string, object>'],
+                methods: [
+                    {
+                        name: 'getMetadata',
+                        description: 'Get document metadata including title, author, page count, and version',
+                        parameters: [],
+                        returnType: 'PDFMetadata | undefined',
+                        async: false, streaming: false, static: false,
+                        example: "const meta = pdf.getMetadata();"
+                    },
+                    {
+                        name: 'getPage',
+                        description: 'Get a specific page with lazy loading support',
+                        parameters: [
+                            { name: 'pageNumber', type: 'number', required: true, description: 'Page number (1-based)' }
+                        ],
+                        returnType: 'Promise<PDFPage | undefined>',
+                        async: true, streaming: false, static: false,
+                        example: "const page = await pdf.getPage(1);"
+                    },
+                    {
+                        name: 'getAllPages',
+                        description: 'Get all pages as an array',
+                        parameters: [],
+                        returnType: 'Promise<PDFPage[]>',
+                        async: true, streaming: false, static: false,
+                        example: "const pages = await pdf.getAllPages();"
+                    },
+                    {
+                        name: 'getNamedDestinations',
+                        description: 'Get all named destinations for internal navigation links',
+                        parameters: [],
+                        returnType: 'Map<string, { page: number; x: number | null; y: number | null }>',
+                        async: false, streaming: false, static: false,
+                        example: "const dests = pdf.getNamedDestinations();"
+                    }
+                ]
+            }
+        ];
+    }
+    /**
+     * Returns all method signatures with full parameter descriptions.
+     * Useful for AI agents performing automated code generation.
+     */
+    static getMethodSignatures() {
+        return AgenticPDF.getCapabilities().flatMap(c => c.methods);
+    }
+    /**
+     * Returns pre-built workflow templates for common multi-step operations.
+     * AI agents can use these to plan and execute complex document processing tasks.
+     */
+    static getWorkflows() {
+        return [
+            {
+                id: 'basic-text-extraction',
+                name: 'Basic Text Extraction',
+                description: 'Load a PDF and extract all text content with formatting preserved.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF document', example: "const pdf = await AgenticPDF.fromFile(file);" },
+                    { order: 2, method: 'extractText', description: 'Extract text with formatting', example: "const text = await pdf.extractText({ preserveFormatting: true });" },
+                    { order: 3, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'rag-pipeline',
+                name: 'RAG Pipeline Integration',
+                description: 'Process a PDF into semantic chunks suitable for vector store ingestion in a Retrieval-Augmented Generation system.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });" },
+                    { order: 2, method: 'streamSemanticChunks', description: 'Stream semantic chunks to vector store', example: "for await (const chunk of pdf.streamSemanticChunks({ strategy: 'semantic', maxChunkSize: 1000 })) { await vectorStore.add(chunk); }" },
+                    { order: 3, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'document-analysis',
+                name: 'Full Document Analysis',
+                description: 'Perform comprehensive AI analysis including structural analysis, NER, and summarization.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file);" },
+                    { order: 2, method: 'getAIFeatures', description: 'Run AI analysis', example: "const ai = await pdf.getAIFeatures({ enableStructuralAnalysis: true, enableNER: true, enableSummarization: true });" },
+                    { order: 3, method: 'exportAs', description: 'Export structured results', example: "const json = await pdf.exportAs('json', { includeMetadata: true });" },
+                    { order: 4, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'form-processing',
+                name: 'Form Extraction and Filling',
+                description: 'Extract form fields, fill them with data, and save the modified PDF.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF form', example: "const pdf = await AgenticPDF.fromFile(formFile);" },
+                    { order: 2, method: 'getFormFields', description: 'Inspect available form fields', example: "const fields = await pdf.getFormFields();" },
+                    { order: 3, method: 'fillForm', description: 'Fill form with data', example: "await pdf.fillForm({ name: 'John Doe', date: '2024-01-01' });" },
+                    { order: 4, method: 'save', description: 'Save the filled form', example: "const blob = await pdf.save();" },
+                    { order: 5, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'streaming-large-document',
+                name: 'Memory-Efficient Large Document Processing',
+                description: 'Process very large PDFs (100MB+) using streaming APIs with progress tracking and memory limits.',
+                steps: [
+                    { order: 1, method: 'fromUrl', description: 'Stream PDF from URL with progress', example: "const pdf = await AgenticPDF.fromUrl(url, { streamOptions: { chunkSize: 1024 * 1024, progressCallback: p => console.log(p.currentOperation) } });" },
+                    { order: 2, method: 'streamText', description: 'Stream text extraction page by page', example: "for await (const text of pdf.streamText({ normalizeWhitespace: true })) { process(text); }" },
+                    { order: 3, method: 'unloadPages', description: 'Free processed pages from memory', example: "pdf.unloadPages();" },
+                    { order: 4, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'multi-format-export',
+                name: 'Multi-Format Export Pipeline',
+                description: 'Export a PDF to multiple output formats for different downstream consumers.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file);" },
+                    { order: 2, method: 'exportAs', description: 'Export as Markdown', example: "const md = await pdf.exportAs('markdown', { includeImages: true });" },
+                    { order: 3, method: 'exportAs', description: 'Export as structured JSON', example: "const json = await pdf.exportAs('json', { includeMetadata: true, includeAnnotations: true });" },
+                    { order: 4, method: 'exportAs', description: 'Export as HTML', example: "const html = await pdf.exportAs('html');" },
+                    { order: 5, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            },
+            {
+                id: 'llm-streaming',
+                name: 'Stream to LLM',
+                description: 'Stream PDF content directly to a Large Language Model in appropriately sized chunks.',
+                steps: [
+                    { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });" },
+                    { order: 2, method: 'streamSemanticChunks', description: 'Stream chunks sized for LLM context windows', example: "for await (const chunk of pdf.streamSemanticChunks({ maxChunkSize: 1500, preserveParagraphs: true })) { await llm.send(chunk.content); }" },
+                    { order: 3, method: 'close', description: 'Release resources', example: "pdf.close();" }
+                ]
+            }
+        ];
+    }
+    /** @internal */
+    static _getConcepts() {
+        return [
+            {
+                id: 'Document',
+                label: 'PDF Document',
+                description: 'A loaded PDF document instance providing access to pages, content, metadata, and AI analysis capabilities.',
+                properties: [
+                    { name: 'pageCount', type: 'number', description: 'Total number of pages' },
+                    { name: 'fileSize', type: 'number', description: 'File size in bytes' },
+                    { name: 'version', type: 'string', description: 'PDF specification version' },
+                    { name: 'encrypted', type: 'boolean', description: 'Whether the document is password-protected' },
+                    { name: 'metadata', type: 'PDFMetadata', description: 'Title, author, subject, keywords, dates' }
+                ],
+                relationships: [
+                    { type: 'hasMany', target: 'Page', description: 'Contains one or more pages' },
+                    { type: 'hasMany', target: 'Annotation', description: 'Contains annotations across pages' },
+                    { type: 'hasMany', target: 'FormField', description: 'Contains interactive form fields' },
+                    { type: 'produces', target: 'AIFeatures', description: 'Generates AI analysis results' },
+                    { type: 'produces', target: 'SemanticChunk', description: 'Generates semantic chunks for RAG' }
+                ]
+            },
+            {
+                id: 'Page',
+                label: 'PDF Page',
+                description: 'An individual page with geometry, content streams, and resources.',
+                properties: [
+                    { name: 'pageNumber', type: 'number', description: '1-based page index' },
+                    { name: 'width', type: 'number', description: 'Page width in points' },
+                    { name: 'height', type: 'number', description: 'Page height in points' },
+                    { name: 'rotation', type: 'number', description: 'Page rotation in degrees' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Document', description: 'Part of a document' },
+                    { type: 'hasMany', target: 'TextContent', description: 'Contains text elements' },
+                    { type: 'hasMany', target: 'ImageContent', description: 'Contains embedded images' },
+                    { type: 'hasMany', target: 'Annotation', description: 'Contains page-level annotations' }
+                ]
+            },
+            {
+                id: 'TextContent',
+                label: 'Text Content',
+                description: 'Extracted text with precise positioning, font information, and styling.',
+                properties: [
+                    { name: 'text', type: 'string', description: 'The text content' },
+                    { name: 'x', type: 'number', description: 'X position on page' },
+                    { name: 'y', type: 'number', description: 'Y position on page' },
+                    { name: 'fontSize', type: 'number', description: 'Font size in points' },
+                    { name: 'fontName', type: 'string', description: 'Font family name' },
+                    { name: 'style', type: 'TextStyle', description: 'Bold, italic, underline, color' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Page', description: 'Located on a specific page' }
+                ]
+            },
+            {
+                id: 'ImageContent',
+                label: 'Image Content',
+                description: 'An embedded image extracted from the PDF with metadata and pixel data.',
+                properties: [
+                    { name: 'id', type: 'string', description: 'Unique image identifier' },
+                    { name: 'width', type: 'number', description: 'Image width in pixels' },
+                    { name: 'height', type: 'number', description: 'Image height in pixels' },
+                    { name: 'mimeType', type: 'string', description: 'Image MIME type' },
+                    { name: 'colorSpace', type: 'string', description: 'Color space (RGB, CMYK, etc.)' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Page', description: 'Located on a specific page' }
+                ]
+            },
+            {
+                id: 'SemanticChunk',
+                label: 'Semantic Chunk',
+                description: 'A semantically coherent text segment with metadata, optimized for RAG systems and vector stores.',
+                properties: [
+                    { name: 'id', type: 'string', description: 'Unique chunk identifier' },
+                    { name: 'content', type: 'string', description: 'Chunk text content' },
+                    { name: 'pageNumbers', type: 'number[]', description: 'Source page numbers' },
+                    { name: 'type', type: 'ChunkType', description: 'Content type classification' },
+                    { name: 'embedding', type: 'Float32Array', description: 'Optional embedding vector' },
+                    { name: 'metadata', type: 'ChunkMetadata', description: 'Token count, confidence, keywords, entities' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Document', description: 'Derived from a document' },
+                    { type: 'belongsTo', target: 'Page', description: 'Sourced from specific pages' }
+                ]
+            },
+            {
+                id: 'AIFeatures',
+                label: 'AI Analysis Results',
+                description: 'Comprehensive AI analysis output including structural analysis, semantic chunks, and NLP-ready content.',
+                properties: [
+                    { name: 'structuralAnalysis', type: 'StructuralAnalysis', description: 'Document structure: sections, tables, figures' },
+                    { name: 'semanticChunks', type: 'SemanticChunk[]', description: 'Semantic text chunks' },
+                    { name: 'nlpReady', type: 'NLPReadyContent', description: 'Clean text, sentences, paragraphs, summary' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Document', description: 'Analysis of a specific document' },
+                    { type: 'hasMany', target: 'SemanticChunk', description: 'Contains semantic chunks' }
+                ]
+            },
+            {
+                id: 'Annotation',
+                label: 'PDF Annotation',
+                description: 'A document annotation such as a highlight, note, link, stamp, or redaction.',
+                properties: [
+                    { name: 'id', type: 'string', description: 'Unique annotation identifier' },
+                    { name: 'type', type: 'AnnotationType', description: 'Annotation type enum value' },
+                    { name: 'rect', type: 'Rectangle', description: 'Bounding rectangle on page' },
+                    { name: 'contents', type: 'string', description: 'Annotation text content' },
+                    { name: 'author', type: 'string', description: 'Annotation author' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Page', description: 'Located on a specific page' }
+                ]
+            },
+            {
+                id: 'FormField',
+                label: 'Form Field',
+                description: 'An interactive form field that can be read and filled programmatically.',
+                properties: [
+                    { name: 'id', type: 'string', description: 'Field identifier' },
+                    { name: 'type', type: 'FormFieldType', description: 'Field type: Button, Text, Choice, Signature' },
+                    { name: 'name', type: 'string', description: 'Field name for form filling' },
+                    { name: 'value', type: 'any', description: 'Current field value' },
+                    { name: 'required', type: 'boolean', description: 'Whether the field is required' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'Document', description: 'Part of a document form' },
+                    { type: 'belongsTo', target: 'Page', description: 'Located on a specific page' }
+                ]
+            },
+            {
+                id: 'StructuralAnalysis',
+                label: 'Document Structure',
+                description: 'Structural decomposition of the document into sections, tables, figures, equations, and references.',
+                properties: [
+                    { name: 'documentType', type: 'DocumentType', description: 'Auto-detected document category' },
+                    { name: 'sections', type: 'DocumentSection[]', description: 'Hierarchical section structure' },
+                    { name: 'tables', type: 'Table[]', description: 'Detected tables with cell data' },
+                    { name: 'figures', type: 'Figure[]', description: 'Detected figures with captions' },
+                    { name: 'equations', type: 'Equation[]', description: 'Detected mathematical equations' },
+                    { name: 'references', type: 'Reference[]', description: 'Cross-references and citations' }
+                ],
+                relationships: [
+                    { type: 'belongsTo', target: 'AIFeatures', description: 'Part of AI analysis results' }
+                ]
+            }
+        ];
+    }
+    /**
+     * Describes the currently loaded document's available operations and
+     * recommends workflows based on document characteristics.
+     * Returns undefined if no document is loaded.
+     */
+    describeDocument() {
+        if (!this.metadata)
+            return undefined;
+        const pageCount = this.getPageCount();
+        const fileSize = this.getFileSize();
+        const encrypted = this.isEncrypted();
+        const operations = [
+            'extractText', 'streamText', 'extractImages',
+            'getAIFeatures', 'generateSemanticChunks', 'streamSemanticChunks',
+            'search', 'getAnnotations', 'addAnnotation',
+            'getFormFields', 'fillForm',
+            'renderPage', 'renderPageToImage', 'buildTextLayer',
+            'exportAs', 'save',
+            'getMetadata', 'getPage', 'getAllPages', 'getNamedDestinations',
+            'close', 'unloadPages', 'getMemoryStats'
+        ];
+        const workflows = ['basic-text-extraction'];
+        if (pageCount > 50 || fileSize > 10 * 1024 * 1024) {
+            workflows.push('streaming-large-document');
+        }
+        workflows.push('rag-pipeline', 'document-analysis', 'multi-format-export', 'llm-streaming');
+        let complexity = 'simple';
+        if (pageCount > 100 || fileSize > 50 * 1024 * 1024) {
+            complexity = 'complex';
+        }
+        else if (pageCount > 20 || fileSize > 5 * 1024 * 1024) {
+            complexity = 'moderate';
+        }
+        return {
+            documentInfo: {
+                pageCount,
+                fileSize,
+                version: this.getVersion(),
+                encrypted
+            },
+            availableOperations: operations,
+            recommendedWorkflows: workflows,
+            estimatedComplexity: complexity
+        };
     }
 }
 // ============================================================================
