@@ -1156,6 +1156,7 @@ export class AgenticPDF {
    * Parse PDF content
    */
   private async parse(): Promise<void> {
+    const startTime = performance.now();
     if (!this.buffer) throw new Error('No buffer available');
 
     const parser = new PDFParser(this.buffer, this.options);
@@ -1176,6 +1177,12 @@ export class AgenticPDF {
         this.pages.set(i, await parser.parsePage(i, this.pageTree));
       }
     }
+
+    Telemetry.trackDocumentLoad({
+      pageCount: this.metadata.pageCount,
+      fileSize: this.metadata.fileSize,
+      duration: performance.now() - startTime,
+    });
   }
 
   private async parseStream(): Promise<void> {
@@ -1264,14 +1271,21 @@ export class AgenticPDF {
    * Extract text content with AI-ready formatting
    */
   async extractText(options?: TextExtractionOptions): Promise<TextContent[]> {
+    const startTime = performance.now();
     const extractor = new TextExtractor(this, options);
-    return extractor.extract();
+    const result = await extractor.extract();
+    Telemetry.trackFeature('extractText', {
+      duration: Math.round(performance.now() - startTime),
+      pageCount: result.length,
+    });
+    return result;
   }
 
   /**
    * Extract text as a stream for large documents
    */
   async *streamText(options?: TextExtractionOptions): AsyncGenerator<TextContent> {
+    Telemetry.trackFeature('streamText');
     const extractor = new TextExtractor(this, options);
     yield* extractor.stream();
   }
@@ -1310,10 +1324,15 @@ export class AgenticPDF {
    * Get AI features (structural analysis, semantic chunks, etc.)
    */
   async getAIFeatures(options?: AIOptions): Promise<AIFeatures> {
+    const startTime = performance.now();
     if (!this.aiFeatures || options?.forceRegenerate) {
       const analyzer = new AIAnalyzer(this, options);
       this.aiFeatures = await analyzer.analyze();
     }
+    Telemetry.track(TelemetryEventType.AIFeature, {
+      feature: 'getAIFeatures',
+      duration: Math.round(performance.now() - startTime),
+    });
     return this.aiFeatures;
   }
 
@@ -1321,14 +1340,22 @@ export class AgenticPDF {
    * Generate semantic chunks for RAG systems
    */
   async generateSemanticChunks(options?: ChunkingOptions): Promise<SemanticChunk[]> {
+    const startTime = performance.now();
     const chunker = new SemanticChunker(this, options);
-    return chunker.chunk();
+    const chunks = await chunker.chunk();
+    Telemetry.track(TelemetryEventType.AIFeature, {
+      feature: 'generateSemanticChunks',
+      duration: Math.round(performance.now() - startTime),
+      chunkCount: chunks.length,
+    });
+    return chunks;
   }
 
   /**
    * Stream semantic chunks for memory-efficient processing
    */
   async *streamSemanticChunks(options?: ChunkingOptions): AsyncGenerator<SemanticChunk> {
+    Telemetry.trackFeature('streamSemanticChunks');
     const chunker = new SemanticChunker(this, options);
     yield* chunker.stream();
   }
@@ -1510,8 +1537,14 @@ export class AgenticPDF {
     canvas: HTMLCanvasElement,
     options?: RenderOptions
   ): Promise<void> {
+    const startTime = performance.now();
     const renderer = new PDFRenderer(this, options);
     await renderer.renderToCanvas(pageNumber, canvas);
+    Telemetry.track(TelemetryEventType.PageRender, {
+      pageNumber,
+      duration: Math.round(performance.now() - startTime),
+      scale: options?.scale ?? 1,
+    });
   }
 
   /**
@@ -1522,8 +1555,16 @@ export class AgenticPDF {
     format: 'png' | 'jpeg' | 'webp' = 'png',
     options?: RenderOptions
   ): Promise<Blob> {
+    const startTime = performance.now();
     const renderer = new PDFRenderer(this, options);
-    return renderer.renderToImage(pageNumber, format);
+    const result = await renderer.renderToImage(pageNumber, format);
+    Telemetry.track(TelemetryEventType.PageRender, {
+      pageNumber,
+      format,
+      duration: Math.round(performance.now() - startTime),
+      scale: options?.scale ?? 1,
+    });
+    return result;
   }
 
   /**
@@ -1560,8 +1601,14 @@ export class AgenticPDF {
    * Export to different formats
    */
   async exportAs(format: ExportFormat, options?: ExportOptions): Promise<Blob | string> {
+    const startTime = performance.now();
     const exporter = new PDFExporter(this, options);
-    return exporter.export(format);
+    const result = await exporter.export(format);
+    Telemetry.track(TelemetryEventType.Export, {
+      format,
+      duration: Math.round(performance.now() - startTime),
+    });
+    return result;
   }
 
   /**
