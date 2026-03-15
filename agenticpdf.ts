@@ -17443,6 +17443,8 @@ export interface TelemetryConfig {
   endpoint: string;
   flushInterval: number;
   maxBatchSize: number;
+  maxQueueSize: number;
+  maxRetries: number;
   anonymize: boolean;
 }
 
@@ -17480,11 +17482,18 @@ export class Telemetry {
   private static sessionId: string = '';
   private static eventQueue: TelemetryEvent[] = [];
   private static flushTimer: ReturnType<typeof setInterval> | null = null;
+  private static retryCount: number = 0;
+  private static retryDelay: number = 1000;
+  private static runtimeInfo: Record<string, string> | null = null;
+  private static version: string = '1.0.0';
+  private static exitHandlerRegistered: boolean = false;
   private static config: TelemetryConfig = {
     enabled: true,
     endpoint: 'https://telemetry.nervosys.ai/v1/events',
     flushInterval: 30000,
     maxBatchSize: 50,
+    maxQueueSize: 500,
+    maxRetries: 5,
     anonymize: true,
   };
 
@@ -17495,6 +17504,12 @@ export class Telemetry {
     
     // Generate anonymous session ID
     this.sessionId = this.generateSessionId();
+    
+    // Detect library version from package.json at build time
+    this.detectVersion();
+    
+    // Detect runtime environment
+    this.runtimeInfo = this.detectRuntime();
     
     // Check for opt-out via environment variable or global
     if (typeof process !== 'undefined' && process.env) {
@@ -17520,9 +17535,64 @@ export class Telemetry {
       } catch { /* Permission denied, continue */ }
     }
     
-    // Start flush timer if enabled
+    // Start flush timer and register exit handler if enabled
     if (this._enabled) {
       this.startFlushTimer();
+      this.registerExitHandler();
+    }
+  }
+
+  private static detectVersion(): void {
+    try {
+      if (typeof process !== 'undefined' && typeof require !== 'undefined') {
+        const path = require('path');
+        const fs = require('fs');
+        const pkgPath = path.resolve(__dirname, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          if (pkg.version) this.version = pkg.version;
+        }
+      }
+    } catch { /* Use default version */ }
+  }
+
+  private static detectRuntime(): Record<string, string> {
+    const info: Record<string, string> = {};
+    
+    if (typeof (globalThis as any).Deno !== 'undefined') {
+      info.runtime = 'deno';
+      try { info.runtimeVersion = (globalThis as any).Deno.version?.deno ?? 'unknown'; } catch { /* */ }
+    } else if (typeof process !== 'undefined' && process.versions?.node) {
+      info.runtime = 'node';
+      info.runtimeVersion = process.versions.node;
+      info.platform = process.platform;
+      info.arch = process.arch;
+    } else if (typeof navigator !== 'undefined') {
+      info.runtime = 'browser';
+      // Only include browser engine, not full userAgent to avoid fingerprinting
+      const ua = navigator.userAgent;
+      if (ua.includes('Chrome/')) info.engine = 'chromium';
+      else if (ua.includes('Firefox/')) info.engine = 'firefox';
+      else if (ua.includes('Safari/')) info.engine = 'safari';
+      else info.engine = 'other';
+    } else {
+      info.runtime = 'unknown';
+    }
+    
+    return info;
+  }
+
+  private static registerExitHandler(): void {
+    if (this.exitHandlerRegistered) return;
+    
+    if (typeof process !== 'undefined' && typeof process.on === 'function') {
+      const handler = () => {
+        if (this.eventQueue.length > 0) {
+          this.flush().catch(() => {});
+        }
+      };
+      process.on('beforeExit', handler);
+      this.exitHandlerRegistered = true;
     }
   }
 
@@ -17552,11 +17622,23 @@ export class Telemetry {
   }
 
   /**
+   * Configure telemetry settings. Call before any tracking.
+   */
+  static configure(options: Partial<TelemetryConfig>): void {
+    Object.assign(this.config, options);
+  }
+
+  /**
    * Track an event
    */
   static track(type: TelemetryEventType, data: Record<string, unknown> = {}): void {
     this.initialize();
     if (!this._enabled) return;
+    
+    // Enforce queue size limit — drop oldest events
+    if (this.eventQueue.length >= this.config.maxQueueSize) {
+      this.eventQueue.splice(0, this.eventQueue.length - this.config.maxQueueSize + 1);
+    }
     
     const event: TelemetryEvent = {
       type,
@@ -17634,7 +17716,7 @@ export class Telemetry {
   }
 
   /**
-   * Flush events to server
+   * Flush events to server with exponential backoff on failure
    */
   static async flush(): Promise<void> {
     if (!this._enabled || this.eventQueue.length === 0) return;
@@ -17647,18 +17729,50 @@ export class Telemetry {
         headers: {
           'Content-Type': 'application/json',
           'X-Client': 'agenticpdf',
-          'X-Version': '1.0.0',
+          'X-Version': this.version,
+          'X-Runtime': this.runtimeInfo?.runtime ?? 'unknown',
         },
-        body: JSON.stringify({ events }),
+        body: JSON.stringify({
+          events,
+          runtime: this.runtimeInfo,
+        }),
       });
       
       if (!response.ok) {
-        // Put events back if failed
-        this.eventQueue.unshift(...events);
+        this.handleFlushFailure(events);
+      } else {
+        // Reset retry state on success
+        this.retryCount = 0;
+        this.retryDelay = 1000;
       }
     } catch {
-      // Network error, put events back
-      this.eventQueue.unshift(...events);
+      this.handleFlushFailure(events);
+    }
+  }
+
+  private static handleFlushFailure(events: TelemetryEvent[]): void {
+    this.retryCount++;
+    
+    if (this.retryCount >= this.config.maxRetries) {
+      // Max retries exceeded — discard events to prevent unbounded growth
+      this.retryCount = 0;
+      this.retryDelay = 1000;
+      return;
+    }
+    
+    // Re-queue events (respecting queue limit)
+    const space = this.config.maxQueueSize - this.eventQueue.length;
+    if (space > 0) {
+      this.eventQueue.unshift(...events.slice(0, space));
+    }
+    
+    // Schedule retry with exponential backoff (capped at 5 minutes)
+    this.retryDelay = Math.min(this.retryDelay * 2, 300000);
+    const timer = setTimeout(() => {
+      this.flush().catch(() => {});
+    }, this.retryDelay);
+    if (typeof timer === 'object' && 'unref' in timer) {
+      timer.unref();
     }
   }
 
@@ -17672,6 +17786,8 @@ export class Telemetry {
       this.flushTimer = null;
     }
     this.eventQueue = [];
+    this.retryCount = 0;
+    this.retryDelay = 1000;
   }
 
   /**
@@ -17688,6 +17804,13 @@ export class Telemetry {
   static isEnabled(): boolean {
     this.initialize();
     return this._enabled;
+  }
+
+  /**
+   * Get current configuration (read-only copy)
+   */
+  static getConfig(): Readonly<TelemetryConfig> {
+    return { ...this.config };
   }
 }
 

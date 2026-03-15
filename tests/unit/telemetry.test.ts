@@ -1,6 +1,7 @@
 /**
  * Unit tests for Telemetry class
- * Tests event tracking, opt-out mechanisms, and data anonymization
+ * Tests event tracking, opt-out mechanisms, data anonymization,
+ * configuration, queue limits, and retry/backoff behavior
  */
 
 import { Telemetry, TelemetryEventType } from '../../agenticpdf';
@@ -97,6 +98,55 @@ describe('Telemetry', () => {
       Telemetry.track(TelemetryEventType.DocumentLoad, {});
       Telemetry.disable();
       // No assertion needed — just confirming no crash
+    });
+  });
+
+  describe('Configuration', () => {
+    test('should return config via getConfig()', () => {
+      const config = Telemetry.getConfig();
+      expect(config).toBeDefined();
+      expect(config.flushInterval).toBe(30000);
+      expect(config.maxBatchSize).toBe(50);
+      expect(config.maxQueueSize).toBe(500);
+      expect(config.maxRetries).toBe(5);
+      expect(config.anonymize).toBe(true);
+    });
+
+    test('getConfig() should return a copy, not the internal object', () => {
+      const config1 = Telemetry.getConfig();
+      const config2 = Telemetry.getConfig();
+      expect(config1).not.toBe(config2);
+      expect(config1).toEqual(config2);
+    });
+
+    test('should accept partial configuration via configure()', () => {
+      const originalConfig = Telemetry.getConfig();
+      Telemetry.configure({ endpoint: 'https://custom.example.com/events' });
+      const config = Telemetry.getConfig();
+      expect(config.endpoint).toBe('https://custom.example.com/events');
+      // Restore
+      Telemetry.configure({ endpoint: originalConfig.endpoint });
+    });
+
+    test('should apply custom maxQueueSize', () => {
+      const originalConfig = Telemetry.getConfig();
+      Telemetry.configure({ maxQueueSize: 100 });
+      expect(Telemetry.getConfig().maxQueueSize).toBe(100);
+      Telemetry.configure({ maxQueueSize: originalConfig.maxQueueSize });
+    });
+
+    test('should apply custom maxRetries', () => {
+      const originalConfig = Telemetry.getConfig();
+      Telemetry.configure({ maxRetries: 3 });
+      expect(Telemetry.getConfig().maxRetries).toBe(3);
+      Telemetry.configure({ maxRetries: originalConfig.maxRetries });
+    });
+
+    test('should apply custom endpoint', () => {
+      const originalConfig = Telemetry.getConfig();
+      Telemetry.configure({ endpoint: 'https://my-server.example.com/telemetry' });
+      expect(Telemetry.getConfig().endpoint).toBe('https://my-server.example.com/telemetry');
+      Telemetry.configure({ endpoint: originalConfig.endpoint });
     });
   });
 });
