@@ -30,10 +30,10 @@ module.exports = {
     ],
     coverageThreshold: {
         global: {
-            branches: 22,  // Ratcheted to near current coverage
-            functions: 40, // Ratcheted to near current coverage
-            lines: 32,     // Ratcheted to near current coverage
-            statements: 30 // Ratcheted to near current coverage
+            branches: 25,
+            functions: 45,
+            lines: 37,
+            statements: 35
         }
     },
     testTimeout: 30000,
