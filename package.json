@@ -2,8 +2,8 @@
   "name": "agenticpdf",
   "version": "1.0.0",
   "description": "Modern, TypeScript-native PDF processing library with streaming, AI integration, and performance optimizations. Production-ready with comprehensive features.",
-  "main": "agenticpdf.ts",
-  "types": "agenticpdf.ts",
+  "main": "dist/agenticpdf.js",
+  "types": "dist/agenticpdf.d.ts",
   "type": "module",
   "bin": {
     "mpdf": "./cli.js",
@@ -11,7 +11,7 @@
   },
   "scripts": {
     "cli": "npx tsx cli.ts",
-    "build": "tsc --declaration --emitDeclarationOnly --outDir dist",
+    "build": "tsc -p tsconfig.build.json",
     "build:clean": "rimraf dist && npm run build",
     "build:browser": "node scripts/build-browser.cjs",
     "test": "jest",
@@ -72,12 +72,12 @@
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nervosys/neopdf.git"
+    "url": "https://github.com/nervosys/AgenticPDF.git"
   },
   "bugs": {
-    "url": "https://github.com/nervosys/neopdf/issues"
+    "url": "https://github.com/nervosys/AgenticPDF/issues"
   },
-  "homepage": "https://github.com/nervosys/neopdf#readme",
+  "homepage": "https://github.com/nervosys/AgenticPDF#readme",
   "funding": [
     {
       "type": "github",
@@ -115,18 +115,17 @@
   "publishConfig": {
     "access": "public"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/agenticpdf.d.ts",
+      "import": "./dist/agenticpdf.js"
+    }
+  },
   "files": [
+    "dist",
     "agenticpdf.ts",
-    "agenticpdf-browser.js",
-    "agenticpdf.d.ts",
-    "cli.ts",
-    "cli.js",
-    "dist/",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md",
-    "CLI.md",
-    "CLI_QUICKSTART.md",
-    "CLI_REFERENCE.md"
+    "CHANGELOG.md"
   ]
 }

@@ -2,8 +2,8 @@
 
 > **Last updated:** 2026-03-14  
 > **Version:** 1.0.0  
-> **Architecture:** Single-file TypeScript library (`agenticpdf.ts`, ~11,000+ lines)  
-> **Tests:** 560 passing across 16 suites
+> **Architecture:** Single-file TypeScript library (`agenticpdf.ts`, ~15,200+ lines)  
+> **Tests:** 634 passing across 18 suites
 
 ---
 
@@ -266,3 +266,4 @@ Interactive demo at `demos/render-engine-demo.html`.
 - **CRLF line endings** in `agenticpdf.ts` and demo HTML — use `.cjs` scripts for programmatic edits
 - **`"type": "module"`** in `package.json` — helper scripts must use `.cjs` extension
 - **Single-file architecture** — all library code in one `agenticpdf.ts` file by design
+

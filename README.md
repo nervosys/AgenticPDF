@@ -206,6 +206,149 @@ AgenticPDF is a single-file library (`agenticpdf.ts`) with these core components
 | `TextExtractor`       | Text extraction with formatting preservation                      |
 | `ImageExtractor`      | Image extraction and decoding (JPEG, PNG, CCITT)                  |
 | `FormExtractor`       | AcroForm field extraction and filling                             |
+
+## Advanced Features
+
+### Layout Analysis
+
+Detect columns, tables, and reading order in complex document layouts:
+
+```typescript
+const layout = await pdf.analyzeLayout({ start: 1, end: 5 });
+for (const page of layout.pages) {
+  console.log(`Page ${page.pageNumber}: ${page.columns.length} columns, ${page.tables.length} tables`);
+}
+```
+
+### Document Summarization
+
+Generate extractive summaries without external AI services:
+
+```typescript
+const result = await pdf.summarize({ sentenceCount: 5 });
+console.log(result.summary);
+console.log('Key points:', result.keyPoints);
+console.log(`Compression ratio: ${result.compressionRatio}`);
+```
+
+### Structured Data Extraction
+
+Extract structured fields from invoices, academic papers, resumes, and more:
+
+```typescript
+const data = await pdf.extractStructuredData('paper');
+console.log(`Type: ${data.documentType}, confidence: ${data.confidence}`);
+for (const [key, field] of Object.entries(data.fields)) {
+  console.log(`${key}: ${field.value} (page ${field.pageNumber})`);
+}
+```
+
+### Document Comparison
+
+Compare two PDFs and identify differences:
+
+```typescript
+const other = await AgenticPDF.fromFile(otherFile);
+const diff = await pdf.compareWith(other);
+console.log(`Similarity: ${diff.overallSimilarity}`);
+console.log(`Added pages: ${diff.addedPages.length}`);
+console.log(`Modified pages: ${diff.modifiedPages.length}`);
+other.close();
+```
+
+### Vector Store Integration
+
+Index documents into a vector database for semantic search:
+
+```typescript
+const helper = pdf.createVectorStoreHelper(vectorStoreAdapter, embeddingProvider);
+const { indexed, errors } = await helper.indexDocument(pdf, {
+  chunkingOptions: { strategy: 'semantic', maxChunkSize: 1000 },
+});
+console.log(`Indexed ${indexed} chunks`);
+
+const results = await helper.query('What are the key findings?', 5);
+for (const r of results) {
+  console.log(`[${r.score.toFixed(2)}] Page ${r.pageNumbers.join(',')}: ${r.content.slice(0, 100)}`);
+}
+```
+
+### PDF Writing & Modification
+
+```typescript
+// Incremental save (append-only, preserves signatures)
+const result = await pdf.saveIncremental();
+
+// Page management
+const pm = pdf.getPageManager();
+pm.insertBlankPage(3);      // Insert blank page at position 3
+pm.deletePage(5);           // Delete page 5
+pm.reorderPages([3, 1, 2]); // Reorder pages
+
+// Add annotations
+const ap = pdf.getAnnotationPersistence();
+ap.createTextAnnotation(1, 100, 200, 'Review this section');
+ap.createHighlightAnnotation(1, { x: 50, y: 300, width: 200, height: 20 });
+```
+
+### Digital Signatures
+
+```typescript
+const sh = pdf.getSignatureHandler();
+const sig = sh.prepareSignature({
+  signerName: 'Jane Doe',
+  reason: 'Approval',
+  hashAlgorithm: 'SHA-256',
+});
+// Apply external signature bytes
+sh.applySignature(sig, signatureBytes);
+```
+
+### PDF/A Compliance
+
+```typescript
+const converter = pdf.getPDFAConverter();
+const validation = converter.validate();
+console.log(`Conformant: ${validation.conformant}`);
+console.log(`Errors: ${validation.errors.length}, Warnings: ${validation.warnings.length}`);
+
+const xmp = converter.generateXMPMetadata();
+```
+
+### Performance at Scale
+
+```typescript
+// Virtual scrolling for 1000+ page documents
+const scroller = pdf.createVirtualScroller({ containerHeight: 800 });
+const visible = scroller.getVisiblePages(scrollTop);
+
+// Tile rendering for large/zoomed pages
+const tileRenderer = pdf.createTileRenderer({ tileWidth: 512, tileHeight: 512 });
+const tiles = tileRenderer.getVisibleTiles(1, pageWidth, pageHeight, scale, vx, vy, vw, vh);
+
+// Lazy page loading with prefetch
+const loader = pdf.createLazyLoader(3);
+await loader.ensureLoaded(currentPage);
+```
+
+### Agent Discovery API
+
+AI agents can programmatically discover capabilities:
+
+```typescript
+const ontology = AgenticPDF.describe();         // Full JSON-LD ontology
+const capabilities = AgenticPDF.getCapabilities(); // Capability map
+const methods = AgenticPDF.getMethodSignatures();  // All method signatures
+const workflows = AgenticPDF.getWorkflows();       // Pre-built workflow templates
+
+// Instance-level: what's possible with this specific document
+const report = pdf.describeDocument();
+console.log(`Recommended workflows: ${report.recommendedWorkflows}`);
+```
+
+## License
+
+[AGPL-3.0-or-later](LICENSE)
 | `AnnotationExtractor` | Annotation parsing                                                |
 | `AIAnalyzer`          | Document structure analysis and NLP preparation                   |
 | `SemanticChunker`     | Intelligent text chunking for RAG systems                         |
