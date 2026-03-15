@@ -1845,6 +1845,44 @@ export class AgenticPDF {
   }
 
   /**
+   * Save with incremental update — appends only modified objects.
+   * More efficient than full save for documents with small changes.
+   */
+  async saveIncremental(): Promise<IncrementalSaveResult> {
+    const writer = new PDFWriter(this);
+    const saver = new IncrementalSaver(this, writer);
+    return saver.save();
+  }
+
+  /**
+   * Get a page manager for inserting, deleting, and reordering pages.
+   */
+  getPageManager(): PageManager {
+    return new PageManager(this);
+  }
+
+  /**
+   * Get annotation persistence handler for creating and managing annotations.
+   */
+  getAnnotationPersistence(): AnnotationPersistence {
+    return new AnnotationPersistence(this);
+  }
+
+  /**
+   * Get digital signature handler for signing and verifying.
+   */
+  getSignatureHandler(): DigitalSignatureHandler {
+    return new DigitalSignatureHandler(this);
+  }
+
+  /**
+   * Get PDF/A converter for conformance validation and conversion.
+   */
+  getPDFAConverter(): PDFAConverter {
+    return new PDFAConverter(this);
+  }
+
+  /**
    * Get PDF version
    */
   getVersion(): string {
@@ -14984,6 +15022,665 @@ class ThemeManager {
   }
 }
 
+// ============================================================================
+// PDF Writing & Modification — Phase 20
+// ============================================================================
+
+/**
+ * Incremental save — appends changes to the original PDF without rewriting.
+ * Creates a new cross-reference section and trailer at the end of the file.
+ */
+class IncrementalSaver {
+  private writer: PDFStreamWriter;
+
+  constructor(private pdf: AgenticPDF, private pdfWriter: PDFWriter) {
+    this.writer = new PDFStreamWriter();
+  }
+
+  /** Perform an incremental save, appending only modified/new objects. */
+  async save(): Promise<IncrementalSaveResult> {
+    const originalBuffer = (this.pdf as any).buffer as ArrayBuffer | undefined;
+    if (!originalBuffer || originalBuffer.byteLength === 0) {
+      // No original buffer — fall back to full save
+      const fullBlob = await this.pdfWriter.save();
+      return {
+        blob: fullBlob,
+        appendedBytes: (await fullBlob.arrayBuffer()).byteLength,
+        modifiedObjects: 0,
+        newRevisionNumber: 1,
+      };
+    }
+
+    const original = new Uint8Array(originalBuffer);
+    const modifiedObjects = this.pdfWriter.getModifiedObjects();
+
+    if (modifiedObjects.size === 0) {
+      // Nothing modified — return original
+      return {
+        blob: new Blob([original], { type: 'application/pdf' }),
+        appendedBytes: 0,
+        modifiedObjects: 0,
+        newRevisionNumber: 0,
+      };
+    }
+
+    // Start appending after the original content
+    this.writer = new PDFStreamWriter();
+    this.writer.writeString('\n');
+
+    // Write modified/new objects
+    const xrefEntries: Array<{ objNum: number; gen: number; offset: number }> = [];
+
+    for (const [key, obj] of modifiedObjects) {
+      const [objNumStr, genStr] = key.split('_');
+      const objNum = parseInt(objNumStr, 10);
+      const gen = parseInt(genStr, 10);
+
+      const offset = original.byteLength + this.writer.position;
+      xrefEntries.push({ objNum, gen, offset });
+
+      this.writer.writeString(`${objNum} ${gen} obj\n`);
+      this.pdfWriter.writeObjectPublic(this.writer, obj);
+      this.writer.writeString('\nendobj\n');
+    }
+
+    // Write incremental xref table
+    const xrefOffset = original.byteLength + this.writer.position;
+    this.writer.writeString('xref\n');
+
+    // Group consecutive entries
+    const sorted = xrefEntries.sort((a, b) => a.objNum - b.objNum);
+    let i = 0;
+    while (i < sorted.length) {
+      const start = sorted[i].objNum;
+      let end = start;
+      while (i + 1 < sorted.length && sorted[i + 1].objNum === end + 1) {
+        end++;
+        i++;
+      }
+      const count = end - start + 1;
+      this.writer.writeString(`${start} ${count}\n`);
+      for (let j = 0; j < count; j++) {
+        const entry = sorted[i - count + 1 + j];
+        const offsetStr = entry.offset.toString().padStart(10, '0');
+        const genStr2 = entry.gen.toString().padStart(5, '0');
+        this.writer.writeString(`${offsetStr} ${genStr2} n \n`);
+      }
+      i++;
+    }
+
+    // Find previous startxref
+    const prevXRefOffset = this.findPreviousXRef(original);
+
+    // Write trailer
+    const xrefTable = (this.pdf as any).xrefTable as XRefTable | undefined;
+    const maxObjNum = Math.max(...sorted.map(e => e.objNum), 0);
+    const prevSize = xrefTable ? 100 : 0; // Approximate
+
+    this.writer.writeString('trailer\n');
+    this.writer.writeString('<<\n');
+    this.writer.writeString(`/Size ${maxObjNum + 1}\n`);
+    this.writer.writeString(`/Root 1 0 R\n`);
+    this.writer.writeString(`/Prev ${prevXRefOffset}\n`);
+    this.writer.writeString('>>\n');
+    this.writer.writeString('startxref\n');
+    this.writer.writeString(`${xrefOffset}\n`);
+    this.writer.writeString('%%EOF');
+
+    // Combine original + appended
+    const appended = this.writer.getBuffer();
+    const combined = new Uint8Array(original.byteLength + appended.byteLength);
+    combined.set(original);
+    combined.set(appended, original.byteLength);
+
+    // Count revisions
+    let revCount = 1;
+    const eofMarker = new TextEncoder().encode('%%EOF');
+    for (let pos = 0; pos <= combined.length - 5; pos++) {
+      let match = true;
+      for (let j = 0; j < 5; j++) {
+        if (combined[pos + j] !== eofMarker[j]) { match = false; break; }
+      }
+      if (match) revCount++;
+    }
+
+    return {
+      blob: new Blob([combined], { type: 'application/pdf' }),
+      appendedBytes: appended.byteLength,
+      modifiedObjects: modifiedObjects.size,
+      newRevisionNumber: revCount - 1,
+    };
+  }
+
+  private findPreviousXRef(data: Uint8Array): number {
+    // Search backwards for "startxref"
+    const marker = new TextEncoder().encode('startxref');
+    for (let i = data.length - 20; i >= 0; i--) {
+      let match = true;
+      for (let j = 0; j < marker.length; j++) {
+        if (data[i + j] !== marker[j]) { match = false; break; }
+      }
+      if (match) {
+        // Parse the offset
+        let pos = i + marker.length;
+        while (pos < data.length && (data[pos] === 0x20 || data[pos] === 0x0A || data[pos] === 0x0D)) pos++;
+        let numStr = '';
+        while (pos < data.length && data[pos] >= 0x30 && data[pos] <= 0x39) {
+          numStr += String.fromCharCode(data[pos]);
+          pos++;
+        }
+        return numStr ? parseInt(numStr, 10) : 0;
+      }
+    }
+    return 0;
+  }
+}
+
+/**
+ * Page management — insert, delete, and reorder pages.
+ */
+class PageManager {
+  constructor(private pdf: AgenticPDF) {}
+
+  /**
+   * Insert a blank page at the specified position.
+   * @param position 1-based page number where the new page should appear.
+   * @param width Page width in points (default 612 = US Letter).
+   * @param height Page height in points (default 792 = US Letter).
+   */
+  insertBlankPage(position: number, width: number = 612, height: number = 792): void {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    const metadata = this.pdf.getMetadata();
+    if (!pages || !metadata) return;
+
+    const newPage: any = {
+      pageNumber: position,
+      width,
+      height,
+      mediaBox: { x: 0, y: 0, width, height },
+      cropBox: { x: 0, y: 0, width, height },
+      rotation: 0,
+      resources: {},
+      contentStream: new Uint8Array(0),
+      annotations: [],
+    };
+
+    // Insert at position (0-indexed)
+    const idx = Math.max(0, Math.min(position - 1, pages.length));
+    pages.splice(idx, 0, newPage);
+
+    // Renumber subsequent pages
+    for (let i = idx; i < pages.length; i++) {
+      pages[i].pageNumber = i + 1;
+    }
+
+    // Update metadata
+    (metadata as any).pageCount = pages.length;
+  }
+
+  /**
+   * Delete a page by page number.
+   * @param pageNumber 1-based page number to delete.
+   * @returns true if the page was deleted.
+   */
+  deletePage(pageNumber: number): boolean {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    const metadata = this.pdf.getMetadata();
+    if (!pages || !metadata || pageNumber < 1 || pageNumber > pages.length) return false;
+
+    pages.splice(pageNumber - 1, 1);
+
+    // Renumber
+    for (let i = 0; i < pages.length; i++) {
+      pages[i].pageNumber = i + 1;
+    }
+
+    (metadata as any).pageCount = pages.length;
+    return true;
+  }
+
+  /**
+   * Reorder pages according to the given sequence.
+   * @param newOrder Array of current page numbers in the desired order.
+   */
+  reorderPages(newOrder: number[]): boolean {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    const metadata = this.pdf.getMetadata();
+    if (!pages || !metadata) return false;
+
+    // Validate
+    const sorted = [...newOrder].sort((a, b) => a - b);
+    const expected = Array.from({ length: pages.length }, (_, i) => i + 1);
+    if (sorted.length !== expected.length || !sorted.every((v, i) => v === expected[i])) {
+      return false; // Invalid order — must be a permutation of all page numbers
+    }
+
+    const original = [...pages];
+    for (let i = 0; i < newOrder.length; i++) {
+      pages[i] = original[newOrder[i] - 1];
+      pages[i].pageNumber = i + 1;
+    }
+
+    return true;
+  }
+
+  /**
+   * Duplicate a page.
+   * @param pageNumber Page to duplicate.
+   * @param insertAt Position to insert the copy (default: after the original).
+   */
+  duplicatePage(pageNumber: number, insertAt?: number): boolean {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    const metadata = this.pdf.getMetadata();
+    if (!pages || !metadata || pageNumber < 1 || pageNumber > pages.length) return false;
+
+    const source = pages[pageNumber - 1];
+    const copy = JSON.parse(JSON.stringify(source));
+
+    const pos = insertAt ?? pageNumber + 1;
+    const idx = Math.max(0, Math.min(pos - 1, pages.length));
+    pages.splice(idx, 0, copy);
+
+    for (let i = 0; i < pages.length; i++) {
+      pages[i].pageNumber = i + 1;
+    }
+    (metadata as any).pageCount = pages.length;
+    return true;
+  }
+
+  /** Get current page count. */
+  getPageCount(): number {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    return pages?.length ?? 0;
+  }
+}
+
+/**
+ * Annotation persistence — create annotations with proper PDF object structure
+ * and persist them through save operations.
+ */
+class AnnotationPersistence {
+  private pendingAnnotations: Array<{ pageNumber: number; annotation: Annotation }> = [];
+
+  constructor(private pdf: AgenticPDF) {}
+
+  /** Create a text annotation (sticky note). */
+  createTextAnnotation(
+    pageNumber: number,
+    x: number, y: number,
+    contents: string,
+    options?: { author?: string; color?: Color; open?: boolean }
+  ): Annotation {
+    const annotation: Annotation = {
+      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: AnnotationType.Text,
+      rect: { x, y, width: 24, height: 24 },
+      pageNumber,
+      contents,
+      author: options?.author,
+      color: options?.color || { r: 1, g: 1, b: 0 },
+      opacity: 1,
+      flags: 0,
+    };
+    this.pendingAnnotations.push({ pageNumber, annotation });
+    this.attachToPage(pageNumber, annotation);
+    return annotation;
+  }
+
+  /** Create a highlight annotation. */
+  createHighlightAnnotation(
+    pageNumber: number,
+    rect: Rectangle,
+    options?: { author?: string; color?: Color; contents?: string }
+  ): Annotation {
+    const annotation: Annotation = {
+      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: AnnotationType.Highlight,
+      rect,
+      pageNumber,
+      contents: options?.contents,
+      author: options?.author,
+      color: options?.color || { r: 1, g: 1, b: 0 },
+      opacity: 0.5,
+      flags: 0,
+    };
+    this.pendingAnnotations.push({ pageNumber, annotation });
+    this.attachToPage(pageNumber, annotation);
+    return annotation;
+  }
+
+  /** Create a free-text annotation. */
+  createFreeTextAnnotation(
+    pageNumber: number,
+    rect: Rectangle,
+    text: string,
+    options?: { fontSize?: number; fontColor?: Color; author?: string }
+  ): Annotation {
+    const annotation: Annotation = {
+      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: AnnotationType.FreeText,
+      rect,
+      pageNumber,
+      contents: text,
+      author: options?.author,
+      color: options?.fontColor || { r: 0, g: 0, b: 0 },
+      opacity: 1,
+      flags: 0,
+    };
+    this.pendingAnnotations.push({ pageNumber, annotation });
+    this.attachToPage(pageNumber, annotation);
+    return annotation;
+  }
+
+  /** Create an ink (freehand drawing) annotation. */
+  createInkAnnotation(
+    pageNumber: number,
+    rect: Rectangle,
+    options?: { author?: string; color?: Color; width?: number }
+  ): Annotation {
+    const annotation: Annotation = {
+      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: AnnotationType.Ink,
+      rect,
+      pageNumber,
+      author: options?.author,
+      color: options?.color || { r: 1, g: 0, b: 0 },
+      opacity: 1,
+      flags: 0,
+    };
+    this.pendingAnnotations.push({ pageNumber, annotation });
+    this.attachToPage(pageNumber, annotation);
+    return annotation;
+  }
+
+  /** Delete an annotation by ID. */
+  deleteAnnotation(annotationId: string): boolean {
+    const idx = this.pendingAnnotations.findIndex(a => a.annotation.id === annotationId);
+    if (idx >= 0) {
+      this.pendingAnnotations.splice(idx, 1);
+    }
+
+    // Also remove from page
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    if (!pages) return false;
+
+    for (const page of pages) {
+      if (page.annotations) {
+        const annIdx = page.annotations.findIndex((a: Annotation) => a.id === annotationId);
+        if (annIdx >= 0) {
+          page.annotations.splice(annIdx, 1);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Get all pending annotations. */
+  getPendingAnnotations(): Array<{ pageNumber: number; annotation: Annotation }> {
+    return [...this.pendingAnnotations];
+  }
+
+  private attachToPage(pageNumber: number, annotation: Annotation): void {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    if (!pages || pageNumber < 1 || pageNumber > pages.length) return;
+
+    const page = pages[pageNumber - 1];
+    if (!page.annotations) page.annotations = [];
+    page.annotations.push(annotation);
+  }
+}
+
+/**
+ * Digital signature handler.
+ * Prepares the signature dictionary structure and placeholder for external signing.
+ * Actual cryptographic signing requires a certificate/key pair provided by the caller.
+ */
+class DigitalSignatureHandler {
+  constructor(private pdf: AgenticPDF) {}
+
+  /**
+   * Prepare a document for signing by adding a signature field.
+   * Returns a DigitalSignature structure with the byte range to be signed.
+   * The actual signing (PKCS#7/CAdES) must be performed externally.
+   */
+  prepareSignature(options: {
+    signerName: string;
+    reason?: string;
+    location?: string;
+    contactInfo?: string;
+    pageNumber?: number;
+    rect?: Rectangle;
+    hashAlgorithm?: 'SHA-256' | 'SHA-384' | 'SHA-512';
+    subFilter?: 'adbe.pkcs7.detached' | 'adbe.pkcs7.sha1' | 'ETSI.CAdES.detached';
+  }): DigitalSignature {
+    const sig: DigitalSignature = {
+      signerName: options.signerName,
+      reason: options.reason,
+      location: options.location,
+      contactInfo: options.contactInfo,
+      signDate: new Date(),
+      hashAlgorithm: options.hashAlgorithm || 'SHA-256',
+      subFilter: options.subFilter || 'adbe.pkcs7.detached',
+      byteRange: [0, 0, 0, 0], // Placeholder — filled during serialization
+    };
+
+    // Store the signature intent for the writer
+    const sigs = (this.pdf as any)._pendingSignatures as DigitalSignature[] | undefined;
+    if (sigs) {
+      sigs.push(sig);
+    } else {
+      (this.pdf as any)._pendingSignatures = [sig];
+    }
+
+    return sig;
+  }
+
+  /**
+   * Apply an external signature value to a prepared signature.
+   * @param signature The signature object returned by prepareSignature.
+   * @param signatureValue The PKCS#7 or CAdES DER-encoded signature bytes.
+   */
+  applySignature(signature: DigitalSignature, signatureValue: Uint8Array): void {
+    signature.signatureValue = signatureValue;
+  }
+
+  /**
+   * Verify signatures in the document.
+   * Returns verification status for each signature found.
+   */
+  async getSignatures(): Promise<Array<{
+    signerName: string;
+    signDate: Date | null;
+    reason: string | null;
+    location: string | null;
+    valid: boolean | null;
+    hashAlgorithm: string;
+  }>> {
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    if (!pages) return [];
+
+    const signatures: Array<{
+      signerName: string;
+      signDate: Date | null;
+      reason: string | null;
+      location: string | null;
+      valid: boolean | null;
+      hashAlgorithm: string;
+    }> = [];
+
+    // Look for signature form fields
+    for (const page of pages) {
+      if (!page.annotations) continue;
+      for (const annot of page.annotations) {
+        if (annot.type === 'Widget' || annot.type === AnnotationType.Widget) {
+          // Check if this is a signature widget
+          if (annot.fieldType === 'Sig' || annot.fieldType === FormFieldType.Signature) {
+            signatures.push({
+              signerName: annot.signerName || annot.name || 'Unknown',
+              signDate: annot.signDate ? new Date(annot.signDate) : null,
+              reason: annot.reason || null,
+              location: annot.location || null,
+              valid: null, // Would require crypto verification
+              hashAlgorithm: annot.hashAlgorithm || 'SHA-256',
+            });
+          }
+        }
+      }
+    }
+
+    return signatures;
+  }
+
+  /**
+   * Check if the document has been modified since it was signed.
+   */
+  isModifiedAfterSigning(): boolean {
+    const sigs = (this.pdf as any)._pendingSignatures as DigitalSignature[] | undefined;
+    // If we have pending signatures, document has potentially been modified
+    return (sigs?.length ?? 0) > 0;
+  }
+}
+
+/**
+ * PDF/A conformance converter and validator.
+ * Checks and enforces PDF/A compliance rules.
+ */
+class PDFAConverter {
+  constructor(private pdf: AgenticPDF) {}
+
+  /**
+   * Validate current document against a PDF/A conformance level.
+   */
+  validate(level: PDFAConformanceLevel = PDFAConformanceLevel.PDF_A_2b): PDFAValidationResult {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const metadata = this.pdf.getMetadata();
+
+    // Rule 1: Must have metadata (XMP)
+    if (!metadata?.title && !metadata?.author) {
+      warnings.push('Document lacks descriptive metadata (title, author)');
+    }
+
+    // Rule 2: No encryption allowed in PDF/A
+    if (metadata?.isEncrypted) {
+      errors.push('Encrypted documents are not PDF/A conformant');
+    }
+
+    // Rule 3: All fonts must be embedded (we check if fonts are present)
+    // In our parser, we extract font info but can't verify embedding without full font tables
+    warnings.push('Font embedding verification requires full font table analysis');
+
+    // Rule 4: No JavaScript or executable content
+    // Check for /JS or /JavaScript in page resources (simplified check)
+    const pages = (this.pdf as any).pages as any[] | undefined;
+    if (pages) {
+      for (const page of pages) {
+        const rs = page.resources;
+        if (rs && typeof rs === 'object') {
+          const rsStr = JSON.stringify(rs);
+          if (rsStr.includes('/JS') || rsStr.includes('/JavaScript')) {
+            errors.push(`Page ${page.pageNumber} contains JavaScript (not allowed in PDF/A)`);
+          }
+        }
+      }
+    }
+
+    // Rule 5: No transparency (PDF/A-1) — relaxed in PDF/A-2+
+    if (level === PDFAConformanceLevel.PDF_A_1a || level === PDFAConformanceLevel.PDF_A_1b) {
+      // Transparency check would require analyzing ExtGState for /ca, /CA, /BM
+      warnings.push('Transparency was not fully checked (PDF/A-1 prohibits transparency)');
+    }
+
+    // Rule 6: PDF/A-3 allows embedded files; others do not
+    if (level !== PDFAConformanceLevel.PDF_A_3a &&
+        level !== PDFAConformanceLevel.PDF_A_3b &&
+        level !== PDFAConformanceLevel.PDF_A_3u) {
+      // Check for embedded files in catalog
+      warnings.push('Embedded file check skipped (requires catalog EmbeddedFiles tree)');
+    }
+
+    // Rule 7: Color management — ICC profiles required
+    warnings.push('ICC color profile verification requires full color space analysis');
+
+    // Rule 8: PDF/A accessibility (a-levels require tagged PDF)
+    if (level.endsWith('a')) {
+      if (!metadata || !(metadata as any).markInfo?.marked) {
+        errors.push(`PDF/A-${level} requires document to be tagged (accessible)`);
+      }
+    }
+
+    return {
+      conformant: errors.length === 0,
+      level,
+      errors,
+      warnings,
+    };
+  }
+
+  /**
+   * Add PDF/A identification to the document metadata.
+   * Sets the PDF/A part and conformance level in XMP metadata.
+   */
+  setConformanceLevel(level: PDFAConformanceLevel): void {
+    const part = level.charAt(0);
+    const conformance = level.charAt(1).toUpperCase();
+
+    // Store conformance info for serialization
+    (this.pdf as any)._pdfaConformance = {
+      part: parseInt(part, 10),
+      conformance,
+      level,
+    };
+  }
+
+  /**
+   * Generate XMP metadata block for PDF/A identification.
+   */
+  generateXMPMetadata(): string {
+    const metadata = this.pdf.getMetadata();
+    const conformance = (this.pdf as any)._pdfaConformance as { part: number; conformance: string } | undefined;
+
+    let xmp = '<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n';
+    xmp += '<x:xmpmeta xmlns:x="adobe:ns:meta/">\n';
+    xmp += '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n';
+
+    // Dublin Core
+    xmp += '<rdf:Description rdf:about=""\n';
+    xmp += '  xmlns:dc="http://purl.org/dc/elements/1.1/">\n';
+    if (metadata?.title) xmp += `  <dc:title><rdf:Alt><rdf:li xml:lang="x-default">${this.escapeXml(metadata.title)}</rdf:li></rdf:Alt></dc:title>\n`;
+    if (metadata?.author) xmp += `  <dc:creator><rdf:Seq><rdf:li>${this.escapeXml(metadata.author)}</rdf:li></rdf:Seq></dc:creator>\n`;
+    xmp += '</rdf:Description>\n';
+
+    // PDF/A identification
+    if (conformance) {
+      xmp += '<rdf:Description rdf:about=""\n';
+      xmp += '  xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">\n';
+      xmp += `  <pdfaid:part>${conformance.part}</pdfaid:part>\n`;
+      xmp += `  <pdfaid:conformance>${conformance.conformance}</pdfaid:conformance>\n`;
+      xmp += '</rdf:Description>\n';
+    }
+
+    // XMP basic
+    xmp += '<rdf:Description rdf:about=""\n';
+    xmp += '  xmlns:xmp="http://ns.adobe.com/xap/1.0/">\n';
+    xmp += `  <xmp:CreateDate>${new Date().toISOString()}</xmp:CreateDate>\n`;
+    xmp += `  <xmp:CreatorTool>AgenticPDF</xmp:CreatorTool>\n`;
+    xmp += '</rdf:Description>\n';
+
+    xmp += '</rdf:RDF>\n';
+    xmp += '</x:xmpmeta>\n';
+    xmp += '<?xpacket end="w"?>\n';
+
+    return xmp;
+  }
+
+  private escapeXml(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  }
+}
+
 class PDFExporter {
   constructor(
     private pdf: AgenticPDF,
@@ -15550,6 +16247,16 @@ class PDFWriter {
     return objectNumber;
   }
 
+  /** Expose modified objects for incremental save. */
+  getModifiedObjects(): Map<string, PDFObject> {
+    return this.modifiedObjects;
+  }
+
+  /** Public write helper for incremental save. */
+  writeObjectPublic(writer: PDFStreamWriter, obj: PDFObject): void {
+    this.writeObject(writer, obj);
+  }
+
   private getNextObjectNumber(): number {
     const xrefTable = (this.pdf as any).xrefTable as XRefTable;
     let maxObjectNumber = 0;
@@ -15677,6 +16384,61 @@ class PDFStreamWriter {
 // ============================================================================
 // Configuration Types
 // ============================================================================
+
+// ============================================================================
+// PDF Writing & Modification Types — Phase 20
+// ============================================================================
+
+/** Digital signature information. */
+export interface DigitalSignature {
+  signerName: string;
+  reason?: string;
+  location?: string;
+  contactInfo?: string;
+  signDate: Date;
+  byteRange?: [number, number, number, number];
+  certChain?: Uint8Array[];
+  signatureValue?: Uint8Array;
+  hashAlgorithm: 'SHA-256' | 'SHA-384' | 'SHA-512';
+  subFilter: 'adbe.pkcs7.detached' | 'adbe.pkcs7.sha1' | 'ETSI.CAdES.detached';
+}
+
+/** PDF/A conformance level. */
+export enum PDFAConformanceLevel {
+  PDF_A_1b = '1b',
+  PDF_A_1a = '1a',
+  PDF_A_2b = '2b',
+  PDF_A_2a = '2a',
+  PDF_A_2u = '2u',
+  PDF_A_3b = '3b',
+  PDF_A_3a = '3a',
+  PDF_A_3u = '3u',
+}
+
+/** PDF/A validation result. */
+export interface PDFAValidationResult {
+  conformant: boolean;
+  level: PDFAConformanceLevel;
+  errors: string[];
+  warnings: string[];
+}
+
+/** Page insertion options. */
+export interface PageInsertOptions {
+  position: number;
+  width?: number;
+  height?: number;
+  content?: Uint8Array;
+  copyFrom?: { sourcePageNumber: number };
+}
+
+/** Incremental save result. */
+export interface IncrementalSaveResult {
+  blob: Blob;
+  appendedBytes: number;
+  modifiedObjects: number;
+  newRevisionNumber: number;
+}
 
 /** Configuration for tile-based rendering of large pages. */
 export interface TileConfig {

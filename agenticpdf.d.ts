@@ -969,6 +969,26 @@ export declare class AgenticPDF {
      * Detect incremental updates in append-mode PDFs
      */
     getIncrementalParser(): any;
+    /**
+     * Save with incremental update — appends only modified objects
+     */
+    saveIncremental(): Promise<IncrementalSaveResult>;
+    /**
+     * Get page manager for inserting, deleting, and reordering pages
+     */
+    getPageManager(): any;
+    /**
+     * Get annotation persistence handler
+     */
+    getAnnotationPersistence(): any;
+    /**
+     * Get digital signature handler
+     */
+    getSignatureHandler(): any;
+    /**
+     * Get PDF/A converter for conformance validation
+     */
+    getPDFAConverter(): any;
 
         analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
         pages: Array<{
@@ -1087,6 +1107,57 @@ declare class ThemeManager {
         size?: 'small' | 'medium' | 'large';
     }): HTMLButtonElement;
 }
+/** Digital signature information. */
+export interface DigitalSignature {
+    signerName: string;
+    reason?: string;
+    location?: string;
+    contactInfo?: string;
+    signDate: Date;
+    byteRange?: [number, number, number, number];
+    certChain?: Uint8Array[];
+    signatureValue?: Uint8Array;
+    hashAlgorithm: 'SHA-256' | 'SHA-384' | 'SHA-512';
+    subFilter: 'adbe.pkcs7.detached' | 'adbe.pkcs7.sha1' | 'ETSI.CAdES.detached';
+}
+
+/** PDF/A conformance level. */
+export declare enum PDFAConformanceLevel {
+    PDF_A_1b = "1b",
+    PDF_A_1a = "1a",
+    PDF_A_2b = "2b",
+    PDF_A_2a = "2a",
+    PDF_A_2u = "2u",
+    PDF_A_3b = "3b",
+    PDF_A_3a = "3a",
+    PDF_A_3u = "3u"
+}
+
+/** PDF/A validation result. */
+export interface PDFAValidationResult {
+    conformant: boolean;
+    level: PDFAConformanceLevel;
+    errors: string[];
+    warnings: string[];
+}
+
+/** Page insertion options. */
+export interface PageInsertOptions {
+    position: number;
+    width?: number;
+    height?: number;
+    content?: Uint8Array;
+    copyFrom?: { sourcePageNumber: number };
+}
+
+/** Incremental save result. */
+export interface IncrementalSaveResult {
+    blob: Blob;
+    appendedBytes: number;
+    modifiedObjects: number;
+    newRevisionNumber: number;
+}
+
 /** Configuration for tile-based rendering of large pages. */
 export interface TileConfig {
     tileWidth: number;

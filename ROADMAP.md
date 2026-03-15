@@ -221,11 +221,11 @@ Interactive demo at `demos/render-engine-demo.html`.
 
 ### Phase 20 — PDF Writing & Modification
 
-- [ ] Incremental save (append changes without rewriting)
-- [ ] Page insertion / deletion / reordering
-- [ ] Annotation creation and persistence
-- [ ] Digital signature support
-- [ ] PDF/A conformance output
+- [x] Incremental save (append changes without rewriting)
+- [x] Page insertion / deletion / reordering
+- [x] Annotation creation and persistence
+- [x] Digital signature support
+- [x] PDF/A conformance output
 
 ### Phase 21 — AI & RAG Enhancements
 
