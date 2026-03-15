@@ -990,6 +990,32 @@ export declare class AgenticPDF {
      */
     getPDFAConverter(): any;
 
+    /**
+     * Create an embedding generator for text-to-vector operations
+     */
+    createEmbeddingGenerator(provider: EmbeddingProvider): any;
+    /**
+     * Create a vector store helper for document indexing and similarity search
+     */
+    createVectorStoreHelper(adapter: VectorStoreAdapter, provider: EmbeddingProvider): any;
+    /**
+     * Compare this PDF with another for diff analysis
+     */
+    compareWith(other: AgenticPDF): Promise<DocumentDiffResult>;
+    /**
+     * Generate a summary of the document
+     */
+    summarize(options?: SummarizationOptions): Promise<SummarizationResult>;
+    /**
+     * Extract structured data (invoices, resumes, papers) from the document
+     */
+    extractStructuredData(typeHint?: string): Promise<StructuredExtractionResult>;
+    /**
+     * Compute cosine similarity between two vectors
+     */
+    static cosineSimilarity(a: Float32Array, b: Float32Array): number;
+
+
         analyzeLayout(pageRange?: { start: number; end: number }): Promise<{
         pages: Array<{
             pageNumber: number;
@@ -1252,6 +1278,47 @@ export interface ChunkingOptions {
     preserveParagraphs?: boolean;
     includeMetadata?: boolean;
 }
+
+// ── Phase 21: AI & RAG Enhancement types ──
+
+export interface VectorStoreAdapter {
+    add(id: string, embedding: Float32Array, metadata?: Record<string, unknown>): Promise<void>;
+    query(embedding: Float32Array, topK: number): Promise<Array<{ id: string; score: number; metadata?: Record<string, unknown> }>>;
+    remove(id: string): Promise<void>;
+    count(): Promise<number>;
+}
+
+export interface DocumentDiffResult {
+    added: string[];
+    removed: string[];
+    modified: Array<{ page: number; before: string; after: string }>;
+    similarity: number;
+    pageCountDiff: number;
+}
+
+export interface SummarizationOptions {
+    maxLength?: number;
+    strategy?: 'extractive' | 'abstractive';
+    sentenceCount?: number;
+    focusPages?: number[];
+}
+
+export interface SummarizationResult {
+    summary: string;
+    keyPhrases: string[];
+    sentenceCount: number;
+    compressionRatio: number;
+}
+
+export interface StructuredExtractionResult {
+    documentType: DocumentType;
+    fields: Record<string, { value: string; confidence: number; pageNumber: number; boundingBox?: Rectangle }>;
+    tables?: Table[];
+    lineItems?: Array<Record<string, string>>;
+    rawText: string;
+    pageCount: number;
+}
+
 export interface RenderOptions {
     scale?: number;
     rotation?: number;

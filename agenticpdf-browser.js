@@ -2,7 +2,7 @@
  * AgenticPDF - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
- * Compiled: 2026-03-15T00:12:16.526Z
+ * Compiled: 2026-03-15T00:22:32.354Z
  */
 
 (function(global) {
@@ -963,6 +963,45 @@ class AgenticPDF {
      */
     getPDFAConverter() {
         return new PDFAConverter(this);
+    }
+    /**
+     * Create an embedding generator using the provided EmbeddingProvider.
+     */
+    createEmbeddingGenerator(provider, maxCacheEntries) {
+        return new EmbeddingGenerator(provider, maxCacheEntries);
+    }
+    /**
+     * Create a vector store helper for RAG integration.
+     */
+    createVectorStoreHelper(adapter, provider) {
+        const generator = new EmbeddingGenerator(provider);
+        return new VectorStoreHelper(adapter, generator);
+    }
+    /**
+     * Compare this document with another PDF.
+     */
+    async compareWith(other) {
+        return DocumentDiffer.compare(this, other);
+    }
+    /**
+     * Generate an automatic summary of the document.
+     */
+    async summarize(options) {
+        const pipeline = new SummarizationPipeline(this);
+        return pipeline.summarize(options);
+    }
+    /**
+     * Extract structured data from the document (invoice fields, resume info, etc.).
+     */
+    async extractStructuredData(documentType) {
+        const extractor = new StructuredExtractor(this);
+        return extractor.extract(documentType);
+    }
+    /**
+     * Compute cosine similarity between two embeddings.
+     */
+    static cosineSimilarity(a, b) {
+        return EmbeddingGenerator.cosineSimilarity(a, b);
     }
     /**
      * Get PDF version
@@ -13561,6 +13600,608 @@ class PDFAConverter {
             .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
     }
 }
+// ============================================================================
+// AI & RAG Enhancements — Phase 21
+// ============================================================================
+/**
+ * Embedding generator — uses the EmbeddingProvider interface to generate
+ * embeddings for text content and semantic chunks.
+ */
+class EmbeddingGenerator {
+    constructor(provider, maxCacheEntries = 1000) {
+        this.provider = provider;
+        this.maxCacheEntries = maxCacheEntries;
+        this.cache = new Map();
+    }
+    /** Generate embedding for a single text string. */
+    async generate(text) {
+        const cacheKey = this.hashText(text);
+        const cached = this.cache.get(cacheKey);
+        if (cached)
+            return cached;
+        const embedding = await this.provider.generate(text);
+        this.cacheEmbedding(cacheKey, embedding);
+        return embedding;
+    }
+    /** Generate embeddings for all semantic chunks. */
+    async generateForChunks(chunks) {
+        const result = new Map();
+        const textsToEmbed = [];
+        // Check cache first
+        for (const chunk of chunks) {
+            const cacheKey = this.hashText(chunk.content);
+            const cached = this.cache.get(cacheKey);
+            if (cached) {
+                result.set(chunk.id, cached);
+            }
+            else {
+                textsToEmbed.push({ id: chunk.id, text: chunk.content });
+            }
+        }
+        // Generate in batches
+        if (textsToEmbed.length > 0) {
+            const batchSize = 32;
+            for (let i = 0; i < textsToEmbed.length; i += batchSize) {
+                const batch = textsToEmbed.slice(i, i + batchSize);
+                const texts = batch.map(t => t.text);
+                const embeddings = await this.provider.generateBatch(texts);
+                for (let j = 0; j < batch.length; j++) {
+                    result.set(batch[j].id, embeddings[j]);
+                    this.cacheEmbedding(this.hashText(batch[j].text), embeddings[j]);
+                }
+            }
+        }
+        return result;
+    }
+    /** Generate embedding for a page of text. */
+    async generateForPage(textContent) {
+        const pageText = textContent.map(t => t.text).join(' ');
+        return this.generate(pageText);
+    }
+    /** Get embedding dimensions. */
+    getDimensions() {
+        return this.provider.dimensions;
+    }
+    /** Get the model name. */
+    getModel() {
+        return this.provider.model;
+    }
+    /** Clear the embedding cache. */
+    clearCache() {
+        this.cache.clear();
+    }
+    /** Compute cosine similarity between two embeddings. */
+    static cosineSimilarity(a, b) {
+        if (a.length !== b.length)
+            return 0;
+        let dotProduct = 0, normA = 0, normB = 0;
+        for (let i = 0; i < a.length; i++) {
+            dotProduct += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+        const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+        return denominator === 0 ? 0 : dotProduct / denominator;
+    }
+    hashText(text) {
+        // Simple hash for cache key
+        let hash = 0;
+        for (let i = 0; i < Math.min(text.length, 200); i++) {
+            hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+        }
+        return `emb_${hash}_${text.length}`;
+    }
+    cacheEmbedding(key, embedding) {
+        this.cache.set(key, embedding);
+        // Evict oldest if cache full
+        if (this.cache.size > this.maxCacheEntries) {
+            const firstKey = this.cache.keys().next().value;
+            if (firstKey)
+                this.cache.delete(firstKey);
+        }
+    }
+}
+/**
+ * Vector store integration helper — bridges semantic chunks with vector databases.
+ */
+class VectorStoreHelper {
+    constructor(adapter, embeddingGenerator) {
+        this.adapter = adapter;
+        this.embeddingGenerator = embeddingGenerator;
+    }
+    /**
+     * Index all semantic chunks from a PDF into the vector store.
+     */
+    async indexDocument(pdf, options) {
+        const chunks = await pdf.generateSemanticChunks(options?.chunkingOptions);
+        const embeddings = await this.embeddingGenerator.generateForChunks(chunks);
+        let indexed = 0;
+        let errors = 0;
+        const prefix = options?.prefix || '';
+        const batchItems = [];
+        for (const chunk of chunks) {
+            const embedding = embeddings.get(chunk.id);
+            if (!embedding) {
+                errors++;
+                continue;
+            }
+            batchItems.push({
+                id: prefix + chunk.id,
+                embedding,
+                metadata: {
+                    content: chunk.content,
+                    pageNumbers: chunk.pageNumbers,
+                    type: chunk.type,
+                    tokenCount: chunk.metadata.tokenCount,
+                    importance: chunk.metadata.importance,
+                    keywords: chunk.metadata.keywords,
+                },
+            });
+        }
+        // Batch insert
+        try {
+            await this.adapter.addBatch(batchItems);
+            indexed = batchItems.length;
+        }
+        catch {
+            // Fall back to individual inserts
+            for (const item of batchItems) {
+                try {
+                    await this.adapter.add(item.id, item.embedding, item.metadata);
+                    indexed++;
+                }
+                catch {
+                    errors++;
+                }
+            }
+        }
+        return { indexed, errors };
+    }
+    /**
+     * Query the vector store with natural language text.
+     */
+    async query(queryText, topK = 5) {
+        const queryEmbedding = await this.embeddingGenerator.generate(queryText);
+        const results = await this.adapter.query(queryEmbedding, topK);
+        return results.map(r => ({
+            id: r.id,
+            score: r.score,
+            content: r.metadata.content || '',
+            pageNumbers: r.metadata.pageNumbers || [],
+        }));
+    }
+    /**
+     * Delete all indexed chunks for a document.
+     */
+    async removeDocument(chunkIds) {
+        let removed = 0;
+        for (const id of chunkIds) {
+            if (await this.adapter.delete(id))
+                removed++;
+        }
+        return removed;
+    }
+}
+/**
+ * Document comparison / diff engine.
+ * Compares two PDF documents and produces a structured diff.
+ */
+class DocumentDiffer {
+    /**
+     * Compare two sets of text content (from two PDFs).
+     */
+    static async compare(pdfA, pdfB) {
+        const textA = await pdfA.extractText();
+        const textB = await pdfB.extractText();
+        const metaA = pdfA.getMetadata();
+        const metaB = pdfB.getMetadata();
+        const pagesA = DocumentDiffer.groupByPage(textA);
+        const pagesB = DocumentDiffer.groupByPage(textB);
+        const allPages = new Set([...pagesA.keys(), ...pagesB.keys()]);
+        const addedPages = [];
+        const removedPages = [];
+        const modifiedPages = [];
+        for (const page of allPages) {
+            const aTexts = pagesA.get(page);
+            const bTexts = pagesB.get(page);
+            if (!aTexts && bTexts) {
+                addedPages.push(page);
+            }
+            else if (aTexts && !bTexts) {
+                removedPages.push(page);
+            }
+            else if (aTexts && bTexts) {
+                const aSet = new Set(aTexts.map(t => t.text.trim()));
+                const bSet = new Set(bTexts.map(t => t.text.trim()));
+                const added = [...bSet].filter(t => !aSet.has(t));
+                const removed = [...aSet].filter(t => !bSet.has(t));
+                if (added.length > 0 || removed.length > 0) {
+                    const intersection = [...aSet].filter(t => bSet.has(t)).length;
+                    const union = new Set([...aSet, ...bSet]).size;
+                    const similarity = union === 0 ? 1 : intersection / union;
+                    modifiedPages.push({
+                        pageNumber: page,
+                        addedText: added,
+                        removedText: removed,
+                        similarityScore: similarity,
+                    });
+                }
+            }
+        }
+        // Compare metadata
+        const metadataChanges = {};
+        if (metaA && metaB) {
+            for (const key of ['title', 'author', 'subject', 'creator']) {
+                const oldVal = metaA[key] || '';
+                const newVal = metaB[key] || '';
+                if (oldVal !== newVal) {
+                    metadataChanges[key] = { old: String(oldVal), new: String(newVal) };
+                }
+            }
+        }
+        // Calculate overall similarity
+        const totalPages = allPages.size;
+        const unchangedPages = totalPages - addedPages.length - removedPages.length - modifiedPages.length;
+        const modifiedSimilarity = modifiedPages.reduce((sum, p) => sum + p.similarityScore, 0);
+        const overallSimilarity = totalPages === 0 ? 1 :
+            (unchangedPages + modifiedSimilarity) / totalPages;
+        return {
+            addedPages: addedPages.sort((a, b) => a - b),
+            removedPages: removedPages.sort((a, b) => a - b),
+            modifiedPages: modifiedPages.sort((a, b) => a.pageNumber - b.pageNumber),
+            overallSimilarity,
+            metadataChanges,
+        };
+    }
+    static groupByPage(text) {
+        const pages = new Map();
+        for (const t of text) {
+            if (!pages.has(t.pageNumber))
+                pages.set(t.pageNumber, []);
+            pages.get(t.pageNumber).push(t);
+        }
+        return pages;
+    }
+}
+/**
+ * Automatic summarization pipeline.
+ * Implements extractive summarization using sentence scoring.
+ */
+class SummarizationPipeline {
+    constructor(pdf) {
+        this.pdf = pdf;
+    }
+    /** Generate a summary of the document. */
+    async summarize(options) {
+        const text = await this.pdf.extractText();
+        const fullText = text.map(t => t.text).join(' ');
+        const sentences = this.splitSentences(fullText);
+        const targetSentences = options?.sentenceCount || Math.max(3, Math.ceil(sentences.length * 0.1));
+        const maxLen = options?.maxLength || 500;
+        // Score sentences
+        const scored = sentences.map((sentence, idx) => ({
+            sentence,
+            score: this.scoreSentence(sentence, idx, sentences.length, text),
+            index: idx,
+            pageNumber: this.findPageForOffset(text, sentence),
+        }));
+        // Select top sentences maintaining document order
+        scored.sort((a, b) => b.score - a.score);
+        const selected = scored.slice(0, targetSentences);
+        selected.sort((a, b) => a.index - b.index);
+        // Trim to max length
+        let summary = '';
+        const keyPoints = [];
+        const pageReferences = [];
+        for (const s of selected) {
+            if (summary.length + s.sentence.length > maxLen && summary.length > 0)
+                break;
+            summary += (summary.length > 0 ? ' ' : '') + s.sentence.trim();
+            keyPoints.push(s.sentence.trim());
+            if (options?.includePageReferences && s.pageNumber > 0) {
+                pageReferences.push({ point: s.sentence.trim(), pageNumber: s.pageNumber });
+            }
+        }
+        return {
+            summary,
+            keyPoints,
+            pageReferences,
+            wordCount: summary.split(/\s+/).length,
+            compressionRatio: fullText.length === 0 ? 0 : summary.length / fullText.length,
+        };
+    }
+    scoreSentence(sentence, index, totalSentences, text) {
+        let score = 0;
+        // Position bonus — first and last sentences are often important
+        if (index < 3)
+            score += 2.0 - index * 0.5;
+        if (index >= totalSentences - 2)
+            score += 0.5;
+        // Length penalty — too short or too long is less useful
+        const wordCount = sentence.split(/\s+/).length;
+        if (wordCount >= 10 && wordCount <= 40)
+            score += 1.0;
+        else if (wordCount < 5)
+            score -= 1.0;
+        // Named entity / proper noun bonus (capitalized words)
+        const properNouns = sentence.match(/[A-Z][a-z]+/g);
+        if (properNouns)
+            score += Math.min(properNouns.length * 0.2, 1.0);
+        // Keyword density compared to full document
+        const keywords = this.getDocumentKeywords(text);
+        for (const kw of keywords) {
+            if (sentence.toLowerCase().includes(kw))
+                score += 0.3;
+        }
+        // Contains numbers (often factual)
+        if (/\d+/.test(sentence))
+            score += 0.3;
+        return score;
+    }
+    getDocumentKeywords(text) {
+        const words = text.map(t => t.text).join(' ').toLowerCase().split(/\s+/);
+        const freq = new Map();
+        const stopWords = new Set(['the', 'is', 'at', 'which', 'on', 'and', 'a', 'an', 'as', 'are',
+            'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+            'would', 'should', 'could', 'for', 'to', 'of', 'in', 'with', 'from', 'this', 'that']);
+        for (const w of words) {
+            if (w.length > 3 && !stopWords.has(w)) {
+                freq.set(w, (freq.get(w) || 0) + 1);
+            }
+        }
+        return Array.from(freq.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 15)
+            .map(([w]) => w);
+    }
+    splitSentences(text) {
+        return text
+            .replace(/\s+/g, ' ')
+            .split(/(?<=[.!?])\s+/)
+            .filter(s => s.trim().length > 10);
+    }
+    findPageForOffset(text, sentence) {
+        const trimmed = sentence.trim().slice(0, 50);
+        for (const t of text) {
+            if (t.text.includes(trimmed))
+                return t.pageNumber;
+        }
+        return 1;
+    }
+}
+/**
+ * Structured data extractor for common document types.
+ * Uses pattern matching to extract fields from invoices, receipts, papers, etc.
+ */
+class StructuredExtractor {
+    constructor(pdf) {
+        this.pdf = pdf;
+    }
+    /**
+     * Auto-detect document type and extract structured data.
+     */
+    async extract(overrideType) {
+        const text = await this.pdf.extractText();
+        const fullText = text.map(t => t.text).join(' ');
+        // Detect document type
+        const docType = overrideType
+            ? this.stringToDocumentType(overrideType)
+            : this.detectType(fullText);
+        const fields = {};
+        let lineItems;
+        let tables;
+        switch (docType) {
+            case DocumentType.Invoice:
+                this.extractInvoiceFields(text, fullText, fields);
+                lineItems = this.extractLineItems(fullText);
+                break;
+            case DocumentType.Resume:
+                this.extractResumeFields(text, fullText, fields);
+                break;
+            case DocumentType.Article:
+                this.extractPaperFields(text, fullText, fields);
+                break;
+            default:
+                // Generic extraction — try all patterns
+                this.extractGenericFields(text, fullText, fields);
+                break;
+        }
+        // Extract tables if present
+        const metadata = this.pdf.getMetadata();
+        if (metadata) {
+            tables = [];
+            for (let p = 1; p <= metadata.pageCount; p++) {
+                const pageText = await this.pdf.extractText({ pageRange: { start: p, end: p } });
+                if (pageText.length >= 4) {
+                    tables.push(...LayoutAnalyzer.detectTables(pageText, p));
+                }
+            }
+        }
+        // Calculate overall confidence
+        const fieldValues = Object.values(fields);
+        const avgConfidence = fieldValues.length === 0 ? 0 :
+            fieldValues.reduce((sum, f) => sum + f.confidence, 0) / fieldValues.length;
+        return {
+            documentType: docType,
+            confidence: avgConfidence,
+            fields,
+            lineItems,
+            tables,
+        };
+    }
+    detectType(text) {
+        const lower = text.toLowerCase();
+        const scores = [
+            [DocumentType.Invoice, 0],
+            [DocumentType.Resume, 0],
+            [DocumentType.Article, 0],
+        ];
+        // Invoice indicators
+        if (lower.includes('invoice'))
+            scores[0][1] += 3;
+        if (lower.includes('bill to'))
+            scores[0][1] += 2;
+        if (lower.includes('amount due'))
+            scores[0][1] += 2;
+        if (lower.includes('total'))
+            scores[0][1] += 1;
+        if (/invoice\s*#|inv[\s-]*no/i.test(text))
+            scores[0][1] += 2;
+        // Resume indicators
+        if (lower.includes('experience'))
+            scores[1][1] += 2;
+        if (lower.includes('education'))
+            scores[1][1] += 2;
+        if (lower.includes('skills'))
+            scores[1][1] += 2;
+        if (lower.includes('objective') || lower.includes('summary'))
+            scores[1][1] += 1;
+        if (/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/.test(text))
+            scores[1][1] += 1;
+        // Paper indicators
+        if (lower.includes('abstract'))
+            scores[2][1] += 3;
+        if (lower.includes('references'))
+            scores[2][1] += 2;
+        if (lower.includes('introduction'))
+            scores[2][1] += 1;
+        if (lower.includes('methodology') || lower.includes('methods'))
+            scores[2][1] += 1;
+        if (/doi:\s*10\./i.test(text))
+            scores[2][1] += 3;
+        scores.sort((a, b) => b[1] - a[1]);
+        return scores[0][1] >= 3 ? scores[0][0] : DocumentType.Other;
+    }
+    extractInvoiceFields(text, fullText, fields) {
+        // Invoice number
+        const invMatch = fullText.match(/(?:invoice|inv)[\s#:.-]*([A-Z0-9-]+)/i);
+        if (invMatch) {
+            fields['invoiceNumber'] = { value: invMatch[1], confidence: 0.9, pageNumber: this.findPage(text, invMatch[0]) };
+        }
+        // Date
+        const dateMatch = fullText.match(/(?:date|issued)[:\s]*([\d]{1,2}[\/-][\d]{1,2}[\/-][\d]{2,4})/i);
+        if (dateMatch) {
+            fields['date'] = { value: dateMatch[1], confidence: 0.85, pageNumber: this.findPage(text, dateMatch[0]) };
+        }
+        // Total
+        const totalMatch = fullText.match(/(?:total|amount\s*due)[:\s]*[\$€£]?\s*([\d,]+\.\d{2})/i);
+        if (totalMatch) {
+            fields['total'] = { value: totalMatch[1], confidence: 0.9, pageNumber: this.findPage(text, totalMatch[0]) };
+        }
+        // Tax
+        const taxMatch = fullText.match(/(?:tax|vat|gst)[:\s]*[\$€£]?\s*([\d,]+\.\d{2})/i);
+        if (taxMatch) {
+            fields['tax'] = { value: taxMatch[1], confidence: 0.8, pageNumber: this.findPage(text, taxMatch[0]) };
+        }
+        // Currency
+        const currencyMatch = fullText.match(/[\$\u20AC\u00A3\u00A5]/);
+        if (currencyMatch) {
+            const currMap = { '$': 'USD', '\u20AC': 'EUR', '\u00A3': 'GBP', '\u00A5': 'JPY' };
+            fields['currency'] = { value: currMap[currencyMatch[0]] || currencyMatch[0], confidence: 0.95, pageNumber: 1 };
+        }
+    }
+    extractResumeFields(text, fullText, fields) {
+        // Name — largest font text on page 1
+        const page1 = text.filter(t => t.pageNumber === 1);
+        if (page1.length > 0) {
+            const largest = page1.reduce((a, b) => ((a.fontSize || 12) > (b.fontSize || 12) ? a : b));
+            fields['name'] = { value: largest.text.trim(), confidence: 0.7, pageNumber: 1 };
+        }
+        // Email
+        const emailMatch = fullText.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+        if (emailMatch) {
+            fields['email'] = { value: emailMatch[0], confidence: 0.95, pageNumber: this.findPage(text, emailMatch[0]) };
+        }
+        // Phone
+        const phoneMatch = fullText.match(/(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        if (phoneMatch) {
+            fields['phone'] = { value: phoneMatch[0], confidence: 0.9, pageNumber: this.findPage(text, phoneMatch[0]) };
+        }
+        // Skills / Education / Experience section headers
+        for (const section of ['skills', 'education', 'experience', 'summary', 'objective']) {
+            const re = new RegExp(section + '[:\\s]*([^\\n]{0,200})', 'i');
+            const m = fullText.match(re);
+            if (m) {
+                fields[section] = { value: m[1]?.trim() || '', confidence: 0.6, pageNumber: this.findPage(text, m[0]) };
+            }
+        }
+    }
+    extractPaperFields(text, fullText, fields) {
+        // Title — first large text
+        const page1 = text.filter(t => t.pageNumber === 1);
+        if (page1.length > 0) {
+            const largest = page1.reduce((a, b) => ((a.fontSize || 12) > (b.fontSize || 12) ? a : b));
+            fields['title'] = { value: largest.text.trim(), confidence: 0.75, pageNumber: 1 };
+        }
+        // DOI
+        const doiMatch = fullText.match(/10\.\d{4,9}\/[^\s]+/);
+        if (doiMatch) {
+            fields['doi'] = { value: doiMatch[0], confidence: 0.95, pageNumber: this.findPage(text, doiMatch[0]) };
+        }
+        // Abstract
+        const absMatch = fullText.match(/abstract[:\s]*([\s\S]{20,500}?)(?=\n\s*\n|introduction|keywords)/i);
+        if (absMatch) {
+            fields['abstract'] = { value: absMatch[1].trim(), confidence: 0.8, pageNumber: this.findPage(text, 'abstract') };
+        }
+        // Keywords
+        const kwMatch = fullText.match(/keywords?[:\s]*([^\n]+)/i);
+        if (kwMatch) {
+            fields['keywords'] = { value: kwMatch[1].trim(), confidence: 0.85, pageNumber: this.findPage(text, kwMatch[0]) };
+        }
+    }
+    extractGenericFields(text, fullText, fields) {
+        // Dates
+        const datePattern = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g;
+        const dates = fullText.match(datePattern);
+        if (dates && dates.length > 0) {
+            fields['dates'] = { value: dates.join(', '), confidence: 0.7, pageNumber: 1 };
+        }
+        // Emails
+        const emailPattern = /[\w.+-]+@[\w-]+\.[\w.]+/g;
+        const emails = fullText.match(emailPattern);
+        if (emails && emails.length > 0) {
+            fields['emails'] = { value: emails.join(', '), confidence: 0.95, pageNumber: 1 };
+        }
+        // Monetary amounts
+        const moneyPattern = /[\$\u20AC\u00A3\u00A5]\s?[\d,]+(?:\.\d{2})?/g;
+        const amounts = fullText.match(moneyPattern);
+        if (amounts && amounts.length > 0) {
+            fields['amounts'] = { value: amounts.join(', '), confidence: 0.85, pageNumber: 1 };
+        }
+    }
+    extractLineItems(fullText) {
+        const items = [];
+        const linePattern = /^\s*(.+?)\s+(\d+)\s+[\$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s+[\$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s*$/gm;
+        let m;
+        while ((m = linePattern.exec(fullText)) !== null) {
+            items.push({ description: m[1].trim(), quantity: m[2], unitPrice: m[3], total: m[4] });
+        }
+        return items;
+    }
+    findPage(text, snippet) {
+        for (const t of text) {
+            if (t.text.includes(snippet))
+                return t.pageNumber;
+        }
+        return 1;
+    }
+    stringToDocumentType(s) {
+        const map = {
+            'invoice': DocumentType.Invoice,
+            'receipt': DocumentType.Invoice,
+            'resume': DocumentType.Resume,
+            'cv': DocumentType.Resume,
+            'paper': DocumentType.Article,
+            'article': DocumentType.Article,
+            'report': DocumentType.Report,
+            'form': DocumentType.Form,
+            'manual': DocumentType.Manual,
+            'book': DocumentType.Book,
+            'presentation': DocumentType.Presentation,
+        };
+        return map[s.toLowerCase()] || DocumentType.Other;
+    }
+}
 class PDFExporter {
     constructor(pdf, options) {
         this.pdf = pdf;
@@ -14180,6 +14821,14 @@ var PDFAConformanceLevel;
     PDFAConformanceLevel["PDF_A_3a"] = "3a";
     PDFAConformanceLevel["PDF_A_3u"] = "3u";
 })(PDFAConformanceLevel || (PDFAConformanceLevel = {}));
+/** Common structured document types and their field schemas. */
+const STRUCTURED_SCHEMAS = {
+    invoice: ['invoiceNumber', 'date', 'dueDate', 'vendor', 'vendorAddress', 'customer', 'customerAddress', 'subtotal', 'tax', 'total', 'currency'],
+    receipt: ['merchant', 'date', 'total', 'tax', 'paymentMethod', 'items'],
+    paper: ['title', 'authors', 'abstract', 'journal', 'doi', 'publicationDate', 'keywords', 'institution'],
+    resume: ['name', 'email', 'phone', 'address', 'summary', 'skills', 'education', 'experience'],
+    contract: ['parties', 'effectiveDate', 'terminationDate', 'jurisdiction', 'governingLaw'],
+};
 /** Default tile configuration. */
 const DEFAULT_TILE_CONFIG = {
     tileWidth: 512,

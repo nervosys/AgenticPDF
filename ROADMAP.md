@@ -229,11 +229,11 @@ Interactive demo at `demos/render-engine-demo.html`.
 
 ### Phase 21 — AI & RAG Enhancements
 
-- [ ] Embedding generation via `EmbeddingProvider` interface
-- [ ] Vector store integration helpers
-- [ ] Document comparison / diff
-- [ ] Automatic summarization pipeline
-- [ ] Structured data extraction (invoices, receipts, papers)
+- [x] Embedding generation via `EmbeddingProvider` interface
+- [x] Vector store integration helpers
+- [x] Document comparison / diff
+- [x] Automatic summarization pipeline
+- [x] Structured data extraction (invoices, receipts, papers)
 
 ---
 
