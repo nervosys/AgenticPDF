@@ -17383,6 +17383,267 @@ export interface ExportOptions {
 
 export type ExportFormat = 'text' | 'html' | 'markdown' | 'json' | 'xml' | 'csv';
 
+
+// ============================================================================
+// Telemetry
+// ============================================================================
+
+/**
+ * Telemetry configuration
+ */
+export interface TelemetryConfig {
+  enabled: boolean;
+  endpoint: string;
+  flushInterval: number;
+  maxBatchSize: number;
+  anonymize: boolean;
+}
+
+/**
+ * Telemetry event types
+ */
+export enum TelemetryEventType {
+  DocumentLoad = 'document_load',
+  PageRender = 'page_render',
+  TextExtraction = 'text_extraction',
+  AIFeature = 'ai_feature',
+  Export = 'export',
+  Error = 'error',
+  Performance = 'performance',
+}
+
+/**
+ * Telemetry event data
+ */
+export interface TelemetryEvent {
+  type: TelemetryEventType;
+  timestamp: number;
+  sessionId: string;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Telemetry client for anonymous usage tracking.
+ * Enabled by default, can be disabled with AGENTICPDF_NO_TELEMETRY env var
+ * or by calling Telemetry.disable().
+ */
+export class Telemetry {
+  private static instance: Telemetry | null = null;
+  private static _enabled: boolean = true;
+  private static sessionId: string = '';
+  private static eventQueue: TelemetryEvent[] = [];
+  private static flushTimer: ReturnType<typeof setInterval> | null = null;
+  private static config: TelemetryConfig = {
+    enabled: true,
+    endpoint: 'https://telemetry.nervosys.ai/v1/events',
+    flushInterval: 30000,
+    maxBatchSize: 50,
+    anonymize: true,
+  };
+
+  private constructor() {}
+
+  private static initialize(): void {
+    if (this.sessionId) return;
+    
+    // Generate anonymous session ID
+    this.sessionId = this.generateSessionId();
+    
+    // Check for opt-out via environment variable or global
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.AGENTICPDF_NO_TELEMETRY === '1' || 
+          process.env.AGENTICPDF_NO_TELEMETRY === 'true' ||
+          process.env.AGENTICPDF_OFFLINE === '1') {
+        this._enabled = false;
+      }
+    }
+    
+    // Check for browser global opt-out
+    if (typeof window !== 'undefined' && (window as any).__AGENTICPDF_NO_TELEMETRY__) {
+      this._enabled = false;
+    }
+    
+    // Check Deno environment
+    if (typeof (globalThis as any).Deno !== 'undefined') {
+      try {
+        const noTelemetry = (globalThis as any).Deno.env.get('AGENTICPDF_NO_TELEMETRY');
+        if (noTelemetry === '1' || noTelemetry === 'true') {
+          this._enabled = false;
+        }
+      } catch { /* Permission denied, continue */ }
+    }
+    
+    // Start flush timer if enabled
+    if (this._enabled) {
+      this.startFlushTimer();
+    }
+  }
+
+  private static generateSessionId(): string {
+    const array = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(array);
+    } else {
+      for (let i = 0; i < 16; i++) {
+        array[i] = Math.floor(Math.random() * 256);
+      }
+    }
+    return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  private static startFlushTimer(): void {
+    if (this.flushTimer) return;
+    
+    this.flushTimer = setInterval(() => {
+      this.flush().catch(() => {});
+    }, this.config.flushInterval);
+    
+    // Allow Node.js to exit even with timer running
+    if (typeof this.flushTimer === 'object' && 'unref' in this.flushTimer) {
+      this.flushTimer.unref();
+    }
+  }
+
+  /**
+   * Track an event
+   */
+  static track(type: TelemetryEventType, data: Record<string, unknown> = {}): void {
+    this.initialize();
+    if (!this._enabled) return;
+    
+    const event: TelemetryEvent = {
+      type,
+      timestamp: Date.now(),
+      sessionId: this.sessionId,
+      data: this.config.anonymize ? this.anonymizeData(data) : data,
+    };
+    
+    this.eventQueue.push(event);
+    
+    if (this.eventQueue.length >= this.config.maxBatchSize) {
+      this.flush().catch(() => {});
+    }
+  }
+
+  /**
+   * Track document load
+   */
+  static trackDocumentLoad(metadata: { pageCount: number; fileSize: number; duration: number }): void {
+    this.track(TelemetryEventType.DocumentLoad, {
+      pageCount: metadata.pageCount,
+      fileSize: this.bucketSize(metadata.fileSize),
+      duration: Math.round(metadata.duration),
+    });
+  }
+
+  /**
+   * Track feature usage
+   */
+  static trackFeature(feature: string, details?: Record<string, unknown>): void {
+    this.track(TelemetryEventType.AIFeature, {
+      feature,
+      ...details,
+    });
+  }
+
+  /**
+   * Track error (anonymized)
+   */
+  static trackError(error: Error, context?: string): void {
+    this.track(TelemetryEventType.Error, {
+      errorType: error.name,
+      context,
+    });
+  }
+
+  private static anonymizeData(data: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'number') {
+        result[key] = value;
+      } else if (typeof value === 'boolean') {
+        result[key] = value;
+      } else if (typeof value === 'string' && value.length < 100) {
+        // Short strings that are likely feature names, not user data
+        if (!value.includes('/') && !value.includes('\\') && !value.includes('@')) {
+          result[key] = value;
+        } else {
+          result[key] = '[redacted]';
+        }
+      } else {
+        result[key] = typeof value;
+      }
+    }
+    return result;
+  }
+
+  private static bucketSize(bytes: number): string {
+    if (bytes < 1024) return '<1KB';
+    if (bytes < 102400) return '<100KB';
+    if (bytes < 1048576) return '<1MB';
+    if (bytes < 10485760) return '<10MB';
+    if (bytes < 104857600) return '<100MB';
+    return '>100MB';
+  }
+
+  /**
+   * Flush events to server
+   */
+  static async flush(): Promise<void> {
+    if (!this._enabled || this.eventQueue.length === 0) return;
+    
+    const events = this.eventQueue.splice(0, this.config.maxBatchSize);
+    
+    try {
+      const response = await fetch(this.config.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client': 'agenticpdf',
+          'X-Version': '1.0.0',
+        },
+        body: JSON.stringify({ events }),
+      });
+      
+      if (!response.ok) {
+        // Put events back if failed
+        this.eventQueue.unshift(...events);
+      }
+    } catch {
+      // Network error, put events back
+      this.eventQueue.unshift(...events);
+    }
+  }
+
+  /**
+   * Disable telemetry
+   */
+  static disable(): void {
+    this._enabled = false;
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.eventQueue = [];
+  }
+
+  /**
+   * Enable telemetry
+   */
+  static enable(): void {
+    this._enabled = true;
+    this.initialize();
+  }
+
+  /**
+   * Check if telemetry is enabled
+   */
+  static isEnabled(): boolean {
+    this.initialize();
+    return this._enabled;
+  }
+}
+
 // ============================================================================
 // Additional Exports
 // ============================================================================

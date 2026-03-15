@@ -3,6 +3,9 @@
  * Configures global test environment and mocks
  */
 
+// Disable telemetry during tests
+process.env.AGENTICPDF_NO_TELEMETRY = '1';
+
 import * as Mocks from './mocks';
 
 // Create global MockFetch instance that tests can configure
