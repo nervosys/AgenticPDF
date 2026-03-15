@@ -1158,6 +1158,7 @@ export class AgenticPDF {
   private async parse(): Promise<void> {
     const startTime = performance.now();
     if (!this.buffer) throw new Error('No buffer available');
+    try {
 
     const parser = new PDFParser(this.buffer, this.options);
     this.parser = parser;
@@ -1183,6 +1184,10 @@ export class AgenticPDF {
       fileSize: this.metadata.fileSize,
       duration: performance.now() - startTime,
     });
+  } catch (error) {
+    Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'parse');
+    throw error;
+  }
   }
 
   private async parseStream(): Promise<void> {
@@ -1272,13 +1277,18 @@ export class AgenticPDF {
    */
   async extractText(options?: TextExtractionOptions): Promise<TextContent[]> {
     const startTime = performance.now();
-    const extractor = new TextExtractor(this, options);
-    const result = await extractor.extract();
-    Telemetry.trackFeature('extractText', {
-      duration: Math.round(performance.now() - startTime),
-      pageCount: result.length,
-    });
-    return result;
+    try {
+      const extractor = new TextExtractor(this, options);
+      const result = await extractor.extract();
+      Telemetry.trackFeature('extractText', {
+        duration: Math.round(performance.now() - startTime),
+        pageCount: result.length,
+      });
+      return result;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'extractText');
+      throw error;
+    }
   }
 
   /**
@@ -1316,8 +1326,19 @@ export class AgenticPDF {
     }));
   }
     async extractImages(options?: ImageExtractionOptions): Promise<ImageContent[]> {
-    const extractor = new ImageExtractor(this, options);
-    return extractor.extract();
+    const startTime = performance.now();
+    try {
+      const extractor = new ImageExtractor(this, options);
+      const images = await extractor.extract();
+      Telemetry.trackFeature('extractImages', {
+        duration: Math.round(performance.now() - startTime),
+        imageCount: images.length,
+      });
+      return images;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'extractImages');
+      throw error;
+    }
   }
 
   /**
@@ -1325,15 +1346,20 @@ export class AgenticPDF {
    */
   async getAIFeatures(options?: AIOptions): Promise<AIFeatures> {
     const startTime = performance.now();
-    if (!this.aiFeatures || options?.forceRegenerate) {
-      const analyzer = new AIAnalyzer(this, options);
-      this.aiFeatures = await analyzer.analyze();
+    try {
+      if (!this.aiFeatures || options?.forceRegenerate) {
+        const analyzer = new AIAnalyzer(this, options);
+        this.aiFeatures = await analyzer.analyze();
+      }
+      Telemetry.track(TelemetryEventType.AIFeature, {
+        feature: 'getAIFeatures',
+        duration: Math.round(performance.now() - startTime),
+      });
+      return this.aiFeatures;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'getAIFeatures');
+      throw error;
     }
-    Telemetry.track(TelemetryEventType.AIFeature, {
-      feature: 'getAIFeatures',
-      duration: Math.round(performance.now() - startTime),
-    });
-    return this.aiFeatures;
   }
 
   /**
@@ -1341,14 +1367,19 @@ export class AgenticPDF {
    */
   async generateSemanticChunks(options?: ChunkingOptions): Promise<SemanticChunk[]> {
     const startTime = performance.now();
-    const chunker = new SemanticChunker(this, options);
-    const chunks = await chunker.chunk();
-    Telemetry.track(TelemetryEventType.AIFeature, {
-      feature: 'generateSemanticChunks',
-      duration: Math.round(performance.now() - startTime),
-      chunkCount: chunks.length,
-    });
-    return chunks;
+    try {
+      const chunker = new SemanticChunker(this, options);
+      const chunks = await chunker.chunk();
+      Telemetry.track(TelemetryEventType.AIFeature, {
+        feature: 'generateSemanticChunks',
+        duration: Math.round(performance.now() - startTime),
+        chunkCount: chunks.length,
+      });
+      return chunks;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'generateSemanticChunks');
+      throw error;
+    }
   }
 
   /**
@@ -1364,24 +1395,56 @@ export class AgenticPDF {
    * Search text within the PDF
    */
   async search(query: string, options?: SearchOptions): Promise<SearchResult[]> {
-    const searcher = new PDFSearcher(this);
-    return searcher.search(query, options);
+    const startTime = performance.now();
+    try {
+      const searcher = new PDFSearcher(this);
+      const results = await searcher.search(query, options);
+      Telemetry.trackFeature('search', {
+        duration: Math.round(performance.now() - startTime),
+        resultCount: results.length,
+      });
+      return results;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'search');
+      throw error;
+    }
   }
 
   /**
    * Get form fields
    */
   async getFormFields(): Promise<FormField[]> {
-    const extractor = new FormExtractor(this);
-    return extractor.extract();
+    const startTime = performance.now();
+    try {
+      const extractor = new FormExtractor(this);
+      const fields = await extractor.extract();
+      Telemetry.trackFeature('getFormFields', {
+        duration: Math.round(performance.now() - startTime),
+        fieldCount: fields.length,
+      });
+      return fields;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'getFormFields');
+      throw error;
+    }
   }
 
   /**
    * Fill form fields
    */
   async fillForm(data: Record<string, any>): Promise<void> {
-    const filler = new FormFiller(this);
-    await filler.fill(data);
+    const startTime = performance.now();
+    try {
+      const filler = new FormFiller(this);
+      await filler.fill(data);
+      Telemetry.trackFeature('fillForm', {
+        duration: Math.round(performance.now() - startTime),
+        fieldCount: Object.keys(data).length,
+      });
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'fillForm');
+      throw error;
+    }
   }
 
   /**
@@ -1402,8 +1465,20 @@ export class AgenticPDF {
    * Get annotations
    */
   async getAnnotations(pageNumber?: number): Promise<Annotation[]> {
-    const extractor = new AnnotationExtractor(this);
-    return extractor.extract(pageNumber);
+    const startTime = performance.now();
+    try {
+      const extractor = new AnnotationExtractor(this);
+      const annotations = await extractor.extract(pageNumber);
+      Telemetry.trackFeature('getAnnotations', {
+        duration: Math.round(performance.now() - startTime),
+        annotationCount: annotations.length,
+        pageNumber,
+      });
+      return annotations;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'getAnnotations');
+      throw error;
+    }
   }
 
   /**
@@ -1538,13 +1613,18 @@ export class AgenticPDF {
     options?: RenderOptions
   ): Promise<void> {
     const startTime = performance.now();
-    const renderer = new PDFRenderer(this, options);
-    await renderer.renderToCanvas(pageNumber, canvas);
-    Telemetry.track(TelemetryEventType.PageRender, {
-      pageNumber,
-      duration: Math.round(performance.now() - startTime),
-      scale: options?.scale ?? 1,
-    });
+    try {
+      const renderer = new PDFRenderer(this, options);
+      await renderer.renderToCanvas(pageNumber, canvas);
+      Telemetry.track(TelemetryEventType.PageRender, {
+        pageNumber,
+        duration: Math.round(performance.now() - startTime),
+        scale: options?.scale ?? 1,
+      });
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'renderPage');
+      throw error;
+    }
   }
 
   /**
@@ -1556,15 +1636,20 @@ export class AgenticPDF {
     options?: RenderOptions
   ): Promise<Blob> {
     const startTime = performance.now();
-    const renderer = new PDFRenderer(this, options);
-    const result = await renderer.renderToImage(pageNumber, format);
-    Telemetry.track(TelemetryEventType.PageRender, {
-      pageNumber,
-      format,
-      duration: Math.round(performance.now() - startTime),
-      scale: options?.scale ?? 1,
-    });
-    return result;
+    try {
+      const renderer = new PDFRenderer(this, options);
+      const result = await renderer.renderToImage(pageNumber, format);
+      Telemetry.track(TelemetryEventType.PageRender, {
+        pageNumber,
+        format,
+        duration: Math.round(performance.now() - startTime),
+        scale: options?.scale ?? 1,
+      });
+      return result;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'renderPageToImage');
+      throw error;
+    }
   }
 
   /**
@@ -1602,21 +1687,36 @@ export class AgenticPDF {
    */
   async exportAs(format: ExportFormat, options?: ExportOptions): Promise<Blob | string> {
     const startTime = performance.now();
-    const exporter = new PDFExporter(this, options);
-    const result = await exporter.export(format);
-    Telemetry.track(TelemetryEventType.Export, {
-      format,
-      duration: Math.round(performance.now() - startTime),
-    });
-    return result;
+    try {
+      const exporter = new PDFExporter(this, options);
+      const result = await exporter.export(format);
+      Telemetry.track(TelemetryEventType.Export, {
+        format,
+        duration: Math.round(performance.now() - startTime),
+      });
+      return result;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'exportAs');
+      throw error;
+    }
   }
 
   /**
    * Save modified PDF
    */
   async save(): Promise<Blob> {
-    const writer = new PDFWriter(this);
-    return writer.save();
+    const startTime = performance.now();
+    try {
+      const writer = new PDFWriter(this);
+      const result = await writer.save();
+      Telemetry.trackFeature('save', {
+        duration: Math.round(performance.now() - startTime),
+      });
+      return result;
+    } catch (error) {
+      Telemetry.trackError(error instanceof Error ? error : new Error(String(error)), 'save');
+      throw error;
+    }
   }
 
   /**
@@ -17459,6 +17559,10 @@ export enum TelemetryEventType {
   Export = 'export',
   Error = 'error',
   Performance = 'performance',
+  Search = 'search',
+  FormOperation = 'form_operation',
+  AnnotationOperation = 'annotation_operation',
+  Save = 'save',
 }
 
 /**

@@ -4,7 +4,7 @@
  * configuration, queue limits, and retry/backoff behavior
  */
 
-import { Telemetry, TelemetryEventType } from '../../agenticpdf';
+import { Telemetry, TelemetryEventType, TelemetryConfig } from '../../agenticpdf';
 
 describe('Telemetry', () => {
   const originalEnv = process.env.AGENTICPDF_NO_TELEMETRY;
@@ -147,6 +147,83 @@ describe('Telemetry', () => {
       Telemetry.configure({ endpoint: 'https://my-server.example.com/telemetry' });
       expect(Telemetry.getConfig().endpoint).toBe('https://my-server.example.com/telemetry');
       Telemetry.configure({ endpoint: originalConfig.endpoint });
+    });
+  });
+
+  describe('New event types', () => {
+    test('should have Search event type', () => {
+      expect(TelemetryEventType.Search).toBe('search');
+    });
+
+    test('should have FormOperation event type', () => {
+      expect(TelemetryEventType.FormOperation).toBe('form_operation');
+    });
+
+    test('should have AnnotationOperation event type', () => {
+      expect(TelemetryEventType.AnnotationOperation).toBe('annotation_operation');
+    });
+
+    test('should have Save event type', () => {
+      expect(TelemetryEventType.Save).toBe('save');
+    });
+  });
+
+  describe('Error tracking', () => {
+    test('should not throw when tracking errors with context', () => {
+      Telemetry.disable();
+      expect(() => {
+        Telemetry.trackError(new Error('parse failure'), 'parse');
+      }).not.toThrow();
+    });
+
+    test('should not throw when tracking errors without context', () => {
+      Telemetry.disable();
+      expect(() => {
+        Telemetry.trackError(new Error('unknown error'));
+      }).not.toThrow();
+    });
+
+    test('should handle various error types gracefully', () => {
+      Telemetry.disable();
+      expect(() => {
+        Telemetry.trackError(new TypeError('type mismatch'), 'extractText');
+        Telemetry.trackError(new RangeError('out of range'), 'renderPage');
+        Telemetry.trackError(new SyntaxError('bad syntax'), 'getAIFeatures');
+      }).not.toThrow();
+    });
+  });
+
+  describe('Feature tracking with duration', () => {
+    test('should not throw when tracking features with duration data', () => {
+      Telemetry.disable();
+      expect(() => {
+        Telemetry.trackFeature('search', { duration: 42, resultCount: 5 });
+        Telemetry.trackFeature('getFormFields', { duration: 10, fieldCount: 3 });
+        Telemetry.trackFeature('fillForm', { duration: 8, fieldCount: 2 });
+        Telemetry.trackFeature('getAnnotations', { duration: 15, annotationCount: 7 });
+        Telemetry.trackFeature('save', { duration: 200 });
+        Telemetry.trackFeature('extractImages', { duration: 100, imageCount: 4 });
+      }).not.toThrow();
+    });
+
+    test('should not throw when tracking document load with duration', () => {
+      Telemetry.disable();
+      expect(() => {
+        Telemetry.trackDocumentLoad({ pageCount: 50, fileSize: 1048576, duration: 350 });
+      }).not.toThrow();
+    });
+  });
+
+  describe('TelemetryConfig interface', () => {
+    test('config should have all expected fields', () => {
+      const config = Telemetry.getConfig();
+      expect(typeof config.enabled).toBe('boolean');
+      expect(typeof config.endpoint).toBe('string');
+      expect(typeof config.flushInterval).toBe('number');
+      expect(typeof config.maxBatchSize).toBe('number');
+      expect(typeof config.maxQueueSize).toBe('number');
+      expect(typeof config.maxRetries).toBe('number');
+      expect(typeof config.anonymize).toBe('boolean');
     });
   });
 });
