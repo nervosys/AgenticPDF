@@ -1,10 +1,10 @@
-# Installing AgenticPDF CLI (mpdf)
+# Installing AgenticPDF CLI (apdf)
 
 ## 📦 Installation Methods
 
 ### Global Installation (Recommended)
 
-Install globally to use the `mpdf` command anywhere:
+Install globally to use the `apdf` command anywhere:
 
 ```bash
 npm install -g agenticpdf
@@ -13,9 +13,9 @@ npm install -g agenticpdf
 After installation, you can use the CLI from anywhere:
 
 ```bash
-mpdf --version
-mpdf help
-mpdf info document.pdf
+apdf --version
+apdf help
+apdf info document.pdf
 ```
 
 ### Local Project Installation
@@ -30,12 +30,12 @@ Then use via npx or npm scripts:
 
 ```bash
 # Using npx
-npx mpdf info document.pdf
+npx apdf info document.pdf
 
 # Or add to package.json scripts
 {
   "scripts": {
-    "pdf-info": "mpdf info"
+    "pdf-info": "apdf info"
   }
 }
 ```
@@ -54,25 +54,25 @@ npm install -g nervosys/agenticpdf
 
 ```bash
 # Check installation
-mpdf --version
+apdf --version
 
 # Show help
-mpdf help
+apdf help
 
 # Display PDF info
-mpdf info document.pdf
+apdf info document.pdf
 
 # Extract text
-mpdf extract -i document.pdf -o output.txt
+apdf extract -i document.pdf -o output.txt
 ```
 
 ### Local Installation
 
 ```bash
 # Using npx
-npx mpdf --version
-npx mpdf help
-npx mpdf info document.pdf
+npx apdf --version
+npx apdf help
+npx apdf info document.pdf
 
 # Using npm scripts (add to package.json)
 npm run pdf-info document.pdf
@@ -84,7 +84,7 @@ Both commands work identically:
 
 ```bash
 # Short command (recommended)
-mpdf info document.pdf
+apdf info document.pdf
 
 # Full command (also works)
 agenticpdf info document.pdf
@@ -96,22 +96,22 @@ Test your installation:
 
 ```bash
 # 1. Check version
-mpdf --version
+apdf --version
 # Expected: AgenticPDF CLI v1.0.0
 
 # 2. Show help
-mpdf help
+apdf help
 # Should display full help menu
 
 # 3. Test with a sample PDF (if you have one)
-mpdf info /path/to/sample.pdf
+apdf info /path/to/sample.pdf
 ```
 
 ## 🔧 Troubleshooting
 
 ### Command Not Found
 
-If `mpdf` is not found after global installation:
+If `apdf` is not found after global installation:
 
 1. **Check npm global bin path:**
    ```bash
@@ -160,8 +160,8 @@ If you see "tsx not found" errors:
 # tsx is included as a dependency, but you can install globally too
 npm install -g tsx
 
-# Then try mpdf again
-mpdf --version
+# Then try apdf again
+apdf --version
 ```
 
 ## 🌐 Platform-Specific Notes
@@ -173,7 +173,7 @@ mpdf --version
 npm install -g agenticpdf
 
 # Use anywhere
-mpdf info document.pdf
+apdf info document.pdf
 
 # If command not found, restart terminal
 ```
@@ -185,7 +185,7 @@ mpdf info document.pdf
 npm install -g agenticpdf
 
 # Use anywhere
-mpdf info document.pdf
+apdf info document.pdf
 
 # May need to add to PATH in ~/.zshrc or ~/.bash_profile
 ```
@@ -197,7 +197,7 @@ mpdf info document.pdf
 npm install -g agenticpdf
 
 # Use anywhere
-mpdf info document.pdf
+apdf info document.pdf
 
 # May need to fix npm permissions (see troubleshooting)
 ```
@@ -206,7 +206,7 @@ mpdf info document.pdf
 
 When you install AgenticPDF, you get:
 
-- **CLI executables:** `mpdf` and `agenticpdf` commands
+- **CLI executables:** `apdf` and `agenticpdf` commands
 - **TypeScript library:** Full AgenticPDF library for programmatic use
 - **Dependencies:** tsx for running TypeScript files
 - **Documentation:** Built-in help and online docs
@@ -251,38 +251,38 @@ npm uninstall agenticpdf
 
 ```bash
 # Display PDF information
-mpdf info document.pdf
+apdf info document.pdf
 
 # Extract text to file
-mpdf extract -i document.pdf -o output.txt
+apdf extract -i document.pdf -o output.txt
 
 # Convert to JSON
-mpdf convert -i document.pdf -f json --pretty -o output.json
+apdf convert -i document.pdf -f json --pretty -o output.json
 
 # Generate RAG chunks
-mpdf chunk -i document.pdf --chunk-size 1000 -o chunks.json
+apdf chunk -i document.pdf --chunk-size 1000 -o chunks.json
 
 # Extract images
-mpdf images -i document.pdf -o ./images/
+apdf images -i document.pdf -o ./images/
 
 # AI analysis
-mpdf analyze -i document.pdf --ai --pretty
+apdf analyze -i document.pdf --ai --pretty
 ```
 
 ### After Local Installation
 
 ```bash
 # Using npx prefix
-npx mpdf info document.pdf
-npx mpdf extract -i document.pdf -o output.txt
-npx mpdf convert -i document.pdf -f json --pretty
+npx apdf info document.pdf
+npx apdf extract -i document.pdf -o output.txt
+npx apdf convert -i document.pdf -f json --pretty
 
 # Or via package.json scripts
 {
   "scripts": {
-    "pdf:info": "mpdf info",
-    "pdf:extract": "mpdf extract -i",
-    "pdf:convert": "mpdf convert -f json"
+    "pdf:info": "apdf info",
+    "pdf:extract": "apdf extract -i",
+    "pdf:convert": "apdf convert -f json"
   }
 }
 ```
@@ -292,15 +292,15 @@ npx mpdf convert -i document.pdf -f json --pretty
 After installation:
 
 1. **Read Quick Start:** `CLI_QUICKSTART.md`
-2. **View Examples:** `mpdf help`
-3. **Try Commands:** Start with `mpdf info` on a sample PDF
+2. **View Examples:** `apdf help`
+3. **Try Commands:** Start with `apdf info` on a sample PDF
 4. **Read Full Docs:** `CLI.md` for complete reference
 5. **Check Reference Card:** `CLI_REFERENCE.md` for quick lookup
 
 ## 📞 Getting Help
 
-- **CLI Help:** `mpdf help`
-- **Command Help:** `mpdf <command> --help`
+- **CLI Help:** `apdf help`
+- **Command Help:** `apdf <command> --help`
 - **Documentation:** Check `CLI.md` and `CLI_QUICKSTART.md`
 - **Issues:** Report at https://github.com/nervosys/agenticpdf/issues
 
@@ -313,10 +313,10 @@ After installation:
 npm install -g agenticpdf
 
 # Process documents
-mpdf info document.pdf
-mpdf extract -i document.pdf -o text.txt
-mpdf analyze -i document.pdf --ai -o analysis.json
-mpdf chunk -i document.pdf -o chunks.json
+apdf info document.pdf
+apdf extract -i document.pdf -o text.txt
+apdf analyze -i document.pdf --ai -o analysis.json
+apdf chunk -i document.pdf -o chunks.json
 ```
 
 ### Project Integration
@@ -328,8 +328,8 @@ npm install agenticpdf
 # Add to package.json
 {
   "scripts": {
-    "process-pdf": "mpdf extract -i input.pdf -o output.txt",
-    "analyze-pdf": "mpdf analyze -i input.pdf --ai -o analysis.json"
+    "process-pdf": "apdf extract -i input.pdf -o output.txt",
+    "analyze-pdf": "apdf analyze -i input.pdf --ai -o analysis.json"
   }
 }
 
@@ -343,9 +343,9 @@ npm run analyze-pdf
 - [ ] Install Node.js 18+ (check: `node --version`)
 - [ ] Install npm (check: `npm --version`)
 - [ ] Install AgenticPDF globally: `npm install -g agenticpdf`
-- [ ] Verify installation: `mpdf --version`
-- [ ] Test help command: `mpdf help`
-- [ ] Try with a sample PDF: `mpdf info sample.pdf`
+- [ ] Verify installation: `apdf --version`
+- [ ] Test help command: `apdf help`
+- [ ] Try with a sample PDF: `apdf info sample.pdf`
 - [ ] Read quick start guide
 - [ ] Start processing PDFs!
 
@@ -354,6 +354,6 @@ npm run analyze-pdf
 **Ready to process PDFs?** Try:
 
 ```bash
-mpdf --version
-mpdf help
+apdf --version
+apdf help
 ```

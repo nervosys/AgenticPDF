@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * AgenticPDF CLI Entry Point (mpdf)
+ * AgenticPDF CLI Entry Point (apdf)
  * 
  * This file is the executable entry point for the CLI when installed via npm.
  * It launches the TypeScript CLI using tsx.
  * 
  * Usage:
- *   mpdf <command> [options]
+ *   apdf <command> [options]
  *   agenticpdf <command> [options]
  * 
  * After installing via: npm install -g agenticpdf

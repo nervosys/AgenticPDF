@@ -1,7 +1,7 @@
-# ModernPDF CLI Examples
+# AgenticPDF CLI Examples
 # Practical examples for common PDF processing tasks
 
-Write-Host "ModernPDF CLI - Usage Examples" -ForegroundColor Cyan
+Write-Host "AgenticPDF CLI - Usage Examples" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -85,20 +85,20 @@ Write-Host "Would you like to run a demo? (Y/N)" -ForegroundColor Cyan
 $response = Read-Host
 
 if ($response -eq 'Y' -or $response -eq 'y') {
-    Write-Host ""
-    Write-Host "Running demo: Extract text from sample.pdf" -ForegroundColor Green
-    Write-Host ""
+  Write-Host ""
+  Write-Host "Running demo: Extract text from sample.pdf" -ForegroundColor Green
+  Write-Host ""
     
-    if (Test-Path "demos/sample.pdf") {
-        npm run cli -- extract -i demos/sample.pdf -v
-    }
-    else {
-        Write-Host "Sample PDF not found at demos/sample.pdf" -ForegroundColor Red
-        Write-Host "Please ensure the demos directory contains sample.pdf" -ForegroundColor Yellow
-    }
+  if (Test-Path "demos/sample.pdf") {
+    npm run cli -- extract -i demos/sample.pdf -v
+  }
+  else {
+    Write-Host "Sample PDF not found at demos/sample.pdf" -ForegroundColor Red
+    Write-Host "Please ensure the demos directory contains sample.pdf" -ForegroundColor Yellow
+  }
 }
 else {
-    Write-Host "You can run any example by copying and pasting the command." -ForegroundColor Gray
+  Write-Host "You can run any example by copying and pasting the command." -ForegroundColor Gray
 }
 
 Write-Host ""

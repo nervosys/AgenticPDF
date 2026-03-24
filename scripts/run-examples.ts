@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * ModernPDF Examples Runner
+ * AgenticPDF Examples Runner
  * 
- * A comprehensive script to run all ModernPDF examples with interactive CLI interface.
+ * A comprehensive script to run all AgenticPDF examples with interactive CLI interface.
  * 
  * Usage:
  *   npm run examples                    # Interactive mode
@@ -215,7 +215,7 @@ async function runSingleExample(
 
 // Main CLI interface
 async function runInteractiveMode(): Promise<void> {
-    console.log(colorize('🚀 ModernPDF Examples Runner', 'bright'));
+    console.log(colorize('🚀 AgenticPDF Examples Runner', 'bright'));
     console.log(colorize('=====================================\n', 'cyan'));
 
     try {
@@ -318,7 +318,7 @@ function parseArgs(): { file?: string; all?: boolean; help?: boolean; example?: 
 
 // Show help
 function showHelp(): void {
-    console.log(colorize('ModernPDF Examples Runner', 'bright'));
+    console.log(colorize('AgenticPDF Examples Runner', 'bright'));
     console.log(colorize('========================\n', 'cyan'));
     console.log('Usage:');
     console.log('  npm run examples                     # Interactive mode');

@@ -133,8 +133,8 @@ tests/playwright-report/
 junit.xml
 
 # Browser build artifacts
-demos/modernpdf-browser.js
-demos/modernpdf-core.js
+demos/agenticpdf-browser.js
+demos/agenticpdf-core.js
 *.js.map
 
 # Playwright
@@ -175,6 +175,13 @@ codeql-results.*
 # Security tools cache
 .semgrep/
 .codeql/
+
+# Rust build artifacts
+agenticpdf-rs/target/
+
+# Temp test output
+test-output.txt
+test-ontology-output.txt
 
 # Utility scripts (keep in repo for team use)
 # validate-workflows.cjs_temp_agenticpdf.js

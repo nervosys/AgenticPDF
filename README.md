@@ -135,6 +135,50 @@ const html = await pdf.exportAs('html');
 const json = await pdf.exportAs('json', { includeAnnotations: true });
 ```
 
+### aPDF (Agentic PDF) Metadata
+
+Generate a rich, machine-readable metadata envelope optimized for agentic AI, research linking, and web display:
+
+```typescript
+// Generate the full aPDF envelope
+const apdf = await pdf.generateAPDFMetadata();
+
+console.log(apdf.metadata.title);             // "Attention Is All You Need"
+console.log(apdf.metadata.identifiers.arxivId); // "1706.03762"
+console.log(apdf.metadata.identifiers.doi);     // "10.48550/arXiv.1706.03762"
+
+// Linked research artifacts (models, datasets, code)
+for (const artifact of apdf.artifacts) {
+  console.log(`[${artifact.type}] ${artifact.name} → ${artifact.url}`);
+  // [model] google/flan-t5-base → https://huggingface.co/google/flan-t5-base
+  // [code]  google-research/t5x → https://github.com/google-research/t5x
+}
+
+// AI-ready chunks with full provenance
+for (const chunk of apdf.aiContent.chunks) {
+  await vectorStore.add({
+    content: chunk.content,
+    metadata: {
+      doi: apdf.metadata.identifiers.doi,
+      pages: chunk.pageNumbers,
+      importance: chunk.importance,
+    },
+  });
+}
+
+// Or export as JSON directly
+const apdfJson = await pdf.exportAs('apdf');
+```
+
+The aPDF format includes:
+- **Identifiers**: DOI, arXiv, PMID, ISBN, HuggingFace, Semantic Scholar
+- **Artifacts**: Linked models, datasets, spaces, code repos, and papers
+- **Structure**: TOC, sections, tables, figures, equations, bibliography
+- **AI Content**: Semantic chunks, entities, keywords, summary, token stats
+- **Display Hints**: Reading order, fonts, math detection, theme suggestions
+- **Provenance**: Generator info, processing pipeline, timestamp
+- **JSON-LD**: Schema.org `@context`/`@type` for linked data interoperability
+
 ## Loading Sources
 
 ```typescript

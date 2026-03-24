@@ -479,7 +479,7 @@ async function interactiveMode() {
 #### 💡 Add Shell Completion
 ```bash
 # ~/.bashrc or ~/.zshrc
-eval "$(mpdf --completion)"
+eval "$(apdf --completion)"
 ```
 
 ---

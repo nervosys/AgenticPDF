@@ -72,7 +72,7 @@ The Rust implementation provides significant performance improvements over the T
 
 ## Architecture
 
-```
+```shell
 src/
 ├── lib.rs      # Core types (PdfDocument, PdfPage, TextBlock, SemanticChunk)
 ├── parser.rs   # PDF parser (header, xref, objects, streams, text operators)
@@ -82,4 +82,4 @@ src/
 
 ## License
 
-AGPL-3.0-or-later / Commercial dual license — Nervosys, LLC
+AGPL-3.0-or-later / Commercial dual license — NERVOSYS, LLC

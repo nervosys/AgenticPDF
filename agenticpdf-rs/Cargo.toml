@@ -9,6 +9,9 @@ repository = "https://github.com/nervosys/AgenticPDF"
 keywords = ["pdf", "ai", "wasm", "cli", "agentic"]
 categories = ["command-line-utilities", "wasm", "parser-implementations"]
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"

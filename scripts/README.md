@@ -1,4 +1,4 @@
-# ModernPDF Scripts
+# AgenticPDF Scripts
 
 Utility scripts for development, testing, and demonstration.
 
@@ -6,20 +6,20 @@ Utility scripts for development, testing, and demonstration.
 
 ### CLI Testing Scripts
 
-#### `modernpdf-cli.ps1`
+#### `agenticpdf-cli.ps1`
 PowerShell wrapper for testing the CLI on Windows.
 
 **Usage:**
 ```powershell
-.\scripts\modernpdf-cli.ps1 info -i demos\sample.pdf
+.\scripts\agenticpdf-cli.ps1 info -i demos\sample.pdf
 ```
 
-#### `modernpdf-cli.sh`
+#### `agenticpdf-cli.sh`
 Bash wrapper for testing the CLI on Unix/Linux/macOS.
 
 **Usage:**
 ```bash
-./scripts/modernpdf-cli.sh info -i demos/sample.pdf
+./scripts/agenticpdf-cli.sh info -i demos/sample.pdf
 ```
 
 #### `test-cli.js`
@@ -89,10 +89,10 @@ scripts\run-examples.bat           # Windows
 ### Test CLI Locally
 ```bash
 # PowerShell (Windows)
-.\scripts\modernpdf-cli.ps1 help
+.\scripts\agenticpdf-cli.ps1 help
 
 # Bash (Unix/Linux/macOS)
-./scripts/modernpdf-cli.sh help
+./scripts/agenticpdf-cli.sh help
 ```
 
 ### Validate Workflows
@@ -104,8 +104,8 @@ node scripts/validate-workflows.cjs
 
 | Script                   | Language   | Purpose                       |
 | ------------------------ | ---------- | ----------------------------- |
-| `modernpdf-cli.ps1`      | PowerShell | CLI testing wrapper (Windows) |
-| `modernpdf-cli.sh`       | Bash       | CLI testing wrapper (Unix)    |
+| `agenticpdf-cli.ps1`     | PowerShell | CLI testing wrapper (Windows) |
+| `agenticpdf-cli.sh`      | Bash       | CLI testing wrapper (Unix)    |
 | `test-cli.js`            | Node.js    | Automated CLI tests           |
 | `run-examples.ts`        | TypeScript | Run all library examples      |
 | `run-examples-simple.ts` | TypeScript | Simple examples runner        |
@@ -119,7 +119,7 @@ node scripts/validate-workflows.cjs
 ```bash
 # 1. Make changes to cli.ts
 # 2. Test locally without installing
-.\scripts\modernpdf-cli.ps1 info -i demos\sample.pdf
+.\scripts\agenticpdf-cli.ps1 info -i demos\sample.pdf
 
 # 3. Run full test suite
 npm test

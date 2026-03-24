@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AgenticPDF WASM Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    h1 { margin-bottom: 1rem; }
+    #status { padding: 0.5rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: 600; }
+    #status.loading { background: #fff3cd; color: #856404; }
+    #status.ready { background: #d4edda; color: #155724; }
+    #status.error { background: #f8d7da; color: #721c24; }
+    .section { margin-bottom: 1.5rem; }
+    .section h2 { margin-bottom: 0.5rem; font-size: 1.1rem; }
+    pre { background: #f5f5f5; padding: 1rem; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+    button { padding: 0.4rem 1rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; margin-right: 0.5rem; }
+    button:hover { background: #f0f0f0; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #drop-zone { border: 2px dashed #aaa; border-radius: 8px; padding: 2rem; text-align: center; margin-bottom: 1rem; }
+    #drop-zone.drag-over { border-color: #4a90d9; background: #e8f0fe; }
+  </style>
+</head>
+<body>
+  <h1>AgenticPDF WASM Demo</h1>
+  <div id="status" class="loading">Loading WASM module...</div>
+
+  <div id="drop-zone">
+    Drop a PDF here or <input type="file" id="file-input" accept=".pdf"> to load it.
+    <br><br>
+    <button id="btn-sample" disabled>Load sample.pdf</button>
+  </div>
+
+  <div id="results" style="display:none">
+    <div class="section">
+      <h2>Metadata</h2>
+      <pre id="out-metadata"></pre>
+    </div>
+    <div class="section">
+      <h2>Page Count</h2>
+      <pre id="out-pagecount"></pre>
+    </div>
+    <div class="section">
+      <h2>Extracted Text</h2>
+      <pre id="out-text"></pre>
+    </div>
+    <div class="section">
+      <h2>Semantic Chunks (max_size=100, overlap=10)</h2>
+      <pre id="out-chunks"></pre>
+    </div>
+    <div class="section">
+      <h2>Timing</h2>
+      <pre id="out-timing"></pre>
+    </div>
+  </div>
+
+  <script type="module">
+    import init, {
+      parsePdfMetadata,
+      extractText,
+      getPageCount,
+      generateChunks
+    } from './pkg/agenticpdf.js';
+
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+    const btnSample = document.getElementById('btn-sample');
+    const fileInput = document.getElementById('file-input');
+    const dropZone = document.getElementById('drop-zone');
+
+    let wasmReady = false;
+
+    // Initialize WASM
+    try {
+      await init();
+      wasmReady = true;
+      status.textContent = 'WASM module loaded — ready.';
+      status.className = 'ready';
+      btnSample.disabled = false;
+    } catch (e) {
+      status.textContent = 'Failed to load WASM: ' + e.message;
+      status.className = 'error';
+      console.error(e);
+    }
+
+    function processPdf(bytes, filename) {
+      if (!wasmReady) return;
+      const data = new Uint8Array(bytes);
+      const timings = {};
+
+      status.textContent = `Processing ${filename} (${data.byteLength.toLocaleString()} bytes)...`;
+      status.className = 'loading';
+      results.style.display = 'none';
+
+      try {
+        // Metadata
+        let t0 = performance.now();
+        const meta = parsePdfMetadata(data);
+        timings.metadata = (performance.now() - t0).toFixed(2);
+        document.getElementById('out-metadata').textContent = JSON.stringify(JSON.parse(meta), null, 2);
+
+        // Page count
+        t0 = performance.now();
+        const pages = getPageCount(data);
+        timings.pageCount = (performance.now() - t0).toFixed(2);
+        document.getElementById('out-pagecount').textContent = pages + ' page(s)';
+
+        // Text extraction
+        t0 = performance.now();
+        const text = extractText(data);
+        timings.extractText = (performance.now() - t0).toFixed(2);
+        document.getElementById('out-text').textContent = text || '(no text extracted)';
+
+        // Chunking
+        t0 = performance.now();
+        const chunks = generateChunks(data, 100, 10);
+        timings.chunks = (performance.now() - t0).toFixed(2);
+        document.getElementById('out-chunks').textContent = JSON.stringify(JSON.parse(chunks), null, 2);
+
+        // Timing summary
+        document.getElementById('out-timing').textContent =
+          `parsePdfMetadata: ${timings.metadata} ms\n` +
+          `getPageCount:     ${timings.pageCount} ms\n` +
+          `extractText:      ${timings.extractText} ms\n` +
+          `generateChunks:   ${timings.chunks} ms`;
+
+        results.style.display = 'block';
+        status.textContent = `Done — ${filename}`;
+        status.className = 'ready';
+      } catch (e) {
+        status.textContent = 'Error processing PDF: ' + e;
+        status.className = 'error';
+        console.error(e);
+      }
+    }
+
+    // Load sample PDF
+    btnSample.addEventListener('click', async () => {
+      try {
+        const resp = await fetch('../demos/sample.pdf');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const buf = await resp.arrayBuffer();
+        processPdf(buf, 'sample.pdf');
+      } catch (e) {
+        status.textContent = 'Failed to fetch sample.pdf: ' + e.message;
+        status.className = 'error';
+      }
+    });
+
+    // File input
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => processPdf(reader.result, file.name);
+      reader.readAsArrayBuffer(file);
+    });
+
+    // Drag and drop
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.pdf')) {
+        const reader = new FileReader();
+        reader.onload = () => processPdf(reader.result, file.name);
+        reader.readAsArrayBuffer(file);
+      }
+    });
+  </script>
+</body>
+</html>

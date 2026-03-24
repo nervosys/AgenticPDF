@@ -6,8 +6,8 @@
   "types": "dist/agenticpdf.d.ts",
   "type": "module",
   "bin": {
-    "mpdf": "./cli.js",
-    "awpdf": "./cli.js"
+    "apdf": "./cli.js",
+    "agenticpdf": "./cli.js"
   },
   "scripts": {
     "cli": "npx tsx cli.ts",

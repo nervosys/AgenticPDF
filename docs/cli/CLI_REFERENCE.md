@@ -9,30 +9,36 @@ npm run cli -- help  # Show help
 
 ## 📋 Commands
 
-| Command   | Description       | Example                                           |
-| --------- | ----------------- | ------------------------------------------------- |
-| `info`    | Show PDF metadata | `npm run cli -- info file.pdf`                    |
-| `extract` | Extract text      | `npm run cli -- extract -i file.pdf -o out.txt`   |
-| `convert` | Convert format    | `npm run cli -- convert -i file.pdf -f json`      |
-| `analyze` | AI analysis       | `npm run cli -- analyze -i file.pdf --ai`         |
-| `chunk`   | Generate chunks   | `npm run cli -- chunk -i file.pdf -o chunks.json` |
-| `images`  | Extract images    | `npm run cli -- images -i file.pdf -o ./images/`  |
-| `forms`   | Extract forms     | `npm run cli -- forms -i file.pdf`                |
-| `help`    | Show help         | `npm run cli -- help`                             |
-| `version` | Show version      | `npm run cli -- version`                          |
+| Command   | Description       | Example                                              |
+| --------- | ----------------- | ---------------------------------------------------- |
+| `info`    | Show PDF metadata | `npm run cli -- info file.pdf`                       |
+| `extract` | Extract text      | `npm run cli -- extract -i file.pdf -o out.txt`      |
+| `convert` | Convert format    | `npm run cli -- convert -i file.pdf -f json`         |
+| `analyze` | AI analysis       | `npm run cli -- analyze -i file.pdf --ai`            |
+| `chunk`   | Generate chunks   | `npm run cli -- chunk -i file.pdf -o chunks.json`    |
+| `images`  | Extract images    | `npm run cli -- images -i file.pdf -o ./images/`     |
+| `forms`   | Extract forms     | `npm run cli -- forms -i file.pdf`                   |
+| `typeset` | Typeset for web   | `npm run cli -- typeset -i file.pdf -o article.html` |
+| `help`    | Show help         | `npm run cli -- help`                                |
+| `version` | Show version      | `npm run cli -- version`                             |
 
 ## 🎛️ Common Options
 
-| Option       | Short | Description        | Example                |
-| ------------ | ----- | ------------------ | ---------------------- |
-| `--input`    | `-i`  | Input PDF file     | `-i document.pdf`      |
-| `--output`   | `-o`  | Output file        | `-o output.txt`        |
-| `--pages`    | `-p`  | Page range         | `-p 1-5` or `-p 1,3,5` |
-| `--format`   | `-f`  | Output format      | `-f json`              |
-| `--verbose`  | `-v`  | Verbose output     | `-v`                   |
-| `--pretty`   |       | Pretty JSON        | `--pretty`             |
-| `--metadata` | `-m`  | Include metadata   | `-m`                   |
-| `--stream`   |       | Stream large files | `--stream`             |
+| Option          | Short | Description                | Example                |
+| --------------- | ----- | -------------------------- | ---------------------- |
+| `--input`       | `-i`  | Input PDF file             | `-i document.pdf`      |
+| `--output`      | `-o`  | Output file                | `-o output.txt`        |
+| `--pages`       | `-p`  | Page range                 | `-p 1-5` or `-p 1,3,5` |
+| `--format`      | `-f`  | Output format              | `-f json`              |
+| `--verbose`     | `-v`  | Verbose output             | `-v`                   |
+| `--pretty`      |       | Pretty JSON                | `--pretty`             |
+| `--metadata`    | `-m`  | Include metadata           | `-m`                   |
+| `--stream`      |       | Stream large files         | `--stream`             |
+| `--css`         |       | CSS output (typeset)       | `--css`                |
+| `--accessible`  |       | Accessible HTML (typeset)  | `--accessible`         |
+| `--print-css`   |       | Print stylesheet (typeset) | `--print-css`          |
+| `--social-meta` |       | OG/Twitter tags (typeset)  | `--social-meta`        |
+| `--page-url`    |       | URL for social tags        | `--page-url https://…` |
 
 ## 🔥 Quick Examples
 
@@ -69,6 +75,31 @@ npm run cli -- images -i document.pdf -o ./images/ -v
 ### Stream Large PDF
 ```bash
 npm run cli -- extract -i large.pdf --stream -o output.txt
+```
+
+### Typeset: CSS from Display Hints
+```bash
+npm run cli -- typeset -i paper.pdf --css -o styles.css
+```
+
+### Typeset: Responsive HTML Article
+```bash
+npm run cli -- typeset -i paper.pdf -o article.html
+```
+
+### Typeset: Accessible Reading View
+```bash
+npm run cli -- typeset -i paper.pdf --accessible -o readable.html
+```
+
+### Typeset: Print-Ready Stylesheet
+```bash
+npm run cli -- typeset -i paper.pdf --print-css -o print.css
+```
+
+### Typeset: Social Meta Tags
+```bash
+npm run cli -- typeset -i paper.pdf --social-meta --page-url https://example.com/paper
 ```
 
 ## 📤 Output Formats

@@ -1,10 +1,10 @@
 @echo off
-REM ModernPDF Examples Runner for Windows
-REM This batch file provides easy access to run ModernPDF examples
+REM AgenticPDF Examples Runner for Windows
+REM This batch file provides easy access to run AgenticPDF examples
 
 echo.
 echo ====================================
-echo    ModernPDF Examples Runner
+echo    AgenticPDF Examples Runner
 echo ====================================
 echo.
 

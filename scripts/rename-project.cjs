@@ -1,6 +1,7 @@
 /**
- * Rename project from ModernPDF to AgenticPDF (AWPDF)
+ * Rename project from ModernPDF to AgenticPDF (aPDF)
  * Handles all source files, configs, docs, and demos.
+ * NOTE: This script was used for the initial rename and is kept for reference.
  */
 const fs = require('fs');
 const path = require('path');
@@ -89,11 +90,11 @@ for (const relPath of sourceFiles) {
   content = content.replace(/modernpdf/g, 'agenticpdf');
 
   // Fix package.json bin entry — keep cli.js as-is
-  // The bin entry "modernpdf" CLI command → "awpdf"
+  // The bin entry "modernpdf" CLI command → "apdf"
   // This will have been changed to "agenticpdf" above, which is fine for npm name,
-  // but the CLI command should be "awpdf"
+  // but the CLI command should be "apdf"
   if (relPath === 'package.json') {
-    content = content.replace(/"agenticpdf": ".\/cli.js"/, '"awpdf": "./cli.js"');
+    content = content.replace(/"agenticpdf": ".\/cli.js"/, '"apdf": "./cli.js"');
   }
 
   if (content !== original) {
@@ -124,4 +125,4 @@ for (const [oldName, newName] of fileRenames) {
   }
 }
 
-console.log('\n🎉 Project renamed to AgenticPDF (AWPDF)');
+console.log('\n🎉 Project renamed to AgenticPDF (aPDF)');

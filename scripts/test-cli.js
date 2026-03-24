@@ -9,7 +9,7 @@ const path = require('path');
 const fs = require('fs');
 
 console.log('╔════════════════════════════════════════════════╗');
-console.log('║       ModernPDF CLI - Quick Test              ║');
+console.log('║       AgenticPDF CLI - Quick Test             ║');
 console.log('╚════════════════════════════════════════════════╝\n');
 
 const samplePdf = path.join(__dirname, 'demos', 'sample.pdf');

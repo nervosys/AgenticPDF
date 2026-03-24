@@ -1,11 +1,11 @@
-// Build script for modernpdf-core.ts
+// Build script for agenticpdf-core.ts
 const fs = require('fs');
 const path = require('path');
 
-console.log('📦 Building ModernPDF Core...');
+console.log('📦 Building AgenticPDF Core...');
 
 // Read the TypeScript source
-const sourcePath = path.join(__dirname, '..', 'modernpdf-core.ts');
+const sourcePath = path.join(__dirname, '..', 'agenticpdf-core.ts');
 const source = fs.readFileSync(sourcePath, 'utf8');
 
 // Simple transpilation: remove type annotations and export statements
@@ -28,12 +28,12 @@ let jsCode = source
 
 // Add browser global
 jsCode = `
-// ModernPDF Core - Compiled from TypeScript
+// AgenticPDF Core - Compiled from TypeScript
 ${jsCode}
 
 // Browser global export
 if (typeof window !== 'undefined') {
-    window.ModernPDF = {
+    window.AgenticPDF = {
         getDocument,
         renderPage,
         Stream,
@@ -51,8 +51,8 @@ if (typeof window !== 'undefined') {
 `;
 
 // Write output
-const outputPath = path.join(__dirname, '..', 'demos', 'modernpdf-core.js');
+const outputPath = path.join(__dirname, '..', 'demos', 'agenticpdf-core.js');
 fs.writeFileSync(outputPath, jsCode);
 
-console.log('✅ Built: demos/modernpdf-core.js');
+console.log('✅ Built: demos/agenticpdf-core.js');
 console.log(`📊 Size: ${Math.round(jsCode.length / 1024)}KB`);

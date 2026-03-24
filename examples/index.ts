@@ -11,6 +11,9 @@ export { aiIntegrationExample } from './02-ai-integration';
 export { streamToLLMExample } from './03-streaming-to-llm';
 export { BatchProcessor, batchProcessingExample } from './04-batch-processing';
 export { PDFWebSocketProcessor, MockWebSocketServer, realTimeProcessingExample } from './05-realtime-websocket';
+export { apdfExamples } from './06-apdf-metadata';
+export { apdfUseCases } from './07-apdf-use-cases';
+export { typesettingWebDisplayExamples } from './08-typesetting-web-display';
 
 // Example runner interface
 export interface ExampleRunner {
@@ -65,6 +68,33 @@ export const examples: ExampleRunner[] = [
         run: async (inputs) => {
             const { realTimeProcessingExample } = await import('./05-realtime-websocket');
             await realTimeProcessingExample(inputs.file, inputs.wsUrl);
+        }
+    },
+    {
+        name: 'aPDF Metadata',
+        description: 'Generate aPDF metadata envelopes for AI workflows, research linking, and web display',
+        requiredInputs: ['file: File'],
+        run: async (inputs) => {
+            const { apdfExamples } = await import('./06-apdf-metadata');
+            await apdfExamples(inputs.file);
+        }
+    },
+    {
+        name: 'aPDF Use Cases',
+        description: 'Real-world aPDF workflows: multi-agent research, compliance audit, knowledge graphs, document routing, revision diff, literature survey, Markdown publishing, and embedding cache',
+        requiredInputs: ['file: File', 'additionalFiles?: File[]'],
+        run: async (inputs) => {
+            const { apdfUseCases } = await import('./07-apdf-use-cases');
+            await apdfUseCases(inputs.file, inputs.additionalFiles);
+        }
+    },
+    {
+        name: 'Typesetting & Web Display',
+        description: 'aPDF-driven typesetting: CSS generation, responsive HTML, font audit, accessible reading view, print stylesheet, social meta tags, canvas rendering, and multi-format export',
+        requiredInputs: ['file: File', 'pageUrl?: string'],
+        run: async (inputs) => {
+            const { typesettingWebDisplayExamples } = await import('./08-typesetting-web-display');
+            await typesettingWebDisplayExamples(inputs.file, inputs.pageUrl);
         }
     }
 ];

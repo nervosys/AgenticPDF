@@ -1,5 +1,5 @@
 /**
- * ModernPDF - A complete, production-ready PDF processing library
+ * AgenticPDF - A complete, production-ready PDF processing library
  * with first-class support for streaming and AI systems
  */
 export interface PDFMetadata {
@@ -721,10 +721,10 @@ export declare class AgenticPDF {
     /**
      * Load PDF from various sources
      */
-    static fromFile(file: File, options?: PDFOptions): Promise<ModernPDF>;
-    static fromUrl(url: string, options?: PDFOptions): Promise<ModernPDF>;
-    static fromBuffer(buffer: ArrayBuffer, options?: PDFOptions): Promise<ModernPDF>;
-    static fromStream(stream: ReadableStream<Uint8Array>, options?: PDFOptions): ModernPDF;
+    static fromFile(file: File, options?: PDFOptions): Promise<AgenticPDF>;
+    static fromUrl(url: string, options?: PDFOptions): Promise<AgenticPDF>;
+    static fromBuffer(buffer: ArrayBuffer, options?: PDFOptions): Promise<AgenticPDF>;
+    static fromStream(stream: ReadableStream<Uint8Array>, options?: PDFOptions): AgenticPDF;
     private loadFromFile;
     private loadFromUrl;
     private loadFromBuffer;

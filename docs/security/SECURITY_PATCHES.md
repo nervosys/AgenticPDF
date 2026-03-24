@@ -450,9 +450,9 @@ npm test
 npm test -- --testNamePattern="security"
 
 # Manual security testing
-mpdf images -i test.pdf -o "../../../../etc/passwd"  # Should fail
-mpdf chunk -i test.pdf --chunk-size -1               # Should fail
-mpdf chunk -i test.pdf --chunk-size 99999999         # Should fail
+apdf images -i test.pdf -o "../../../../etc/passwd"  # Should fail
+apdf chunk -i test.pdf --chunk-size -1               # Should fail
+apdf chunk -i test.pdf --chunk-size 99999999         # Should fail
 ```
 
 ### 5. Update tests

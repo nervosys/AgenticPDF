@@ -253,9 +253,29 @@
         }
 
         /* Theme toggle button styling */
-        #themeToggle {
+        #themeToggle,
+        #paperToggle {
             font-size: 14px;
             min-width: 32px;
+        }
+
+        .toolbar .separator {
+            width: 1px;
+            height: 20px;
+            background: #555;
+        }
+
+        body.light-mode .toolbar .separator {
+            background: #ddd;
+        }
+
+        /* Paper dark mode — invert the rendered canvas content */
+        body.paper-dark .pdf-page canvas {
+            filter: invert(0.88) hue-rotate(180deg);
+        }
+
+        body.paper-dark .pdf-page {
+            background: #1e1e1e;
         }
     </style>
 </head>
@@ -276,7 +296,9 @@
             </div>
             <button id="zoomIn" title="Zoom In">+</button>
             <button id="fitWidth" title="Fit Width">Fit</button>
-            <button id="themeToggle" title="Toggle Dark/Light Mode">🌙</button>
+            <button id="themeToggle" title="Toggle Dark/Light Mode">⬛</button>
+            <div class="separator"></div>
+            <button id="paperToggle" title="Toggle Paper Dark/Light Mode">🌙</button>
         </div>
 
         <!-- PDF Viewer Area -->
@@ -317,10 +339,13 @@
                 this.zoomOutBtn = document.getElementById('zoomOut');
                 this.fitWidthBtn = document.getElementById('fitWidth');
                 this.themeToggleBtn = document.getElementById('themeToggle');
+                this.paperToggleBtn = document.getElementById('paperToggle');
 
                 // Initialize theme state
                 this.isDarkMode = localStorage.getItem('pdfViewerTheme') !== 'light';
+                this.isPaperDark = localStorage.getItem('pdfViewerPaper') === 'dark';
                 this.updateTheme();
+                this.updatePaperMode();
             }
 
             setupEventListeners() {
@@ -341,6 +366,7 @@
 
                 // Theme toggle
                 this.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
+                this.paperToggleBtn.addEventListener('click', () => this.togglePaperMode());
 
                 // Basic keyboard shortcuts
                 document.addEventListener('keydown', (e) => this.handleKeyboard(e));
@@ -597,12 +623,30 @@
             updateTheme() {
                 if (this.isDarkMode) {
                     document.body.classList.remove('light-mode');
-                    this.themeToggleBtn.textContent = '🌙';
+                    this.themeToggleBtn.textContent = '⬛';
                     this.themeToggleBtn.title = 'Switch to Light Mode';
                 } else {
                     document.body.classList.add('light-mode');
-                    this.themeToggleBtn.textContent = '☀️';
+                    this.themeToggleBtn.textContent = '⬜';
                     this.themeToggleBtn.title = 'Switch to Dark Mode';
+                }
+            }
+
+            togglePaperMode() {
+                this.isPaperDark = !this.isPaperDark;
+                this.updatePaperMode();
+                localStorage.setItem('pdfViewerPaper', this.isPaperDark ? 'dark' : 'light');
+            }
+
+            updatePaperMode() {
+                if (this.isPaperDark) {
+                    document.body.classList.add('paper-dark');
+                    this.paperToggleBtn.textContent = '☀️';
+                    this.paperToggleBtn.title = 'Switch Paper to Light';
+                } else {
+                    document.body.classList.remove('paper-dark');
+                    this.paperToggleBtn.textContent = '🌙';
+                    this.paperToggleBtn.title = 'Switch Paper to Dark';
                 }
             }
 
@@ -632,6 +676,13 @@
                         if (e.ctrlKey || e.metaKey) {
                             e.preventDefault();
                             this.toggleTheme();
+                        }
+                        break;
+                    case 'p':
+                    case 'P':
+                        if (e.ctrlKey || e.metaKey) {
+                            e.preventDefault();
+                            this.togglePaperMode();
                         }
                         break;
                 }

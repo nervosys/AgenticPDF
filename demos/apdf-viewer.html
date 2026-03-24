@@ -1,0 +1,1396 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>aPDF Viewer — AgenticPDF</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+  <script src="agenticpdf-browser.js"></script>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --bg-surface: #161822;
+      --bg-card: #1c1f2e;
+      --bg-card-hover: #242840;
+      --border: #2a2e42;
+      --border-accent: #3d4263;
+      --text: #e2e4f0;
+      --text-muted: #8b8fa8;
+      --text-dim: #5c6080;
+      --accent: #6c8cff;
+      --accent-hover: #8aa4ff;
+      --accent-bg: rgba(108, 140, 255, 0.08);
+      --green: #4ade80;
+      --green-bg: rgba(74, 222, 128, 0.08);
+      --amber: #fbbf24;
+      --amber-bg: rgba(251, 191, 36, 0.08);
+      --red: #f87171;
+      --red-bg: rgba(248, 113, 113, 0.08);
+      --cyan: #22d3ee;
+      --purple: #a78bfa;
+      --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --radius: 8px;
+      --radius-sm: 4px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Layout ── */
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 100;
+    }
+
+    .topbar-logo {
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.3px;
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .topbar-logo span { color: var(--text-muted); font-weight: 400; }
+
+    .topbar-sep {
+      width: 1px;
+      height: 20px;
+      background: var(--border);
+    }
+
+    .topbar-file {
+      font-size: 13px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .topbar-actions { margin-left: auto; display: flex; gap: 6px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 12px;
+      font-family: var(--font-sans);
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { background: var(--bg-card-hover); border-color: var(--border-accent); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Split panels ── */
+    .split {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .panel-pdf {
+      width: 48%;
+      min-width: 200px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      border-right: 1px solid var(--border);
+    }
+
+    .panel-meta {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .panel-pdf-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+
+    .panel-pdf-toolbar .page-input {
+      width: 36px;
+      padding: 3px 4px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-card);
+      color: var(--text);
+      text-align: center;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    .panel-pdf-toolbar .page-input:focus { outline: none; border-color: var(--accent); }
+
+    .pdf-scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      background: #0a0c10;
+    }
+
+    .pdf-page-wrap {
+      background: white;
+      box-shadow: 0 2px 16px rgba(0, 0, 0, 0.4);
+      border-radius: 2px;
+    }
+
+    .pdf-page-wrap canvas { display: block; }
+
+    /* Paper dark mode */
+    body.paper-dark .pdf-page-wrap canvas {
+      filter: invert(0.88) hue-rotate(180deg);
+    }
+    body.paper-dark .pdf-page-wrap { background: #1e1e1e; }
+
+    /* ── Resize handle ── */
+    .resize-handle {
+      width: 5px;
+      cursor: col-resize;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .resize-handle:hover, .resize-handle.active { background: var(--accent); }
+
+    /* ── Drop zone overlay ── */
+    .drop-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 999;
+      background: rgba(15, 17, 23, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .drop-overlay.visible { opacity: 1; pointer-events: auto; }
+
+    .drop-zone {
+      border: 2px dashed var(--accent);
+      border-radius: 16px;
+      padding: 60px 80px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 15px;
+    }
+    .drop-zone .icon { font-size: 48px; margin-bottom: 12px; }
+
+    /* ── Welcome state ── */
+    .welcome {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      gap: 16px;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 40px;
+    }
+    .welcome .icon { font-size: 56px; opacity: 0.5; }
+    .welcome h2 { font-size: 18px; color: var(--text); font-weight: 600; }
+    .welcome p { font-size: 13px; max-width: 360px; line-height: 1.6; }
+
+    /* ── Loading state ── */
+    .loading-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      gap: 12px;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-label { font-size: 13px; color: var(--text-muted); }
+
+    /* ── Tab bar ── */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      border-bottom: 1px solid var(--border);
+      padding: 0 16px;
+      background: var(--bg-surface);
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+
+    .tab {
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    /* ── Tab content ── */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .card-header:hover { background: var(--bg-card-hover); }
+    .card-header .arrow { font-size: 10px; color: var(--text-dim); transition: transform 0.2s; }
+    .card.collapsed .card-header .arrow { transform: rotate(-90deg); }
+    .card.collapsed .card-body { display: none; }
+
+    .card-body { padding: 12px 14px; }
+
+    /* ── Key/value rows ── */
+    .kv { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; align-items: baseline; }
+    .kv-key { color: var(--text-muted); min-width: 110px; flex-shrink: 0; }
+    .kv-val { color: var(--text); word-break: break-word; }
+    .kv-val a { color: var(--accent); text-decoration: none; }
+    .kv-val a:hover { text-decoration: underline; }
+
+    /* ── Tags ── */
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 500;
+      margin: 2px 2px;
+    }
+    .tag-blue { background: var(--accent-bg); color: var(--accent); border: 1px solid rgba(108, 140, 255, 0.2); }
+    .tag-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(74, 222, 128, 0.2); }
+    .tag-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.2); }
+    .tag-red { background: var(--red-bg); color: var(--red); border: 1px solid rgba(248, 113, 113, 0.2); }
+    .tag-purple { background: rgba(167, 139, 250, 0.08); color: var(--purple); border: 1px solid rgba(167, 139, 250, 0.2); }
+
+    /* ── Data table ── */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .data-table th {
+      text-align: left;
+      padding: 6px 8px;
+      color: var(--text-muted);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg-card);
+    }
+    .data-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(42, 46, 66, 0.5);
+      vertical-align: top;
+    }
+    .data-table tr:hover td { background: var(--bg-card-hover); }
+
+    /* ── Chunk card ── */
+    .chunk-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .chunk-card-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .chunk-card-text {
+      color: var(--text-muted);
+      line-height: 1.5;
+      max-height: 80px;
+      overflow: hidden;
+      position: relative;
+    }
+    .chunk-card-text.expanded { max-height: none; }
+
+    /* ── JSON view ── */
+    .json-view {
+      background: #0d0f16;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.6;
+      overflow: auto;
+      max-height: calc(100vh - 160px);
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-muted);
+    }
+    .json-key { color: var(--accent); }
+    .json-string { color: var(--green); }
+    .json-number { color: var(--amber); }
+    .json-bool { color: var(--purple); }
+    .json-null { color: var(--text-dim); }
+
+    /* ── Stats row ── */
+    .stats-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .stat-box {
+      flex: 1;
+      min-width: 100px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      text-align: center;
+    }
+    .stat-val { font-size: 20px; font-weight: 700; color: var(--text); }
+    .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* ── Warning list ── */
+    .warning-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 0;
+      font-size: 12px;
+      color: var(--amber);
+    }
+
+    /* ── TOC tree ── */
+    .toc-tree { list-style: none; padding-left: 0; }
+    .toc-tree ul { list-style: none; padding-left: 18px; }
+    .toc-item {
+      padding: 3px 0;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .toc-item:hover { color: var(--accent); }
+    .toc-page { color: var(--text-dim); margin-left: 6px; }
+
+    /* ── Progress bar ── */
+    .progress-bar {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.3s;
+      border-radius: 2px;
+    }
+
+    /* ── Importance bar ── */
+    .importance-bar {
+      display: inline-block;
+      width: 40px;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+      vertical-align: middle;
+    }
+    .importance-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-accent); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+    /* ── Hidden file input ── */
+    #fileInput { display: none; }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <!-- Top bar -->
+    <div class="topbar">
+      <div class="topbar-logo">aPDF <span>Viewer</span></div>
+      <div class="topbar-sep"></div>
+      <div class="topbar-file" id="fileName">No file loaded</div>
+      <div class="topbar-actions">
+        <button class="btn" id="btnOpen">&#x1F4C2; Open PDF</button>
+        <button class="btn" id="btnExport" disabled>&#x1F4E5; Export .apdf.json</button>
+        <button class="btn" id="btnPaperToggle" title="Toggle paper dark/light">&#x1F319;</button>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf">
+    </div>
+
+    <!-- Loading bar -->
+    <div class="progress-bar" id="progressBar" style="display:none;">
+      <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+    </div>
+
+    <!-- Main split -->
+    <div class="split" id="splitContainer">
+      <!-- PDF panel -->
+      <div class="panel-pdf" id="panelPdf">
+        <div class="panel-pdf-toolbar" id="pdfToolbar" style="display:none;">
+          <button class="btn" id="btnPrev" disabled>&larr;</button>
+          <input type="number" class="page-input" id="pageInput" min="1" value="1">
+          <span id="pageTotal" style="color:var(--text-muted)">/ 0</span>
+          <button class="btn" id="btnNext" disabled>&rarr;</button>
+          <div style="flex:1"></div>
+          <button class="btn" id="btnZoomOut">&minus;</button>
+          <span id="zoomLabel" style="font-family:var(--font-mono);color:var(--text-muted);min-width:36px;text-align:center">100%</span>
+          <button class="btn" id="btnZoomIn">+</button>
+          <button class="btn" id="btnFit">Fit</button>
+        </div>
+        <div class="pdf-scroll" id="pdfScroll">
+          <div class="welcome" id="welcomeState">
+            <div class="icon">&#128196;</div>
+            <h2>aPDF Viewer</h2>
+            <p>Drop a PDF file here or click <strong>Open PDF</strong> to load a document. The viewer will render the pages and generate the full aPDF metadata envelope.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Resize handle -->
+      <div class="resize-handle" id="resizeHandle"></div>
+
+      <!-- Metadata panel -->
+      <div class="panel-meta" id="panelMeta" style="display:none;">
+        <div class="tabs" id="tabBar">
+          <div class="tab active" data-tab="overview">Overview</div>
+          <div class="tab" data-tab="structure">Structure</div>
+          <div class="tab" data-tab="ai">AI Content</div>
+          <div class="tab" data-tab="artifacts">Artifacts</div>
+          <div class="tab" data-tab="display">Display</div>
+          <div class="tab" data-tab="json">JSON</div>
+        </div>
+
+        <div style="overflow-y:auto;flex:1;padding:16px;" id="tabContainer">
+          <!-- Overview tab -->
+          <div class="tab-content active" id="tab-overview"></div>
+          <!-- Structure tab -->
+          <div class="tab-content" id="tab-structure"></div>
+          <!-- AI Content tab -->
+          <div class="tab-content" id="tab-ai"></div>
+          <!-- Artifacts tab -->
+          <div class="tab-content" id="tab-artifacts"></div>
+          <!-- Display tab -->
+          <div class="tab-content" id="tab-display"></div>
+          <!-- JSON tab -->
+          <div class="tab-content" id="tab-json"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drop overlay -->
+  <div class="drop-overlay" id="dropOverlay">
+    <div class="drop-zone">
+      <div class="icon">&#128196;</div>
+      <div>Drop PDF file to load</div>
+    </div>
+  </div>
+
+  <script>
+    /* ================================================================
+       aPDF Viewer — client-side aPDF metadata generation + PDF render
+       Uses AgenticPDF browser bundle APIs:
+         getMetadata(), getAIFeatures(), extractText(),
+         getAllPages(), renderPage()
+       ================================================================ */
+
+    const $ = id => document.getElementById(id);
+
+    // ── State ──
+    let pdfDoc = null;
+    let apdfData = null;
+    let zoom = 1.0;
+    let currentPage = 1;
+    let totalPages = 0;
+    const renderScale = 2.0;
+    let isPaperDark = false;
+
+    // ── DOM refs ──
+    const fileInput = $('fileInput');
+    const btnOpen = $('btnOpen');
+    const btnExport = $('btnExport');
+    const btnPaperToggle = $('btnPaperToggle');
+    const pdfScroll = $('pdfScroll');
+    const panelMeta = $('panelMeta');
+    const pdfToolbar = $('pdfToolbar');
+    const welcomeState = $('welcomeState');
+    const progressBar = $('progressBar');
+    const progressFill = $('progressFill');
+
+    // ── Event wiring ──
+    btnOpen.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => { if (e.target.files[0]) loadPDF(e.target.files[0]); });
+    btnExport.addEventListener('click', exportAPDF);
+    btnPaperToggle.addEventListener('click', togglePaperMode);
+
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(t => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+        t.classList.add('active');
+        $('tab-' + t.dataset.tab).classList.add('active');
+      });
+    });
+
+    // PDF nav
+    $('btnPrev').addEventListener('click', () => navigatePage(-1));
+    $('btnNext').addEventListener('click', () => navigatePage(1));
+    $('btnZoomIn').addEventListener('click', () => setZoom(zoom * 1.25));
+    $('btnZoomOut').addEventListener('click', () => setZoom(zoom / 1.25));
+    $('btnFit').addEventListener('click', fitToWidth);
+    $('pageInput').addEventListener('change', e => scrollToPage(parseInt(e.target.value)));
+
+    // Drag & drop
+    let dragCounter = 0;
+    document.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; $('dropOverlay').classList.add('visible'); });
+    document.addEventListener('dragleave', e => { e.preventDefault(); dragCounter--; if (dragCounter <= 0) { dragCounter = 0; $('dropOverlay').classList.remove('visible'); } });
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('drop', e => {
+      e.preventDefault();
+      dragCounter = 0;
+      $('dropOverlay').classList.remove('visible');
+      const file = e.dataTransfer.files[0];
+      if (file && file.type === 'application/pdf') loadPDF(file);
+    });
+
+    // Resize handle
+    (function initResize() {
+      const handle = $('resizeHandle');
+      const panel = $('panelPdf');
+      let startX, startW;
+      handle.addEventListener('mousedown', e => {
+        startX = e.clientX;
+        startW = panel.offsetWidth;
+        handle.classList.add('active');
+        const onMove = e2 => { panel.style.width = Math.max(200, startW + e2.clientX - startX) + 'px'; };
+        const onUp = () => { handle.classList.remove('active'); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    })();
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', e => {
+      if (!pdfDoc) return;
+      if (e.key === 'ArrowLeft') navigatePage(-1);
+      else if (e.key === 'ArrowRight') navigatePage(1);
+      else if (e.key === '+' || e.key === '=') setZoom(zoom * 1.25);
+      else if (e.key === '-') setZoom(zoom / 1.25);
+    });
+
+    // ── Paper dark mode ──
+    function togglePaperMode() {
+      isPaperDark = !isPaperDark;
+      document.body.classList.toggle('paper-dark', isPaperDark);
+      btnPaperToggle.textContent = isPaperDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+    }
+
+    // ── Load PDF ──
+    async function loadPDF(file) {
+      showProgress(0);
+      $('fileName').textContent = file.name;
+      welcomeState.style.display = 'none';
+      pdfToolbar.style.display = 'flex';
+      panelMeta.style.display = 'flex';
+      panelMeta.style.flexDirection = 'column';
+      btnExport.disabled = true;
+
+      // Show loading in scroll area
+      pdfScroll.innerHTML = '<div class="loading-state"><div class="spinner"></div><div class="loading-label">Loading PDF...</div></div>';
+      showTabLoading();
+
+      try {
+        showProgress(10);
+        const buffer = await file.arrayBuffer();
+        showProgress(20);
+
+        pdfDoc = await AgenticPDF.fromBuffer(buffer, { lazyLoad: false, enableWorkers: false });
+        showProgress(40);
+
+        const metadata = pdfDoc.getMetadata();
+        totalPages = metadata?.pageCount || 1;
+        currentPage = 1;
+        updatePDFNav();
+
+        // Render pages
+        pdfScroll.innerHTML = '';
+        await renderAllPages();
+        showProgress(60);
+
+        // Generate aPDF metadata
+        pdfScroll.querySelector('.loading-state')?.remove();
+        const apdf = await generateAPDF(pdfDoc, metadata, file.name);
+        apdfData = apdf;
+        showProgress(90);
+
+        // Render metadata tabs
+        renderOverview(apdf);
+        renderStructure(apdf);
+        renderAIContent(apdf);
+        renderArtifacts(apdf);
+        renderDisplay(apdf);
+        renderJSON(apdf);
+
+        btnExport.disabled = false;
+        showProgress(100);
+        setTimeout(() => { progressBar.style.display = 'none'; }, 600);
+
+        // Auto fit
+        setTimeout(() => fitToWidth(), 100);
+      } catch (err) {
+        console.error('Load failed:', err);
+        pdfScroll.innerHTML = `<div class="welcome"><div class="icon" style="color:var(--red)">&#x26A0;</div><h2>Error loading PDF</h2><p>${esc(err.message)}</p></div>`;
+        hideProgress();
+      }
+    }
+
+    function showProgress(pct) {
+      progressBar.style.display = 'block';
+      progressFill.style.width = pct + '%';
+    }
+    function hideProgress() { progressBar.style.display = 'none'; }
+
+    function showTabLoading() {
+      ['overview', 'structure', 'ai', 'artifacts', 'display', 'json'].forEach(t => {
+        $('tab-' + t).innerHTML = '<div class="loading-state" style="padding:40px"><div class="spinner"></div><div class="loading-label">Analyzing...</div></div>';
+      });
+    }
+
+    // ── Render PDF pages ──
+    async function renderAllPages() {
+      pdfScroll.innerHTML = '';
+      for (let p = 1; p <= totalPages; p++) {
+        const wrap = document.createElement('div');
+        wrap.className = 'pdf-page-wrap';
+        wrap.id = 'pdfpage-' + p;
+        const canvas = document.createElement('canvas');
+        wrap.appendChild(canvas);
+        pdfScroll.appendChild(wrap);
+        try {
+          await pdfDoc.renderPage(p, canvas, { scale: zoom, renderScale, background: 'white' });
+          canvas.style.width = (canvas.width / renderScale) + 'px';
+          canvas.style.height = (canvas.height / renderScale) + 'px';
+        } catch (e) {
+          console.warn('Render page ' + p + ':', e);
+          canvas.width = 600 * zoom * renderScale;
+          canvas.height = 800 * zoom * renderScale;
+          canvas.style.width = (600 * zoom) + 'px';
+          canvas.style.height = (800 * zoom) + 'px';
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#c00';
+          ctx.font = '18px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('Error rendering page ' + p, canvas.width / 2, canvas.height / 2);
+        }
+      }
+    }
+
+    async function rerenderPages() {
+      for (let p = 1; p <= totalPages; p++) {
+        const wrap = $('pdfpage-' + p);
+        if (!wrap) continue;
+        const canvas = wrap.querySelector('canvas');
+        try {
+          await pdfDoc.renderPage(p, canvas, { scale: zoom, renderScale, background: 'white' });
+          canvas.style.width = (canvas.width / renderScale) + 'px';
+          canvas.style.height = (canvas.height / renderScale) + 'px';
+        } catch (e) { /* keep existing fallback */ }
+      }
+    }
+
+    function navigatePage(delta) {
+      const next = currentPage + delta;
+      if (next >= 1 && next <= totalPages) { currentPage = next; scrollToPage(currentPage); updatePDFNav(); }
+    }
+
+    function scrollToPage(p) {
+      p = Math.max(1, Math.min(totalPages, p));
+      currentPage = p;
+      const el = $('pdfpage-' + p);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      updatePDFNav();
+    }
+
+    function setZoom(z) {
+      zoom = Math.max(0.25, Math.min(5, z));
+      $('zoomLabel').textContent = Math.round(zoom * 100) + '%';
+      rerenderPages();
+    }
+
+    async function fitToWidth() {
+      if (!pdfDoc) return;
+      try {
+        const pages = await pdfDoc.getAllPages();
+        const pw = pages?.[0]?.width || 612;
+        const vw = pdfScroll.clientWidth - 40;
+        setZoom(vw / pw);
+      } catch { setZoom(1); }
+    }
+
+    function updatePDFNav() {
+      $('pageInput').value = currentPage;
+      $('pageTotal').textContent = '/ ' + totalPages;
+      $('btnPrev').disabled = currentPage <= 1;
+      $('btnNext').disabled = currentPage >= totalPages;
+    }
+
+    // ── Generate aPDF metadata (client-side) ──
+    async function generateAPDF(pdf, meta, fileName) {
+      const ai = await pdf.getAIFeatures({
+        enableStructuralAnalysis: true,
+        enableSemanticChunking: true,
+        enableNER: true,
+        enableSummarization: true,
+      });
+
+      const fullText = ai.nlpReady?.cleanText || '';
+      const sections = ai.structuralAnalysis?.sections || [];
+      const pages = await pdf.getAllPages();
+      const firstPage = pages?.[0];
+
+      // Extract identifiers
+      const ids = {};
+      const doiM = fullText.match(/\b(10\.\d{4,9}\/[^\s,;"'<>]+)/);
+      if (doiM) ids.doi = doiM[1].replace(/[.)]+$/, '');
+      const arxivM = fullText.match(/arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)/i);
+      if (arxivM) ids.arxivId = arxivM[1];
+      const hfM = fullText.match(/huggingface\.co\/(?:papers\/)?(\S+)/i);
+      if (hfM) ids.huggingFaceId = hfM[1].replace(/[.)]+$/, '');
+      const isbnM = fullText.match(/ISBN[:\s-]*((?:97[89][- ]?)?\d{1,5}[- ]?\d{1,7}[- ]?\d{1,7}[- ]?\d{1,7}[- ]?\d)/i);
+      if (isbnM) ids.isbn = isbnM[1];
+
+      // Extract abstract
+      let abstract;
+      for (const s of sections) {
+        if (s.type === 'heading' && /^abstract$/i.test(s.text?.trim())) {
+          const idx = sections.indexOf(s);
+          const next = sections[idx + 1];
+          if (next?.type === 'paragraph') { abstract = next.text?.trim(); break; }
+        }
+      }
+      if (!abstract) {
+        const am = fullText.match(/\bAbstract\s*[:\-—]?\s*\n?([\s\S]{50,2000}?)(?:\n\s*\n|\b(?:1\s*[.)]\s*Introduction|Keywords|Index Terms)\b)/i);
+        if (am) abstract = am[1].trim().replace(/\s+/g, ' ');
+      }
+      if (!abstract) abstract = ai.nlpReady?.summary;
+
+      // Authors
+      const authorStr = meta?.author || '';
+      const authorNames = authorStr.split(/[,;&]|\band\b/i).map(n => n.trim()).filter(n => n.length > 0 && n.length < 100);
+      const authors = authorNames.map(name => {
+        const parts = name.split(/\s+/);
+        return {
+          name,
+          givenName: parts.length > 1 ? parts.slice(0, -1).join(' ') : undefined,
+          familyName: parts.length > 1 ? parts[parts.length - 1] : undefined,
+          role: 'author',
+        };
+      });
+
+      // Artifacts
+      const artifacts = [];
+      const seen = new Set();
+      let m;
+      const hfP = /https?:\/\/huggingface\.co\/(?:(?:spaces|datasets)\/)?([a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+)/gi;
+      while ((m = hfP.exec(fullText)) !== null) {
+        const url = m[0].replace(/[.)]+$/, '');
+        if (seen.has(url)) continue; seen.add(url);
+        let type = 'model';
+        if (url.includes('/datasets/')) type = 'dataset';
+        else if (url.includes('/spaces/')) type = 'space';
+        artifacts.push({ type, name: m[1], url, huggingFaceRepo: m[1], relation: 'references' });
+      }
+      const ghP = /https?:\/\/github\.com\/([a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+)/gi;
+      while ((m = ghP.exec(fullText)) !== null) {
+        const url = m[0].replace(/[.)]+$/, '');
+        if (seen.has(url)) continue; seen.add(url);
+        artifacts.push({ type: 'code', name: m[1], url, githubRepo: url, relation: 'references' });
+      }
+
+      // Subjects
+      const subjects = [];
+      const catP = /\b(cs\.[A-Z]{2}|math\.[A-Z]{2}|stat\.[A-Z]{2}|physics\.[a-z-]+)\b/g;
+      while ((m = catP.exec(fullText)) !== null) {
+        if (!subjects.some(s => s.term === m[1])) subjects.push({ scheme: 'arxiv', term: m[1] });
+      }
+
+      // Map doc type
+      const dtMap = { Article: 'ScholarlyArticle', Book: 'Book', Report: 'Report', Manual: 'TechArticle' };
+      const docType = ai.structuralAnalysis?.documentType || 'Other';
+      const schemaType = dtMap[docType] || 'Document';
+
+      // Map APDF doc type
+      const adtMap = { Article: 'article', Book: 'book', Report: 'report', Manual: 'manual', Presentation: 'presentation', Form: 'form', Invoice: 'invoice' };
+      const apdfDocType = adtMap[docType] || 'unknown';
+
+      // Chunks
+      const chunkTypeMap = { Title: 'title', Header: 'header', Paragraph: 'paragraph', List: 'list', Table: 'table', Figure: 'figure', Code: 'code', Quote: 'quote', Footnote: 'footnote' };
+      const chunks = (ai.semanticChunks || []).map(c => ({
+        id: c.id,
+        content: c.content,
+        pageNumbers: c.pageNumbers,
+        chunkType: chunkTypeMap[c.type] || 'other',
+        tokenCount: c.metadata?.tokenCount || 0,
+        importance: c.metadata?.importance || 0,
+        keywords: c.metadata?.keywords,
+      }));
+
+      // Entities
+      const entityTypeMap = { Person: 'person', Organization: 'organization', Location: 'location', Date: 'date', Money: 'money' };
+      const entities = (ai.semanticChunks || [])
+        .flatMap(c => c.metadata?.entities || [])
+        .filter((e, i, arr) => arr.findIndex(x => x.text === e.text && x.type === e.type) === i)
+        .map(e => ({ text: e.text, type: entityTypeMap[e.type] || 'other', confidence: e.confidence }));
+
+      // Figures
+      const inferFigType = cap => {
+        if (!cap) return 'other';
+        const l = cap.toLowerCase();
+        if (/\bchart\b/.test(l)) return 'chart';
+        if (/\bgraph|network\b/.test(l)) return 'graph';
+        if (/\bplot|scatter|histogram\b/.test(l)) return 'plot';
+        if (/\bdiagram|flowchart|architecture\b/.test(l)) return 'diagram';
+        return 'other';
+      };
+
+      // TOC
+      const toc = (ai.structuralAnalysis?.tableOfContents || []).map(t => ({
+        title: t.title, level: t.level, pageNumber: t.pageNumber, sectionId: t.destination,
+        children: t.children?.map(c => ({ title: c.title, level: c.level, pageNumber: c.pageNumber })),
+      }));
+
+      // Display hints
+      const w = firstPage?.width || 612;
+      const h = firstPage?.height || 792;
+
+      // Font usage from sections
+      const fonts = [];
+      if (ai.structuralAnalysis?.fonts) {
+        for (const [name, info] of Object.entries(ai.structuralAnalysis.fonts)) {
+          fonts.push({ name, role: info.role || 'other' });
+        }
+      }
+
+      const hasMath = (ai.structuralAnalysis?.equations || []).length > 0;
+      const hasImages = (ai.structuralAnalysis?.figures || []).length > 0;
+      const theme = docType === 'Article' ? 'academic' : docType === 'Manual' ? 'technical' : 'general';
+
+      const result = {
+        '@context': 'https://schema.org',
+        '@type': schemaType,
+        apdfVersion: '1.0.0',
+        id: ids.doi || ids.arxivId || crypto.randomUUID(),
+        metadata: {
+          title: meta?.title || sections.find(s => s.type === 'heading')?.text || 'Untitled',
+          abstract,
+          datePublished: meta?.creationDate ? new Date(meta.creationDate).toISOString() : undefined,
+          dateModified: meta?.modificationDate ? new Date(meta.modificationDate).toISOString() : undefined,
+          language: ai.nlpReady?.language || 'en',
+          identifiers: ids,
+          subjects,
+          publisher: meta?.producer || undefined,
+          pdfVersion: meta?.version || '1.7',
+          pageCount: meta?.pageCount || 1,
+          fileSize: meta?.fileSize || 0,
+          isEncrypted: meta?.isEncrypted || false,
+        },
+        authors,
+        artifacts,
+        structure: {
+          documentType: apdfDocType,
+          tableOfContents: toc,
+          sections: sections.map((s, i) => ({
+            id: 'section-' + i,
+            type: s.type || 'other',
+            title: s.type === 'heading' ? s.text : undefined,
+            level: s.level,
+            pageStart: s.pageStart,
+            pageEnd: s.pageEnd,
+          })),
+          tables: (ai.structuralAnalysis?.tables || []).map(t => ({ id: t.id, caption: t.caption, pageNumber: t.pageNumber, rows: t.rows, columns: t.columns })),
+          figures: (ai.structuralAnalysis?.figures || []).map(f => ({ id: f.id, caption: f.caption, pageNumber: f.pageNumber, figureType: inferFigType(f.caption) })),
+          equations: (ai.structuralAnalysis?.equations || []).map(e => ({ id: e.id, latex: e.latex, pageNumber: e.pageNumber })),
+          bibliography: (ai.structuralAnalysis?.bibliography || []).map(b => ({
+            id: b.id, authors: b.authors, title: b.title, year: b.year, venue: b.journal, doi: b.doi, url: b.url,
+          })),
+        },
+        aiContent: {
+          cleanText: ai.nlpReady?.cleanText || '',
+          chunks,
+          stats: {
+            tokenCount: ai.nlpReady?.tokenCount || 0,
+            sentenceCount: ai.nlpReady?.sentences?.length || 0,
+            paragraphCount: ai.nlpReady?.paragraphs?.length || 0,
+            readingLevel: ai.nlpReady?.readingLevel,
+          },
+          keywords: ai.nlpReady?.keywords || [],
+          summary: ai.nlpReady?.summary,
+          entities,
+        },
+        display: {
+          readingOrder: 'single-column',
+          pageDimensions: { width: w, height: h },
+          orientation: w > h ? 'landscape' : 'portrait',
+          hasColor: false,
+          hasImages,
+          hasMath,
+          fonts,
+          suggestedTheme: theme,
+        },
+        provenance: {
+          generator: 'AgenticPDF (browser)',
+          generatorVersion: '1.0.0',
+          generatedAt: new Date().toISOString(),
+          pipeline: ['pdf-parse', 'structural-analysis', 'semantic-chunking', 'nlp-preparation'],
+        },
+      };
+
+      return result;
+    }
+
+    // ── Export ──
+    function exportAPDF() {
+      if (!apdfData) return;
+      const json = JSON.stringify(apdfData, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const baseName = $('fileName').textContent.replace(/\.pdf$/i, '');
+      a.download = baseName + '.apdf.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // ── Render: Overview tab ──
+    function renderOverview(apdf) {
+      const m = apdf.metadata;
+      const ids = m.identifiers || {};
+      let h = '';
+
+      // Stats row
+      h += '<div class="stats-row">';
+      h += statBox(m.pageCount, 'Pages');
+      h += statBox(apdf.aiContent.chunks.length, 'Chunks');
+      h += statBox(apdf.aiContent.stats.tokenCount.toLocaleString(), 'Tokens');
+      h += statBox(apdf.authors.length, 'Authors');
+      h += statBox(apdf.artifacts.length, 'Artifacts');
+      h += '</div>';
+
+      // Metadata card
+      h += cardStart('&#x1F4D1; Metadata', false);
+      h += kv('Title', m.title);
+      if (m.abstract) h += kv('Abstract', truncate(m.abstract, 500));
+      h += kv('@type', tag(apdf['@type'], 'blue'));
+      h += kv('Doc Type', tag(apdf.structure.documentType, 'purple'));
+      h += kv('Language', m.language);
+      if (m.datePublished) h += kv('Published', m.datePublished.split('T')[0]);
+      if (m.publisher) h += kv('Publisher', m.publisher);
+      if (m.venue) h += kv('Venue', m.venue);
+      h += kv('PDF Version', m.pdfVersion);
+      h += kv('File Size', formatBytes(m.fileSize));
+      h += kv('Encrypted', m.isEncrypted ? tag('Yes', 'red') : tag('No', 'green'));
+      h += cardEnd();
+
+      // Identifiers
+      const hasIds = Object.keys(ids).filter(k => ids[k]).length > 0;
+      if (hasIds) {
+        h += cardStart('&#x1F517; Identifiers', false);
+        if (ids.doi) h += kv('DOI', `<a href="https://doi.org/${esc(ids.doi)}" target="_blank">${esc(ids.doi)}</a>`);
+        if (ids.arxivId) h += kv('arXiv', `<a href="https://arxiv.org/abs/${esc(ids.arxivId)}" target="_blank">${esc(ids.arxivId)}</a>`);
+        if (ids.huggingFaceId) h += kv('HuggingFace', `<a href="https://huggingface.co/${esc(ids.huggingFaceId)}" target="_blank">${esc(ids.huggingFaceId)}</a>`);
+        if (ids.isbn) h += kv('ISBN', ids.isbn);
+        if (ids.pmid) h += kv('PMID', ids.pmid);
+        if (ids.s2Id) h += kv('Semantic Scholar', ids.s2Id);
+        h += cardEnd();
+      }
+
+      // Authors
+      if (apdf.authors.length) {
+        h += cardStart('&#x1F464; Authors (' + apdf.authors.length + ')', false);
+        h += '<table class="data-table"><tr><th>Name</th><th>ORCID</th><th>Role</th></tr>';
+        for (const a of apdf.authors) {
+          h += `<tr><td>${esc(a.name)}</td><td>${a.orcid ? `<a href="https://orcid.org/${esc(a.orcid)}" target="_blank">${esc(a.orcid)}</a>` : '<span style="color:var(--text-dim)">—</span>'}</td><td>${tag(a.role || 'author', 'blue')}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      // Subjects
+      if (apdf.metadata.subjects?.length) {
+        h += cardStart('&#x1F3F7; Subjects', false);
+        for (const s of apdf.metadata.subjects) {
+          h += tag(s.scheme + ': ' + s.term, 'purple') + ' ';
+        }
+        h += cardEnd();
+      }
+
+      // Keywords
+      if (apdf.aiContent.keywords?.length) {
+        h += cardStart('&#x1F511; Keywords', false);
+        for (const kw of apdf.aiContent.keywords) h += tag(kw, 'blue') + ' ';
+        h += cardEnd();
+      }
+
+      // Summary
+      if (apdf.aiContent.summary) {
+        h += cardStart('&#x1F4DD; Summary', false);
+        h += `<div style="font-size:12px;color:var(--text-muted);line-height:1.6">${esc(apdf.aiContent.summary)}</div>`;
+        h += cardEnd();
+      }
+
+      // Provenance
+      h += cardStart('&#x2699; Provenance', true);
+      h += kv('Generator', apdf.provenance.generator);
+      h += kv('Version', apdf.provenance.generatorVersion);
+      h += kv('Generated', apdf.provenance.generatedAt);
+      h += kv('Pipeline', apdf.provenance.pipeline.map(s => tag(s, 'green')).join(' '));
+      if (apdf.provenance.parserWarnings?.length) {
+        h += '<div style="margin-top:8px">';
+        for (const w of apdf.provenance.parserWarnings) {
+          h += `<div class="warning-item">&#x26A0;&#xFE0F; ${esc(w)}</div>`;
+        }
+        h += '</div>';
+      }
+      h += cardEnd();
+
+      $('tab-overview').innerHTML = h;
+    }
+
+    // ── Render: Structure tab ──
+    function renderStructure(apdf) {
+      const s = apdf.structure;
+      let h = '';
+
+      // Stats
+      h += '<div class="stats-row">';
+      h += statBox(s.sections.length, 'Sections');
+      h += statBox(s.tables.length, 'Tables');
+      h += statBox(s.figures.length, 'Figures');
+      h += statBox(s.equations.length, 'Equations');
+      h += statBox(s.bibliography.length, 'References');
+      h += '</div>';
+
+      // TOC
+      if (s.tableOfContents.length) {
+        h += cardStart('&#x1F4D6; Table of Contents', false);
+        h += renderTOC(s.tableOfContents);
+        h += cardEnd();
+      }
+
+      // Sections
+      if (s.sections.length) {
+        h += cardStart('&#x1F4C4; Sections (' + s.sections.length + ')', s.sections.length > 20);
+        h += '<table class="data-table"><tr><th>#</th><th>Type</th><th>Title</th><th>Pages</th></tr>';
+        for (const sec of s.sections.filter(s => s.type === 'heading')) {
+          h += `<tr><td style="color:var(--text-dim)">${esc(sec.id)}</td><td>${tag(sec.type, 'blue')}</td><td>${esc(sec.title || '—')}</td><td style="color:var(--text-dim)">${sec.pageStart}${sec.pageEnd !== sec.pageStart ? '–' + sec.pageEnd : ''}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      // Tables
+      if (s.tables.length) {
+        h += cardStart('&#x1F4CA; Tables (' + s.tables.length + ')', false);
+        h += '<table class="data-table"><tr><th>ID</th><th>Caption</th><th>Size</th><th>Page</th></tr>';
+        for (const t of s.tables) {
+          h += `<tr><td style="color:var(--text-dim)">${esc(t.id)}</td><td>${esc(t.caption || '—')}</td><td>${t.rows}&times;${t.columns}</td><td style="color:var(--text-dim)">${t.pageNumber}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      // Figures
+      if (s.figures.length) {
+        h += cardStart('&#x1F5BC; Figures (' + s.figures.length + ')', false);
+        h += '<table class="data-table"><tr><th>ID</th><th>Type</th><th>Caption</th><th>Page</th></tr>';
+        for (const f of s.figures) {
+          h += `<tr><td style="color:var(--text-dim)">${esc(f.id)}</td><td>${tag(f.figureType, 'purple')}</td><td>${esc(f.caption || '—')}</td><td style="color:var(--text-dim)">${f.pageNumber}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      // Equations
+      if (s.equations.length) {
+        h += cardStart('&#x1F9EE; Equations (' + s.equations.length + ')', s.equations.length > 10);
+        h += '<table class="data-table"><tr><th>ID</th><th>LaTeX</th><th>Page</th></tr>';
+        for (const e of s.equations) {
+          h += `<tr><td style="color:var(--text-dim)">${esc(e.id)}</td><td style="font-family:var(--font-mono);font-size:11px">${esc(truncate(e.latex || '—', 80))}</td><td style="color:var(--text-dim)">${e.pageNumber}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      // Bibliography
+      if (s.bibliography.length) {
+        h += cardStart('&#x1F4DA; Bibliography (' + s.bibliography.length + ')', s.bibliography.length > 15);
+        h += '<table class="data-table"><tr><th>#</th><th>Title</th><th>Year</th><th>DOI</th></tr>';
+        for (const b of s.bibliography) {
+          h += `<tr><td style="color:var(--text-dim)">${esc(b.id)}</td><td>${esc(truncate(b.title, 60))}</td><td>${b.year || '—'}</td><td>${b.doi ? `<a href="https://doi.org/${esc(b.doi)}" target="_blank" style="font-size:11px">${esc(truncate(b.doi, 30))}</a>` : '—'}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      $('tab-structure').innerHTML = h;
+    }
+
+    function renderTOC(entries) {
+      let h = '<ul class="toc-tree">';
+      for (const e of entries) {
+        h += `<li class="toc-item" onclick="scrollToPage(${e.pageNumber})">${esc(e.title)}<span class="toc-page">p.${e.pageNumber}</span></li>`;
+        if (e.children?.length) h += renderTOC(e.children);
+      }
+      h += '</ul>';
+      return h;
+    }
+
+    // ── Render: AI Content tab ──
+    function renderAIContent(apdf) {
+      const ai = apdf.aiContent;
+      let h = '';
+
+      // Stats
+      h += '<div class="stats-row">';
+      h += statBox(ai.stats.tokenCount.toLocaleString(), 'Tokens');
+      h += statBox(ai.stats.sentenceCount, 'Sentences');
+      h += statBox(ai.stats.paragraphCount, 'Paragraphs');
+      h += statBox(ai.stats.readingLevel != null ? ai.stats.readingLevel.toFixed(1) : '—', 'Reading Level');
+      h += statBox(ai.chunks.length, 'Chunks');
+      h += '</div>';
+
+      // Entities
+      if (ai.entities?.length) {
+        h += cardStart('&#x1F3AF; Entities (' + ai.entities.length + ')', ai.entities.length > 20);
+        const grouped = {};
+        for (const e of ai.entities) {
+          (grouped[e.type] = grouped[e.type] || []).push(e);
+        }
+        for (const [type, ents] of Object.entries(grouped)) {
+          h += `<div style="margin-bottom:8px"><span style="font-size:12px;font-weight:600;color:var(--text-muted)">${esc(type)}</span><br>`;
+          for (const e of ents) {
+            const color = e.confidence > 0.8 ? 'green' : e.confidence > 0.5 ? 'amber' : 'red';
+            h += tag(e.text, color) + ' ';
+          }
+          h += '</div>';
+        }
+        h += cardEnd();
+      }
+
+      // Chunks
+      if (ai.chunks.length) {
+        h += cardStart('&#x1F9E9; Semantic Chunks (' + ai.chunks.length + ')', false);
+        const maxShow = 50;
+        const show = ai.chunks.slice(0, maxShow);
+        for (const c of show) {
+          h += '<div class="chunk-card">';
+          h += '<div class="chunk-card-head">';
+          h += tag(c.chunkType, 'blue');
+          h += `<span style="color:var(--text-dim);font-size:11px">p.${c.pageNumbers.join(',')}</span>`;
+          h += `<span style="color:var(--text-dim);font-size:11px">${c.tokenCount} tok</span>`;
+          h += importanceBar(c.importance);
+          h += '</div>';
+          h += `<div class="chunk-card-text">${esc(truncate(c.content, 300))}</div>`;
+          if (c.keywords?.length) {
+            h += '<div style="margin-top:4px">';
+            for (const kw of c.keywords) h += tag(kw, 'green') + ' ';
+            h += '</div>';
+          }
+          h += '</div>';
+        }
+        if (ai.chunks.length > maxShow) {
+          h += `<div style="text-align:center;padding:8px;color:var(--text-dim);font-size:12px">... and ${ai.chunks.length - maxShow} more chunks (see JSON tab for full data)</div>`;
+        }
+        h += cardEnd();
+      }
+
+      $('tab-ai').innerHTML = h;
+    }
+
+    // ── Render: Artifacts tab ──
+    function renderArtifacts(apdf) {
+      let h = '';
+      if (!apdf.artifacts.length) {
+        h = '<div class="welcome" style="padding:40px"><div class="icon" style="font-size:32px">&#x1F4E6;</div><p>No linked artifacts detected in this document.</p></div>';
+      } else {
+        h += cardStart('&#x1F517; Linked Artifacts (' + apdf.artifacts.length + ')', false);
+        h += '<table class="data-table"><tr><th>Type</th><th>Name</th><th>Relation</th><th>URL</th></tr>';
+        for (const a of apdf.artifacts) {
+          const typeColor = { model: 'purple', dataset: 'green', code: 'blue', paper: 'amber', space: 'purple' }[a.type] || 'blue';
+          const relColor = { introduces: 'green', uses: 'blue', evaluates: 'amber', references: 'blue' }[a.relation] || 'blue';
+          h += `<tr><td>${tag(a.type, typeColor)}</td><td>${esc(a.name)}</td><td>${tag(a.relation, relColor)}</td><td><a href="${esc(a.url)}" target="_blank" style="font-size:11px">${esc(truncate(a.url, 50))}</a></td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+      $('tab-artifacts').innerHTML = h;
+    }
+
+    // ── Render: Display tab ──
+    function renderDisplay(apdf) {
+      const d = apdf.display;
+      let h = '';
+
+      h += cardStart('&#x1F4BB; Display Hints', false);
+      h += kv('Reading Order', tag(d.readingOrder, 'blue'));
+      h += kv('Orientation', tag(d.orientation, 'blue'));
+      h += kv('Page Size', `${d.pageDimensions.width} &times; ${d.pageDimensions.height} pt`);
+      h += kv('Has Color', d.hasColor ? tag('Yes', 'green') : tag('No', 'amber'));
+      h += kv('Has Images', d.hasImages ? tag('Yes', 'green') : tag('No', 'amber'));
+      h += kv('Has Math', d.hasMath ? tag('Yes', 'green') : tag('No', 'amber'));
+      h += kv('Theme', d.suggestedTheme ? tag(d.suggestedTheme, 'purple') : '—');
+      h += cardEnd();
+
+      if (d.fonts?.length) {
+        h += cardStart('&#x1F524; Fonts (' + d.fonts.length + ')', false);
+        h += '<table class="data-table"><tr><th>Font</th><th>Role</th></tr>';
+        for (const f of d.fonts) {
+          h += `<tr><td>${esc(f.name)}</td><td>${tag(f.role, 'blue')}</td></tr>`;
+        }
+        h += '</table>';
+        h += cardEnd();
+      }
+
+      $('tab-display').innerHTML = h;
+    }
+
+    // ── Render: JSON tab ──
+    function renderJSON(apdf) {
+      $('tab-json').innerHTML = `<div class="json-view">${syntaxHighlight(JSON.stringify(apdf, null, 2))}</div>`;
+    }
+
+    // ── Helpers ──
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function truncate(s, n) {
+      if (!s) return '';
+      return s.length > n ? s.slice(0, n) + '...' : s;
+    }
+
+    function formatBytes(b) {
+      if (!b) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let i = 0;
+      while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+      return b.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+    }
+
+    function tag(text, color) {
+      return `<span class="tag tag-${color}">${esc(text)}</span>`;
+    }
+
+    function kv(key, val) {
+      return `<div class="kv"><span class="kv-key">${esc(key)}</span><span class="kv-val">${val}</span></div>`;
+    }
+
+    function statBox(val, label) {
+      return `<div class="stat-box"><div class="stat-val">${val}</div><div class="stat-label">${esc(label)}</div></div>`;
+    }
+
+    function importanceBar(v) {
+      const pct = Math.round((v || 0) * 100);
+      const color = v > 0.7 ? 'var(--green)' : v > 0.4 ? 'var(--amber)' : 'var(--text-dim)';
+      return `<span class="importance-bar"><span class="importance-bar-fill" style="width:${pct}%;background:${color}"></span></span>`;
+    }
+
+    function cardStart(title, collapsed) {
+      return `<div class="card${collapsed ? ' collapsed' : ''}"><div class="card-header" onclick="this.parentElement.classList.toggle('collapsed')"><span class="arrow">&#x25BC;</span> ${title}</div><div class="card-body">`;
+    }
+    function cardEnd() { return '</div></div>'; }
+
+    function syntaxHighlight(json) {
+      return json
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"([^"]+)"(?=\s*:)/g, '<span class="json-key">"$1"</span>')
+        .replace(/:\s*"([^"]*)"/g, ': <span class="json-string">"$1"</span>')
+        .replace(/:\s*(\d+(?:\.\d+)?)/g, ': <span class="json-number">$1</span>')
+        .replace(/:\s*(true|false)/g, ': <span class="json-bool">$1</span>')
+        .replace(/:\s*(null)/g, ': <span class="json-null">$1</span>');
+    }
+  </script>
+</body>
+
+</html>

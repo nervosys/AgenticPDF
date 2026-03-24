@@ -76,7 +76,7 @@ describe('CLI - Basic Commands', () => {
         expect(result.stdout).toContain('COMMANDS:');
         expect(result.stdout).toContain('OPTIONS:');
         expect(result.stdout).toContain('EXAMPLES:');
-        expect(result.stdout).toContain('mpdf');
+        expect(result.stdout).toContain('apdf');
     });
 
     it('should show help with --help flag', async () => {

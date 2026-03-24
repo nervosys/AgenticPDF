@@ -208,6 +208,36 @@ agenticpdf forms -i form.pdf -o fields.json --pretty
 ]
 ```
 
+### typeset - Typesetting & Web Display
+
+Generate CSS, HTML, accessible views, or social meta tags from aPDF display hints.
+
+```bash
+agenticpdf typeset -i <input-file> [options]
+
+# Generate responsive HTML article (default)
+agenticpdf typeset -i paper.pdf -o article.html
+
+# CSS stylesheet from display hints
+agenticpdf typeset -i paper.pdf --css -o styles.css
+
+# Accessible reading view with ARIA landmarks
+agenticpdf typeset -i paper.pdf --accessible -o readable.html
+
+# Print-ready stylesheet
+agenticpdf typeset -i paper.pdf --print-css -o print.css
+
+# Social meta tags (OG, Twitter Card, JSON-LD)
+agenticpdf typeset -i paper.pdf --social-meta --page-url https://example.com/paper
+```
+
+**Modes:**
+- Default — responsive HTML article with TOC, bibliography, KaTeX math
+- `--css` — scoped CSS driven by fonts, theme, reading order, page dimensions
+- `--accessible` — semantic HTML with skip navigation and reading-level info
+- `--print-css` — `@page` rules, orphan/widow control, URL-after-link printing
+- `--social-meta` — Open Graph, Twitter Card, citation `<meta>`, Schema.org JSON-LD
+
 ## Global Options
 
 These options work with all commands:
@@ -217,6 +247,16 @@ These options work with all commands:
 - `-v, --verbose` - Verbose output with progress
 - `-h, --help` - Display help
 - `--version` - Show version
+
+### Typeset Options
+
+These options apply to the `typeset` command:
+
+- `--css` - Output a CSS stylesheet instead of HTML
+- `--accessible` - Generate an accessible reading view with ARIA landmarks
+- `--print-css` - Generate a print-ready CSS stylesheet
+- `--social-meta` - Generate Open Graph / Twitter Card meta tags and JSON-LD
+- `--page-url <url>` - Public document URL for social meta tags
 
 ## Examples
 

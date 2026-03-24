@@ -1,6 +1,6 @@
 /**
  * Visual Testing Runner
- * Automates comparison between ModernPDF and native PDF viewers
+ * Automates comparison between AgenticPDF and native PDF viewers
  */
 
 import { chromium, Browser, Page } from 'playwright';
@@ -80,12 +80,12 @@ class VisualTestRunner {
     });
 
     try {
-      // Test ModernPDF viewer
+      // Test AgenticPDF viewer
       const modernPage = await context.newPage();
       await modernPage.goto('http://localhost:3031/layout-comparison.html');
       await modernPage.waitForLoadState('networkidle');
 
-      console.log('  Loading PDF in ModernPDF viewer...');
+      console.log('  Loading PDF in AgenticPDF viewer...');
       await modernPage.click('button:has-text("Load PDF & Compare")');
       await modernPage.waitForTimeout(4000);
 
@@ -96,7 +96,7 @@ class VisualTestRunner {
         `${pdfName}-modern-p${pageNumber}.png`
       );
       await modernPage.screenshot({ path: modernScreenshot });
-      console.log(`  ✓ ModernPDF screenshot saved`);
+      console.log(`  ✓ AgenticPDF screenshot saved`);
 
       // Analyze text layer
       const textAnalysis = await this.analyzeTextLayer(modernPage);
@@ -241,7 +241,7 @@ class VisualTestRunner {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ModernPDF Visual Test Report</title>
+  <title>AgenticPDF Visual Test Report</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a1a; color: #e0e0e0; padding: 20px; }
@@ -270,7 +270,7 @@ class VisualTestRunner {
 </head>
 <body>
   <div class="container">
-    <h1>🔍 ModernPDF Visual Test Report</h1>
+    <h1>🔍 AgenticPDF Visual Test Report</h1>
     <p>Generated: ${new Date().toLocaleString()}</p>
     
     <div class="summary">
@@ -312,8 +312,8 @@ class VisualTestRunner {
 
         <div class="screenshots">
           <div class="screenshot">
-            <img src="${path.relative(path.dirname(reportPath), result.screenshotPaths.modern)}" alt="ModernPDF">
-            <div class="screenshot-label">ModernPDF Viewer</div>
+            <img src="${path.relative(path.dirname(reportPath), result.screenshotPaths.modern)}" alt="AgenticPDF">
+            <div class="screenshot-label">AgenticPDF Viewer</div>
           </div>
           <div class="screenshot">
             <img src="${path.relative(path.dirname(reportPath), result.screenshotPaths.native)}" alt="Native">

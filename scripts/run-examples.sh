@@ -1,6 +1,6 @@
 #!/bin/bash
-# ModernPDF Examples Runner for Unix/Linux/macOS
-# This shell script provides easy access to run ModernPDF examples
+# AgenticPDF Examples Runner for Unix/Linux/macOS
+# This shell script provides easy access to run AgenticPDF examples
 
 # Colors for output
 RED='\033[0;31m'
@@ -22,7 +22,7 @@ print_colored() {
 show_header() {
     echo
     print_colored $CYAN "===================================="
-    print_colored $CYAN "    ModernPDF Examples Runner"
+    print_colored $CYAN "    AgenticPDF Examples Runner"
     print_colored $CYAN "===================================="
     echo
 }
@@ -182,7 +182,7 @@ else
     print_colored $GREEN "Examples completed successfully!"
     print_colored $GREEN "================================"
     echo
-    print_colored $CYAN "🎉 Great job! You've successfully run the ModernPDF examples."
+    print_colored $CYAN "🎉 Great job! You've successfully run the AgenticPDF examples."
     print_colored $YELLOW "💡 Try different examples with various PDF files to explore all features."
     echo
 fi
