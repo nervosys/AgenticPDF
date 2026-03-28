@@ -38,7 +38,9 @@
     "start": "node server.cjs",
     "validate:workflows": "node scripts/validate-workflows.cjs",
     "security:audit": "npm audit --audit-level moderate",
-    "security:fix": "npm audit fix"
+    "security:fix": "npm audit fix",
+    "setup:env": "node scripts/setup-env.cjs",
+    "postinstall": "node scripts/setup-env.cjs"
   },
   "keywords": [
     "pdf",
@@ -68,7 +70,7 @@
     "pdf-parser",
     "drop-in-replacement"
   ],
-  "author": "NeoPDF Team",
+  "author": "AgenticPDF Team",
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
@@ -85,6 +87,14 @@
     }
   ],
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-node": "^0.57.0",
+    "@opentelemetry/sdk-trace-base": "^1.30.0",
+    "@opentelemetry/sdk-metrics": "^1.30.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.57.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "^0.57.0",
+    "@opentelemetry/resources": "^1.30.0",
+    "@opentelemetry/semantic-conventions": "^1.28.0",
     "tsx": "^4.20.5"
   },
   "devDependencies": {
@@ -120,11 +130,18 @@
     ".": {
       "types": "./dist/agenticpdf.d.ts",
       "import": "./dist/agenticpdf.js"
+    },
+    "./otel": {
+      "types": "./dist/otel.d.ts",
+      "import": "./dist/otel.js"
     }
   },
   "files": [
     "dist",
     "agenticpdf.ts",
+    "otel.ts",
+    ".env.example",
+    "scripts/setup-env.cjs",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

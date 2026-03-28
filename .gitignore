@@ -84,6 +84,15 @@ pids/
 # Temporary folders
 tmp/
 temp/
+_temp_*
+
+# Test output dumps
+test-output.txt
+test-ontology-output.txt
+
+# Root-level build artifacts (real outputs are in dist/)
+agenticpdf.d.ts
+agenticpdf-browser.js
 
 # Editor directories and files
 .vscode/*

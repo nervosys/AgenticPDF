@@ -164,12 +164,12 @@ describe('Real PDF: Named Destinations', () => {
 describe('Real PDF: Ontology & Discovery', () => {
   test('should return ontology with concepts', () => {
     const ontology = AgenticPDF.describe();
-    expect(ontology.concepts.length).toBe(9);
+    expect(ontology.concepts.length).toBe(21);
   });
 
   test('should return capabilities', () => {
     const caps = AgenticPDF.getCapabilities();
-    expect(caps.length).toBe(11);
+    expect(caps.length).toBe(14);
   });
 
   test('should return method signatures', () => {
@@ -179,7 +179,7 @@ describe('Real PDF: Ontology & Discovery', () => {
 
   test('should return workflow templates', () => {
     const workflows = AgenticPDF.getWorkflows();
-    expect(workflows.length).toBe(7);
+    expect(workflows.length).toBe(14);
   });
 
   test('describeDocument should report on loaded PDF', () => {

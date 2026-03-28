@@ -121,11 +121,13 @@ describe('Telemetry', () => {
 
     test('should accept partial configuration via configure()', () => {
       const originalConfig = Telemetry.getConfig();
-      Telemetry.configure({ endpoint: 'https://custom.example.com/events' });
+      Telemetry.configure({ flushInterval: 12345 });
       const config = Telemetry.getConfig();
-      expect(config.endpoint).toBe('https://custom.example.com/events');
+      expect(config.flushInterval).toBe(12345);
+      // Endpoint should not be changed — it is intentionally excluded for security
+      expect(config.endpoint).toBe(originalConfig.endpoint);
       // Restore
-      Telemetry.configure({ endpoint: originalConfig.endpoint });
+      Telemetry.configure({ flushInterval: originalConfig.flushInterval });
     });
 
     test('should apply custom maxQueueSize', () => {
@@ -142,11 +144,11 @@ describe('Telemetry', () => {
       Telemetry.configure({ maxRetries: originalConfig.maxRetries });
     });
 
-    test('should apply custom endpoint', () => {
+    test('should not allow overriding endpoint via configure() (security)', () => {
       const originalConfig = Telemetry.getConfig();
-      Telemetry.configure({ endpoint: 'https://my-server.example.com/telemetry' });
-      expect(Telemetry.getConfig().endpoint).toBe('https://my-server.example.com/telemetry');
-      Telemetry.configure({ endpoint: originalConfig.endpoint });
+      Telemetry.configure({ endpoint: 'https://my-server.example.com/telemetry' } as any);
+      // Endpoint must remain unchanged — excluded from allowedKeys to prevent data exfiltration
+      expect(Telemetry.getConfig().endpoint).toBe(originalConfig.endpoint);
     });
   });
 

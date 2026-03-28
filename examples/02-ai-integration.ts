@@ -8,7 +8,7 @@
  * - Streaming processing for memory efficiency
  */
 
-import AgenticPDF, { EmbeddingProvider, SemanticChunk, AIFeatures, ChunkType } from '../neopdf';
+import AgenticPDF, { EmbeddingProvider, SemanticChunk, AIFeatures, ChunkType } from '../agenticpdf';
 
 // Example custom embedding provider
 class OpenAIEmbeddingProvider implements EmbeddingProvider {

@@ -692,10 +692,12 @@
                 this.loadingIndicator.style.display = 'none';
                 const errorDiv = document.createElement('div');
                 errorDiv.className = 'error';
-                errorDiv.innerHTML = `
-                    <h3>Error</h3>
-                    <p>${message}</p>
-                `;
+                const h3 = document.createElement('h3');
+                h3.textContent = 'Error';
+                const p = document.createElement('p');
+                p.textContent = message;
+                errorDiv.appendChild(h3);
+                errorDiv.appendChild(p);
                 this.viewer.appendChild(errorDiv);
             }
 

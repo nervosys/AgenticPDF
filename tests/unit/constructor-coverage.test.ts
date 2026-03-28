@@ -101,8 +101,10 @@ describe('Constructor and Direct Instantiation Coverage', () => {
             const pdfData = MockPDFGenerator.createSimplePDF();
             const mockResponse = {
                 ok: true,
+                status: 200,
                 statusText: 'OK',
                 body: null,
+                headers: new Map(),
                 arrayBuffer: jest.fn().mockResolvedValue(pdfData.buffer)
             };
 
@@ -111,7 +113,7 @@ describe('Constructor and Direct Instantiation Coverage', () => {
 
             await pdf.loadFromUrl('https://example.com/test.pdf');
 
-            expect(fetch).toHaveBeenCalledWith('https://example.com/test.pdf');
+            expect(fetch).toHaveBeenCalledWith('https://example.com/test.pdf', { redirect: 'manual' });
             expect(mockResponse.arrayBuffer).toHaveBeenCalled();
             expect(pdf.buffer).toBeDefined();
             expect(parseSpy).toHaveBeenCalled();
@@ -122,8 +124,10 @@ describe('Constructor and Direct Instantiation Coverage', () => {
             const stream = new MockReadableStream(pdfData);
             const mockResponse = {
                 ok: true,
+                status: 200,
                 statusText: 'OK',
                 body: stream,
+                headers: new Map(),
                 arrayBuffer: jest.fn().mockResolvedValue(pdfData.buffer)
             };
 
@@ -133,7 +137,7 @@ describe('Constructor and Direct Instantiation Coverage', () => {
 
             await pdf.loadFromUrl('https://example.com/test.pdf');
 
-            expect(fetch).toHaveBeenCalledWith('https://example.com/test.pdf');
+            expect(fetch).toHaveBeenCalledWith('https://example.com/test.pdf', { redirect: 'manual' });
             expect(pdf.stream).toBe(stream);
             expect(parseStreamSpy).toHaveBeenCalled();
         });
@@ -141,7 +145,9 @@ describe('Constructor and Direct Instantiation Coverage', () => {
         it('should handle loadFromUrl with failed response', async () => {
             const mockResponse = {
                 ok: false,
-                statusText: 'Not Found'
+                status: 404,
+                statusText: 'Not Found',
+                headers: new Map()
             };
 
             global.fetch = jest.fn().mockResolvedValue(mockResponse);

@@ -90,7 +90,7 @@ Examples of representing our community include:
 - Using an official e-mail address
 - Posting via an official social media account
 - Acting as an appointed representative at an online or offline event
-- Contributing to the NeoPDF project repositories
+- Contributing to the AgenticPDF project repositories
 - Participating in project discussions, issues, or pull requests
 - Representing the project at conferences or meetups
 
@@ -203,9 +203,9 @@ Our community strives to:
 
 ### 🤝 Getting Help
 
-- **Technical Questions**: [GitHub Discussions](https://github.com/nervosys/NeoPDF/discussions)
-- **Bug Reports**: [GitHub Issues](https://github.com/nervosys/NeoPDF/issues)
-- **Feature Requests**: [GitHub Issues](https://github.com/nervosys/NeoPDF/issues/new?template=feature_request.yml)
+- **Technical Questions**: [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
+- **Bug Reports**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
+- **Feature Requests**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues/new?template=feature_request.yml)
 - **General Contact**: [hello@nervosys.com](mailto:hello@nervosys.com)
 
 ## Attribution

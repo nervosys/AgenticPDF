@@ -1,6 +1,6 @@
-# NeoPDF Examples
+# AgenticPDF Examples
 
-This directory contains comprehensive examples demonstrating the capabilities of the NeoPDF library. Each example focuses on different aspects and use cases of PDF processing with AI integration.
+This directory contains comprehensive examples demonstrating the capabilities of the AgenticPDF library. Each example focuses on different aspects and use cases of PDF processing with AI integration.
 
 ## � Quick Start
 
@@ -59,7 +59,7 @@ await aiIntegrationExample(file, 'your-api-key');
 - Memory management best practices
 
 **Key Features Demonstrated:**
-- `NeoPDF.fromFile()`, `fromUrl()`, `fromBuffer()`
+- `AgenticPDF.fromFile()`, `fromUrl()`, `fromBuffer()`
 - `extractText()` with various options
 - `getMetadata()` and `getPage()`
 - `search()` functionality

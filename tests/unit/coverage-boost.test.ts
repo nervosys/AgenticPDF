@@ -30,10 +30,10 @@ describe('Ontology & Discovery API', () => {
       expect(ontology['@context']).toBeDefined();
     });
 
-    test('should include 9 concepts', () => {
+    test('should include 21 concepts', () => {
       const ontology = AgenticPDF.describe();
       expect(ontology.concepts).toBeDefined();
-      expect(ontology.concepts.length).toBe(9);
+      expect(ontology.concepts.length).toBe(21);
     });
 
     test('should include capabilities', () => {
@@ -45,7 +45,7 @@ describe('Ontology & Discovery API', () => {
     test('should include workflows', () => {
       const ontology = AgenticPDF.describe();
       expect(ontology.workflows).toBeDefined();
-      expect(ontology.workflows.length).toBe(7);
+      expect(ontology.workflows.length).toBe(14);
     });
 
     test('should include enums', () => {
@@ -68,7 +68,7 @@ describe('Ontology & Discovery API', () => {
     test('should return array of capabilities', () => {
       const caps = AgenticPDF.getCapabilities();
       expect(Array.isArray(caps)).toBe(true);
-      expect(caps.length).toBe(11);
+      expect(caps.length).toBe(14);
     });
 
     test('each capability should have category and methods', () => {
@@ -129,9 +129,9 @@ describe('Ontology & Discovery API', () => {
   });
 
   describe('AgenticPDF.getWorkflows()', () => {
-    test('should return 7 workflow templates', () => {
+    test('should return 14 workflow templates', () => {
       const workflows = AgenticPDF.getWorkflows();
-      expect(workflows.length).toBe(7);
+      expect(workflows.length).toBe(14);
     });
 
     test('each workflow should have id, name, and steps', () => {

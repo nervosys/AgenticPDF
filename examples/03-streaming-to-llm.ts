@@ -8,7 +8,7 @@
  * - Multiple LLM provider integrations
  */
 
-import AgenticPDF, { SemanticChunk } from '../neopdf';
+import AgenticPDF, { SemanticChunk } from '../agenticpdf';
 
 interface LLMMessage {
     role: 'system' | 'user' | 'assistant';

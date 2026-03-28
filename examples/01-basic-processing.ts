@@ -8,7 +8,7 @@
  * - Basic memory management
  */
 
-import AgenticPDF from '../neopdf';
+import AgenticPDF from '../agenticpdf';
 
 async function basicPDFProcessing() {
     console.log('=== Basic PDF Processing Example ===\n');

@@ -269,4 +269,4 @@ After exploring the demos:
 
 ---
 
-**Note:** All demos are designed to work offline and don't require any external dependencies beyond the included PDF.js library.
+**Note:** All demos are designed to work offline and don't require any external dependencies beyond the included AgenticPDF library.

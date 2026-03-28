@@ -1,8 +1,8 @@
-# NeoPDF Testing Suite
+# AgenticPDF Testing Suite
 
 ## Overview
 
-This directory contains a comprehensive testing suite for the NeoPDF library, designed to ensure reliability, performance, and correctness across all features and edge cases.
+This directory contains a comprehensive testing suite for the AgenticPDF library, designed to ensure reliability, performance, and correctness across all features and edge cases.
 
 ## Test Structure
 
@@ -20,7 +20,7 @@ tests/
 │   ├── streaming.test.ts  # Streaming operations tests
 │   └── error-handling.test.ts # Error handling and edge cases
 └── integration/           # Integration tests
-    └── NeoPDF.test.ts  # Main class integration tests
+    └── AgenticPDF.test.ts  # Main class integration tests
 ```
 
 ## Running Tests
@@ -81,8 +81,8 @@ npm test unit/error-handling.test.ts
 Test high-level workflows and component interactions:
 
 ```bash
-# Main NeoPDF class integration
-npm test integration/NeoPDF.test.ts
+# Main AgenticPDF class integration
+npm test integration/AgenticPDF.test.ts
 ```
 
 ### Test Configuration
@@ -232,7 +232,7 @@ The test suite includes comprehensive mocks for external dependencies:
    test('should handle invalid PDF header', async () => {
      const invalidPDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
      
-     await expect(NeoPDF.fromBuffer(invalidPDF.buffer))
+     await expect(AgenticPDF.fromBuffer(invalidPDF.buffer))
        .rejects.toThrow(/invalid.*pdf.*header/i);
    });
    ```
@@ -386,4 +386,4 @@ When updating dependencies:
 3. **Verify TypeScript compatibility**
 4. **Update Jest configuration** if required
 
-This comprehensive testing suite ensures NeoPDF maintains high quality and reliability across all supported features and use cases.
+This comprehensive testing suite ensures AgenticPDF maintains high quality and reliability across all supported features and use cases.

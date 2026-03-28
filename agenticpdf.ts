@@ -682,6 +682,77 @@ export interface AgentSession {
   tokensEstimated: number;
 }
 
+// ============================================================================
+// Agent Skills & Tools Runtime Types
+// ============================================================================
+
+/** A callable tool that an agent can invoke via function-calling. */
+export interface AgentTool {
+  name: string;
+  description: string;
+  parameters: ToolParameter[];
+  category: string;
+  requiresDocument: boolean;
+  handler: (args: Record<string, any>, ctx: AgentContext) => Promise<any>;
+}
+
+/** A skill is a named group of related tools that can be registered/activated. */
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  tools: AgentTool[];
+  setup?: (ctx: AgentContext) => Promise<void>;
+  teardown?: (ctx: AgentContext) => Promise<void>;
+}
+
+/** A tool call request from an LLM function-calling response. */
+export interface AgentToolCall {
+  id?: string;
+  name: string;
+  arguments: Record<string, any>;
+}
+
+/** Result of executing a tool call. */
+export interface AgentToolResult {
+  toolCallId?: string;
+  toolName: string;
+  success: boolean;
+  result?: any;
+  error?: string;
+  durationMs: number;
+}
+
+/** Middleware that can intercept tool execution (logging, auth, transforms). */
+export interface AgentMiddleware {
+  name: string;
+  before?: (call: AgentToolCall, ctx: AgentContext) => Promise<AgentToolCall>;
+  after?: (call: AgentToolCall, result: AgentToolResult, ctx: AgentContext) => Promise<AgentToolResult>;
+  onError?: (call: AgentToolCall, error: Error, ctx: AgentContext) => Promise<AgentToolResult | null>;
+}
+
+/** Security configuration for the agent tool runtime. */
+export interface AgentSecurityPolicy {
+  /** Tool names that are allowed (whitelist). If empty, all tools are allowed. */
+  allowedTools: string[];
+  /** Tool names that are blocked (blacklist). Takes precedence over allowedTools. */
+  blockedTools: string[];
+  /** Maximum number of tool calls per session. */
+  maxCallsPerSession: number;
+  /** Maximum execution time per tool call in ms. */
+  maxExecutionTimeMs: number;
+  /** Whether to allow tools that modify the document. */
+  allowMutations: boolean;
+}
+
+/** Configuration for creating an AgentContext. */
+export interface AgentContextOptions {
+  securityPolicy?: Partial<AgentSecurityPolicy>;
+  middleware?: AgentMiddleware[];
+  metadata?: Record<string, any>;
+}
+
 /** Security configuration for hardened PDF processing (DoD/CMMC compliant). */
 export interface SecurityConfig {
   maxFileSize: number;
@@ -799,7 +870,7 @@ export interface Capability {
   id: string;
   name: string;
   description: string;
-  category: 'loading' | 'extraction' | 'rendering' | 'analysis' | 'search' | 'forms' | 'annotations' | 'export' | 'memory' | 'streaming' | 'apdf' | 'introspection';
+  category: 'loading' | 'extraction' | 'rendering' | 'analysis' | 'search' | 'forms' | 'annotations' | 'export' | 'memory' | 'streaming' | 'apdf' | 'introspection' | 'agent';
   methods: MethodDescriptor[];
   inputTypes: string[];
   outputTypes: string[];
@@ -1162,13 +1233,82 @@ export class AgenticPDF {
     return pdf;
   }
 
+  /** Check if a hostname resolves to a private/internal IP range (SSRF protection). */
+  private static isPrivateHost(hostname: string): boolean {
+    // Block localhost variants
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]') return true;
+    // Block common metadata endpoints
+    if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') return true;
+    // IPv4 private ranges
+    const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (ipv4) {
+      const [, a, b] = ipv4.map(Number);
+      if (a === 10) return true;                          // 10.0.0.0/8
+      if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
+      if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+      if (a === 127) return true;                         // 127.0.0.0/8
+      if (a === 0) return true;                           // 0.0.0.0/8
+      if (a === 169 && b === 254) return true;            // link-local
+    }
+    return false;
+  }
+
   private async loadFromFile(file: File | Blob): Promise<void> {
     this.buffer = await file.arrayBuffer();
     await this.parse();
   }
 
   private async loadFromUrl(url: string): Promise<void> {
-    const response = await fetch(url);
+    // SSRF protection: only allow http and https protocols
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      throw new Error('Invalid URL provided');
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error(`Unsupported URL protocol: ${parsedUrl.protocol} — only http: and https: are allowed`);
+    }
+
+    // SSRF protection: block private/internal IP ranges
+    const hostname = parsedUrl.hostname;
+    if (AgenticPDF.isPrivateHost(hostname)) {
+      throw new Error('SSRF protection: requests to private/internal addresses are not allowed');
+    }
+
+    const response = await fetch(url, { redirect: 'manual' });
+
+    // Handle redirects safely — validate redirect target
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) throw new Error('Redirect with no Location header');
+      let redirectUrl: URL;
+      try {
+        redirectUrl = new URL(location, url);
+      } catch {
+        throw new Error('Invalid redirect URL');
+      }
+      if (redirectUrl.protocol !== 'http:' && redirectUrl.protocol !== 'https:') {
+        throw new Error(`Redirect to unsupported protocol: ${redirectUrl.protocol}`);
+      }
+      if (AgenticPDF.isPrivateHost(redirectUrl.hostname)) {
+        throw new Error('SSRF protection: redirect to private/internal address blocked');
+      }
+      // Follow the validated redirect (single hop only)
+      const redirectResponse = await fetch(redirectUrl.href, { redirect: 'manual' });
+      if (!redirectResponse.ok) {
+        throw new Error(`Failed to fetch PDF after redirect: ${redirectResponse.statusText}`);
+      }
+      if (redirectResponse.body && this.options.streamOptions) {
+        this.stream = redirectResponse.body;
+        await this.parseStream();
+      } else {
+        this.buffer = await redirectResponse.arrayBuffer();
+        await this.parse();
+      }
+      return;
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to fetch PDF: ${response.statusText}`);
     }
@@ -2799,6 +2939,95 @@ export class AgenticPDF {
             example: "const report = pdf.describeDocument();"
           }
         ]
+      },
+      {
+        id: 'agent-skills',
+        name: 'Agent Skills & Tool Execution',
+        description: 'Register skills (groups of callable tools), create agent contexts with security policies and middleware, dispatch tool calls, and track execution history. Enables AI agents to interact with PDF documents through a structured, secure tool-calling runtime.',
+        category: 'agent',
+        streaming: false,
+        inputTypes: ['AgentSkill', 'AgentToolCall', 'AgentContextOptions', 'AgentSecurityPolicy', 'AgentMiddleware'],
+        outputTypes: ['AgentToolResult', 'AgentSkill[]', 'AgentTool[]', 'AgentContext'],
+        methods: [
+          {
+            name: 'registerSkill',
+            description: 'Register an AgentSkill (a named group of callable tools) in the static skill registry',
+            parameters: [
+              { name: 'skill', type: 'AgentSkill', required: true, description: 'Skill object with unique id, name, tools array, and optional setup/teardown' }
+            ],
+            returnType: 'void',
+            async: false, streaming: false, static: true,
+            example: "AgenticPDF.registerSkill({ id: 'my-skill', name: 'My Skill', description: 'Custom tools', version: '1.0', tools: [myTool] });"
+          },
+          {
+            name: 'unregisterSkill',
+            description: 'Remove a previously registered skill from the static skill registry',
+            parameters: [
+              { name: 'skillId', type: 'string', required: true, description: 'The id of the skill to remove' }
+            ],
+            returnType: 'boolean',
+            async: false, streaming: false, static: true,
+            example: "const removed = AgenticPDF.unregisterSkill('my-skill');"
+          },
+          {
+            name: 'getSkill',
+            description: 'Look up a registered skill by its id',
+            parameters: [
+              { name: 'skillId', type: 'string', required: true, description: 'The id of the skill to retrieve' }
+            ],
+            returnType: 'AgentSkill | undefined',
+            async: false, streaming: false, static: true,
+            example: "const skill = AgenticPDF.getSkill('pdf-extraction');"
+          },
+          {
+            name: 'listSkills',
+            description: 'List all registered skills (auto-registers built-in skills on first call)',
+            parameters: [],
+            returnType: 'AgentSkill[]',
+            async: false, streaming: false, static: true,
+            example: "const skills = AgenticPDF.listSkills();"
+          },
+          {
+            name: 'listTools',
+            description: 'List all tools across all registered skills, optionally filtered by category',
+            parameters: [
+              { name: 'category', type: 'string', required: false, description: "Optional category filter: 'extraction' | 'analysis' | 'forms' | 'export' | 'apdf' | 'introspection'" }
+            ],
+            returnType: 'AgentTool[]',
+            async: false, streaming: false, static: true,
+            example: "const tools = AgenticPDF.listTools('extraction');"
+          },
+          {
+            name: 'createAgentContext',
+            description: 'Create an AgentContext bound to this document for secure, stateful tool execution with middleware and history tracking',
+            parameters: [
+              { name: 'options', type: 'AgentContextOptions', required: false, description: 'Optional security policy, middleware array, and metadata' }
+            ],
+            returnType: 'AgentContext',
+            async: false, streaming: false, static: false,
+            example: "const ctx = pdf.createAgentContext({ securityPolicy: { allowMutations: false } });"
+          },
+          {
+            name: 'executeTool',
+            description: 'Execute a single tool call against this document (convenience method, creates a temporary context)',
+            parameters: [
+              { name: 'call', type: 'AgentToolCall', required: true, description: 'Tool call with name and arguments' }
+            ],
+            returnType: 'Promise<AgentToolResult>',
+            async: true, streaming: false, static: false,
+            example: "const result = await pdf.executeTool({ name: 'extractText', arguments: { preserveFormatting: true } });"
+          },
+          {
+            name: 'executeToolBatch',
+            description: 'Execute multiple tool calls sequentially against this document (convenience method)',
+            parameters: [
+              { name: 'calls', type: 'AgentToolCall[]', required: true, description: 'Array of tool calls to execute in order' }
+            ],
+            returnType: 'Promise<AgentToolResult[]>',
+            async: true, streaming: false, static: false,
+            example: "const results = await pdf.executeToolBatch([{ name: 'getMetadata' }, { name: 'extractText' }]);"
+          }
+        ]
       }
     ];
   }
@@ -2957,6 +3186,19 @@ export class AgenticPDF {
           { order: 2, method: 'getToolSchemas', description: 'Or get just the tool schemas for function calling', example: "const tools = AgenticPDF.getToolSchemas('openai');" },
           { order: 3, method: 'getMCPManifest', description: 'Or get the MCP server manifest for MCP-compatible agents', example: "const manifest = AgenticPDF.getMCPManifest();" },
           { order: 4, method: 'describeDocument', description: 'After loading a document, get document-specific recommendations', example: "const report = pdf.describeDocument();" }
+        ]
+      },
+      {
+        id: 'agent-tool-execution',
+        name: 'Agent Tool Execution Pipeline',
+        description: 'Create a secure agent context, discover available tools, execute tool calls with middleware and security policies, and track execution history. This is the primary workflow for AI agents performing document operations via function calling.',
+        steps: [
+          { order: 1, method: 'fromFile', description: 'Load the PDF document', example: "const pdf = await AgenticPDF.fromFile(file);" },
+          { order: 2, method: 'createAgentContext', description: 'Create a secure agent context with security policy and middleware', example: "const ctx = pdf.createAgentContext({ securityPolicy: { allowMutations: false, maxCallsPerSession: 50 } });" },
+          { order: 3, method: 'getToolSchemas', description: 'Get tool schemas for LLM function-calling integration', example: "const schemas = ctx.getToolSchemas('openai');" },
+          { order: 4, method: 'executeTool', description: 'Execute tool calls dispatched by the LLM', example: "const result = await ctx.executeTool({ name: 'extractText', arguments: { preserveFormatting: true } });" },
+          { order: 5, method: 'getStats', description: 'Check execution statistics and history', example: "const stats = ctx.getStats();" },
+          { order: 6, method: 'close', description: 'Close the context and release resources', example: "ctx.close(); pdf.close();" }
         ]
       }
     ];
@@ -3283,6 +3525,58 @@ export class AgenticPDF {
         ],
         relationships: [
           { type: 'belongsTo', target: 'APDFDocument', description: 'Part of the aPDF document envelope' }
+        ]
+      },
+      // ── Agent Skills & Tools Concepts ────────────────────────────
+      {
+        id: 'AgentSkill',
+        label: 'Agent Skill',
+        description: 'A named group of related tools that can be registered, activated, and deactivated. Skills provide modular capability bundles for AI agents (e.g., pdf-extraction, pdf-analysis, apdf-format).',
+        properties: [
+          { name: 'id', type: 'string', description: 'Unique skill identifier' },
+          { name: 'name', type: 'string', description: 'Human-readable skill name' },
+          { name: 'description', type: 'string', description: 'What this skill provides' },
+          { name: 'version', type: 'string', description: 'Skill version (semver)' },
+          { name: 'tools', type: 'AgentTool[]', description: 'Tools provided by this skill' }
+        ],
+        relationships: [
+          { type: 'contains', target: 'AgentTool', description: 'Groups multiple tools' },
+          { type: 'registeredIn', target: 'Document', description: 'Registered in the static skill registry' }
+        ]
+      },
+      {
+        id: 'AgentTool',
+        label: 'Agent Tool',
+        description: 'A callable tool with typed parameters and an execution handler. Tools are invoked by AI agents via function-calling and dispatched by the AgentContext runtime.',
+        properties: [
+          { name: 'name', type: 'string', description: 'Tool name (used in function-calling)' },
+          { name: 'description', type: 'string', description: 'What this tool does' },
+          { name: 'parameters', type: 'ToolParameter[]', description: 'Typed input parameters' },
+          { name: 'category', type: 'string', description: 'Tool category (extraction, analysis, forms, etc.)' },
+          { name: 'requiresDocument', type: 'boolean', description: 'Whether a loaded PDF is needed' },
+          { name: 'handler', type: 'Function', description: 'Async execution handler' }
+        ],
+        relationships: [
+          { type: 'belongsTo', target: 'AgentSkill', description: 'Part of a skill group' },
+          { type: 'executedBy', target: 'AgentContext', description: 'Dispatched through a context' }
+        ]
+      },
+      {
+        id: 'AgentContext',
+        label: 'Agent Context',
+        description: 'A stateful session between an AI agent and a loaded PDF. Provides tool dispatch, middleware hooks, security policies, execution history, and skill activation.',
+        properties: [
+          { name: 'session', type: 'AgentSession', description: 'Session tracking state' },
+          { name: 'document', type: 'AgenticPDF', description: 'Bound PDF document' },
+          { name: 'securityPolicy', type: 'AgentSecurityPolicy', description: 'Tool allow/block lists and limits' },
+          { name: 'middleware', type: 'AgentMiddleware[]', description: 'Before/after/error interceptors' },
+          { name: 'history', type: 'AgentToolResult[]', description: 'Execution history' },
+          { name: 'metadata', type: 'Record<string, any>', description: 'Arbitrary key-value state' }
+        ],
+        relationships: [
+          { type: 'binds', target: 'Document', description: 'Bound to a loaded PDF document' },
+          { type: 'dispatches', target: 'AgentTool', description: 'Dispatches tool calls to handlers' },
+          { type: 'tracks', target: 'AgentSession', description: 'Tracks session operations' }
         ]
       }
     ];
@@ -4156,6 +4450,100 @@ export class AgenticPDF {
           totalSize: { type: 'number', description: 'Total file size in bytes' }
         },
         required: ['version', 'flags', 'pdfEncrypted', 'metadataEncrypted', 'metadataOffset', 'metadataLength', 'pdfOffset', 'pdfLength', 'totalSize']
+      },
+      // ── agent skills & tools ────────────────────────────────────
+      AgentTool: {
+        type: 'object',
+        description: 'A callable tool within an AgentSkill with typed parameters and an async handler function',
+        properties: {
+          name: { type: 'string', description: 'Unique tool name' },
+          description: { type: 'string', description: 'Human-readable description' },
+          parameters: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string' },
+                type: { type: 'string' },
+                description: { type: 'string' },
+                required: { type: 'boolean' }
+              }
+            },
+            description: 'Typed parameter definitions'
+          },
+          category: { type: 'string', description: 'Tool category for filtering' },
+          requiresDocument: { type: 'boolean', description: 'Whether the tool needs a loaded document' },
+          handler: { type: 'function', description: 'Async handler function (args, context?) => Promise<any>' }
+        },
+        required: ['name', 'description', 'parameters', 'handler']
+      },
+      AgentSkill: {
+        type: 'object',
+        description: 'A named group of related AgentTools with lifecycle callbacks',
+        properties: {
+          id: { type: 'string', description: 'Unique skill identifier' },
+          name: { type: 'string', description: 'Human-readable skill name' },
+          description: { type: 'string' },
+          version: { type: 'string', description: 'Semver version string' },
+          tools: { type: 'array', items: { $ref: '#/AgentTool' }, description: 'Array of callable tools' },
+          setup: { type: 'function', description: 'Optional async setup callback' },
+          teardown: { type: 'function', description: 'Optional async teardown callback' }
+        },
+        required: ['id', 'name', 'description', 'version', 'tools']
+      },
+      AgentToolCall: {
+        type: 'object',
+        description: 'A tool call request from an LLM or agent',
+        properties: {
+          id: { type: 'string', description: 'Optional call ID for correlation' },
+          name: { type: 'string', description: 'Name of the tool to invoke' },
+          arguments: { type: 'object', additionalProperties: true, description: 'Arguments to pass to the tool handler' }
+        },
+        required: ['name']
+      },
+      AgentToolResult: {
+        type: 'object',
+        description: 'Result of executing an AgentToolCall',
+        properties: {
+          toolCallId: { type: 'string', description: 'Correlation ID from the original call' },
+          toolName: { type: 'string' },
+          success: { type: 'boolean' },
+          result: { description: 'Return value from the tool handler (if success)' },
+          error: { type: 'string', description: 'Error message (if failure)' },
+          durationMs: { type: 'number', description: 'Execution time in milliseconds' }
+        },
+        required: ['toolName', 'success', 'durationMs']
+      },
+      AgentSecurityPolicy: {
+        type: 'object',
+        description: 'Security policy for controlling agent tool access',
+        properties: {
+          allowedTools: { type: 'array', items: { type: 'string' }, description: 'Whitelist of allowed tool names (empty = all allowed)' },
+          blockedTools: { type: 'array', items: { type: 'string' }, description: 'Blacklist of blocked tool names' },
+          maxCallsPerSession: { type: 'number', description: 'Maximum tool calls per session' },
+          maxExecutionTimeMs: { type: 'number', description: 'Maximum execution time per tool call in milliseconds' },
+          allowMutations: { type: 'boolean', description: 'Whether mutation tools (fillForm, save) are allowed' }
+        }
+      },
+      AgentMiddleware: {
+        type: 'object',
+        description: 'Middleware for intercepting tool calls (logging, auth, transforms)',
+        properties: {
+          name: { type: 'string', description: 'Middleware identifier' },
+          before: { type: 'function', description: 'Called before tool execution (call) => void | modified call' },
+          after: { type: 'function', description: 'Called after tool execution (result) => void | modified result' },
+          onError: { type: 'function', description: 'Called on tool execution error (error, call) => void' }
+        },
+        required: ['name']
+      },
+      AgentContextOptions: {
+        type: 'object',
+        description: 'Configuration for creating an AgentContext',
+        properties: {
+          securityPolicy: { $ref: '#/AgentSecurityPolicy' },
+          middleware: { type: 'array', items: { $ref: '#/AgentMiddleware' } },
+          metadata: { type: 'object', additionalProperties: true, description: 'Custom metadata for the context session' }
+        }
       }
     };
   }
@@ -4184,6 +4572,14 @@ export class AgenticPDF {
         aiContent: string;
         workflows: string;
       };
+      agentSkillsGuidance: {
+        overview: string;
+        security: string;
+        middleware: string;
+        builtinSkills: string;
+        customSkills: string;
+        workflow: string;
+      };
     };
   } {
     return {
@@ -4205,7 +4601,10 @@ export class AgenticPDF {
           'Use generateAPDFBinary() to bundle metadata + PDF in a streaming-optimized container',
           'Use readAPDFHeader() for range-request-friendly indexing (only 64 bytes needed)',
           'Use readAPDFMetadata() to index aPDF files without loading PDF data',
-          'Keep metadata unencrypted (default) for indexing; encrypt only PDF data for security'
+          'Keep metadata unencrypted (default) for indexing; encrypt only PDF data for security',
+          'Use createAgentContext() for stateful, secure tool execution with middleware and history tracking',
+          'Set allowMutations: false in security policy for read-only agent sessions',
+          'Use activateSkills() on AgentContext to limit the tool surface exposed to agents'
         ],
         memoryManagement: 'Configure maxMemoryUsage in PDFOptions. Call unloadPages() to release parsed pages. Call close() to release all resources. For large documents, use streaming APIs to avoid loading entire document.',
         streamingGuidance: 'All major operations support streaming via AsyncGenerator. Use streamText() for progressive text extraction, streamSemanticChunks() for RAG processing. Pass progressCallback in StreamOptions for progress tracking. The aPDF v1.1 binary format supports streaming via fixed 64-byte header with section offsets — use readAPDFHeader() with HTTP Range requests to read metadata without downloading the full file.',
@@ -4217,6 +4616,14 @@ export class AgenticPDF {
           artifacts: 'Link research artifacts: HuggingFace models/datasets/spaces, GitHub repos, demos, benchmarks, checkpoints, adapters.',
           aiContent: 'Pre-computed semantic chunks with importance scores, keywords, entities, and NLP statistics ready for RAG pipelines.',
           workflows: 'Use apdf-metadata for JSON generation, apdf-binary-generation for container creation, apdf-encrypted-generation for encrypted containers, apdf-round-trip for encode/decode verification, apdf-streaming-index for range-request indexing.'
+        },
+        agentSkillsGuidance: {
+          overview: 'AgenticPDF provides a runtime for AI agents to register skills (groups of callable tools), create secure contexts, and dispatch tool calls. 6 built-in skills with 24 tools are auto-registered on first use.',
+          security: 'Use AgentSecurityPolicy to control access: allowedTools/blockedTools for whitelisting/blacklisting, maxCallsPerSession for rate limiting, maxExecutionTimeMs for timeout enforcement, allowMutations to prevent document modification.',
+          middleware: 'Add AgentMiddleware to intercept tool calls: before() for validation/logging/auth, after() for result transformation, onError() for error handling. Middleware runs in registration order.',
+          builtinSkills: 'Built-in skills: pdf-extraction (6 tools), pdf-analysis (4 tools), pdf-forms (3 tools), pdf-export (3 tools), apdf-format (4 tools), introspection (4 tools). All handlers call real library methods.',
+          customSkills: 'Register custom skills via AgenticPDF.registerSkill(). Each skill has a unique id, tools array, and optional setup/teardown callbacks. Use activateSkills() on AgentContext to limit active skills.',
+          workflow: 'Create context: pdf.createAgentContext(options). Get schemas: ctx.getToolSchemas("openai"). Execute: ctx.executeTool({ name, arguments }). Check stats: ctx.getStats(). Close: ctx.close().'
         }
       }
     };
@@ -4234,6 +4641,432 @@ export class AgenticPDF {
       chunksProcessed: 0,
       tokensEstimated: 0
     };
+  }
+
+  // ==========================================================================
+  // Agent Skills & Tools Runtime
+  // ==========================================================================
+
+  /** Static skill registry shared across all instances. */
+  private static _skillRegistry: Map<string, AgentSkill> = new Map();
+  /** Whether built-in skills have been registered. */
+  private static _builtinsRegistered = false;
+
+  /**
+   * Register an agent skill. Skills group related tools and can be
+   * activated/deactivated per context. Built-in skills are registered
+   * automatically on first use.
+   */
+  static registerSkill(skill: AgentSkill): void {
+    if (AgenticPDF._skillRegistry.has(skill.id)) {
+      throw new Error(`Skill '${skill.id}' is already registered`);
+    }
+    const toolNames = new Set<string>();
+    for (const tool of skill.tools) {
+      if (toolNames.has(tool.name)) {
+        throw new Error(`Duplicate tool name '${tool.name}' in skill '${skill.id}'`);
+      }
+      toolNames.add(tool.name);
+    }
+    AgenticPDF._skillRegistry.set(skill.id, skill);
+  }
+
+  /**
+   * Unregister a skill by ID.
+   */
+  static unregisterSkill(skillId: string): boolean {
+    return AgenticPDF._skillRegistry.delete(skillId);
+  }
+
+  /**
+   * Get a registered skill by ID.
+   */
+  static getSkill(skillId: string): AgentSkill | undefined {
+    AgenticPDF._ensureBuiltins();
+    return AgenticPDF._skillRegistry.get(skillId);
+  }
+
+  /**
+   * List all registered skills.
+   */
+  static listSkills(): AgentSkill[] {
+    AgenticPDF._ensureBuiltins();
+    return Array.from(AgenticPDF._skillRegistry.values());
+  }
+
+  /**
+   * List all tools across registered skills, optionally filtered by category.
+   */
+  static listTools(category?: string): AgentTool[] {
+    AgenticPDF._ensureBuiltins();
+    const tools: AgentTool[] = [];
+    for (const skill of AgenticPDF._skillRegistry.values()) {
+      for (const tool of skill.tools) {
+        if (!category || tool.category === category) {
+          tools.push(tool);
+        }
+      }
+    }
+    return tools;
+  }
+
+  /**
+   * Create an agent context bound to this document. The context provides
+   * tool execution, session tracking, middleware support, and security policies.
+   */
+  createAgentContext(options?: AgentContextOptions): AgentContext {
+    AgenticPDF._ensureBuiltins();
+    return new AgentContext(this, options);
+  }
+
+  /**
+   * Convenience: Execute a single tool call against this document.
+   * For multi-turn conversations, use createAgentContext() instead.
+   */
+  async executeTool(call: AgentToolCall): Promise<AgentToolResult> {
+    const ctx = this.createAgentContext();
+    return ctx.executeTool(call);
+  }
+
+  /**
+   * Convenience: Execute a batch of tool calls sequentially.
+   */
+  async executeToolBatch(calls: AgentToolCall[]): Promise<AgentToolResult[]> {
+    const ctx = this.createAgentContext();
+    return ctx.executeToolBatch(calls);
+  }
+
+  /** Ensure built-in skills are registered. */
+  private static _ensureBuiltins(): void {
+    if (AgenticPDF._builtinsRegistered) return;
+    AgenticPDF._builtinsRegistered = true;
+    for (const skill of AgenticPDF._createBuiltinSkills()) {
+      if (!AgenticPDF._skillRegistry.has(skill.id)) {
+        AgenticPDF._skillRegistry.set(skill.id, skill);
+      }
+    }
+  }
+
+  /** Create the built-in skill definitions with tool handlers. */
+  private static _createBuiltinSkills(): AgentSkill[] {
+    return [
+      // ── pdf-extraction ──────────────────────────────────────────
+      {
+        id: 'pdf-extraction',
+        name: 'PDF Extraction',
+        description: 'Extract text, images, metadata, and named destinations from PDF documents.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'extractText',
+            description: 'Extract all text content from the PDF with positioning and style metadata.',
+            parameters: [
+              { name: 'preserveFormatting', type: 'boolean', description: 'Keep original text layout', required: false },
+              { name: 'normalizeWhitespace', type: 'boolean', description: 'Normalize whitespace', required: false },
+              { name: 'pageRange', type: 'object', description: 'Pages to extract {start, end}', required: false }
+            ],
+            category: 'extraction',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.extractText(args as any)
+          },
+          {
+            name: 'extractImages',
+            description: 'Extract all images from the PDF with metadata.',
+            parameters: [
+              { name: 'format', type: 'string', description: 'Output format: png, jpeg, webp', required: false },
+              { name: 'quality', type: 'number', description: 'Quality 0-1', required: false },
+              { name: 'pageRange', type: 'object', description: 'Pages to extract {start, end}', required: false }
+            ],
+            category: 'extraction',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.extractImages(args as any)
+          },
+          {
+            name: 'getMetadata',
+            description: 'Get PDF document metadata (title, author, page count, etc.).',
+            parameters: [],
+            category: 'extraction',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.getMetadata()
+          },
+          {
+            name: 'getPageCount',
+            description: 'Get total number of pages.',
+            parameters: [],
+            category: 'extraction',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.getPageCount()
+          },
+          {
+            name: 'getNamedDestinations',
+            description: 'Get all named destinations for internal navigation.',
+            parameters: [],
+            category: 'extraction',
+            requiresDocument: true,
+            handler: async (_args, ctx) => {
+              const dests = ctx.document.getNamedDestinations();
+              return Object.fromEntries(dests);
+            }
+          },
+          {
+            name: 'search',
+            description: 'Search for text within the document.',
+            parameters: [
+              { name: 'query', type: 'string', description: 'Search query', required: true },
+              { name: 'caseSensitive', type: 'boolean', description: 'Case-sensitive', required: false },
+              { name: 'wholeWord', type: 'boolean', description: 'Whole words only', required: false }
+            ],
+            category: 'search',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.search(args.query, args as any)
+          }
+        ]
+      },
+      // ── pdf-analysis ────────────────────────────────────────────
+      {
+        id: 'pdf-analysis',
+        name: 'PDF Analysis',
+        description: 'AI-powered document analysis: structural analysis, semantic chunking, summaries.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'getAIFeatures',
+            description: 'Run AI analysis: structural analysis, semantic chunking, NLP preparation.',
+            parameters: [
+              { name: 'enableStructuralAnalysis', type: 'boolean', description: 'Analyze sections, tables, figures', required: false },
+              { name: 'enableSemanticChunking', type: 'boolean', description: 'Generate semantic chunks', required: false },
+              { name: 'chunkSize', type: 'number', description: 'Target chunk size in tokens', required: false },
+              { name: 'chunkOverlap', type: 'number', description: 'Overlap between chunks', required: false }
+            ],
+            category: 'analysis',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.getAIFeatures(args as any)
+          },
+          {
+            name: 'generateSemanticChunks',
+            description: 'Generate semantic chunks for RAG pipelines.',
+            parameters: [
+              { name: 'strategy', type: 'string', description: 'Chunking strategy: semantic, fixed, sliding, recursive', required: false },
+              { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false },
+              { name: 'overlapSize', type: 'number', description: 'Token overlap between chunks', required: false }
+            ],
+            category: 'analysis',
+            requiresDocument: true,
+            handler: async (args, ctx) => {
+              const chunks = await ctx.document.generateSemanticChunks(args as any);
+              ctx.session.chunksProcessed += chunks.length;
+              return chunks;
+            }
+          },
+          {
+            name: 'summarize',
+            description: 'Generate an automatic summary of the document.',
+            parameters: [
+              { name: 'maxLength', type: 'number', description: 'Max summary length in tokens', required: false }
+            ],
+            category: 'analysis',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.summarize(args as any)
+          },
+          {
+            name: 'describeDocument',
+            description: 'Get document-specific capability report with recommended workflows.',
+            parameters: [],
+            category: 'analysis',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.describeDocument()
+          }
+        ]
+      },
+      // ── pdf-forms ───────────────────────────────────────────────
+      {
+        id: 'pdf-forms',
+        name: 'PDF Forms',
+        description: 'Read and fill interactive PDF form fields.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'getFormFields',
+            description: 'Get all interactive form fields.',
+            parameters: [],
+            category: 'forms',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.getFormFields()
+          },
+          {
+            name: 'fillForm',
+            description: 'Fill form fields with provided values.',
+            parameters: [
+              { name: 'data', type: 'object', description: 'Field name-value pairs', required: true }
+            ],
+            category: 'forms',
+            requiresDocument: true,
+            handler: async (args, ctx) => {
+              await ctx.document.fillForm(args.data);
+              return { filled: Object.keys(args.data).length };
+            }
+          },
+          {
+            name: 'getFormData',
+            description: 'Get current form field values.',
+            parameters: [],
+            category: 'forms',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.getFormData()
+          }
+        ]
+      },
+      // ── pdf-export ──────────────────────────────────────────────
+      {
+        id: 'pdf-export',
+        name: 'PDF Export',
+        description: 'Export PDF content to text, HTML, Markdown, JSON, and other formats.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'exportAs',
+            description: 'Export document to text, HTML, Markdown, JSON, XML, or CSV.',
+            parameters: [
+              { name: 'format', type: 'string', description: 'Target format', required: true, enum: ['text', 'html', 'markdown', 'json', 'xml', 'csv'] },
+              { name: 'options', type: 'object', description: 'Export options', required: false }
+            ],
+            category: 'export',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.exportAs(args.format, args.options)
+          },
+          {
+            name: 'getAnnotations',
+            description: 'Get annotations (links, highlights, comments).',
+            parameters: [
+              { name: 'pageNumber', type: 'number', description: 'Specific page (omit for all)', required: false }
+            ],
+            category: 'annotations',
+            requiresDocument: true,
+            handler: async (args, ctx) => ctx.document.getAnnotations(args.pageNumber)
+          },
+          {
+            name: 'save',
+            description: 'Save the document (with any modifications) as a Blob.',
+            parameters: [],
+            category: 'export',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.save()
+          }
+        ]
+      },
+      // ── apdf-format ─────────────────────────────────────────────
+      {
+        id: 'apdf-format',
+        name: 'aPDF Format',
+        description: 'Generate and read aPDF (Agentic PDF) metadata envelopes and binary containers.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'generateAPDFMetadata',
+            description: 'Generate aPDF JSON-LD metadata from the loaded PDF.',
+            parameters: [],
+            category: 'apdf',
+            requiresDocument: true,
+            handler: async (_args, ctx) => ctx.document.generateAPDFMetadata()
+          },
+          {
+            name: 'generateAPDFBinary',
+            description: 'Generate aPDF v1.1 binary container with optional encryption.',
+            parameters: [
+              { name: 'password', type: 'string', description: 'Encryption password (omit for unencrypted)', required: false },
+              { name: 'encryptMetadata', type: 'boolean', description: 'Encrypt metadata section', required: false },
+              { name: 'encryptPDF', type: 'boolean', description: 'Encrypt PDF data section', required: false }
+            ],
+            category: 'apdf',
+            requiresDocument: true,
+            handler: async (args, ctx) => {
+              const opts: any = {};
+              if (args.password) {
+                opts.encryption = {
+                  password: args.password,
+                  encryptMetadata: args.encryptMetadata ?? false,
+                  encryptPDF: args.encryptPDF ?? true
+                };
+              }
+              return ctx.document.generateAPDFBinary(Object.keys(opts).length > 0 ? opts : undefined);
+            }
+          },
+          {
+            name: 'readAPDF',
+            description: 'Read an aPDF binary container and extract metadata + PDF data.',
+            parameters: [
+              { name: 'data', type: 'Uint8Array', description: 'Raw aPDF binary data', required: true },
+              { name: 'password', type: 'string', description: 'Decryption password', required: false }
+            ],
+            category: 'apdf',
+            requiresDocument: false,
+            handler: async (args, _ctx) => AgenticPDF.readAPDF(args.data, args.password)
+          },
+          {
+            name: 'readAPDFHeader',
+            description: 'Read the 64-byte header from an aPDF binary file.',
+            parameters: [
+              { name: 'data', type: 'Uint8Array', description: 'At least 64 bytes', required: true }
+            ],
+            category: 'apdf',
+            requiresDocument: false,
+            handler: async (args, _ctx) => AgenticPDF.readAPDFHeader(args.data)
+          }
+        ]
+      },
+      // ── introspection ───────────────────────────────────────────
+      {
+        id: 'introspection',
+        name: 'Introspection',
+        description: 'Discover library capabilities, schemas, and workflows for agent integration.',
+        version: '1.0.0',
+        tools: [
+          {
+            name: 'describe',
+            description: 'Get the full library ontology.',
+            parameters: [],
+            category: 'introspection',
+            requiresDocument: false,
+            handler: async () => AgenticPDF.describe()
+          },
+          {
+            name: 'describeForAgent',
+            description: 'Get everything an agent needs: ontology, tools, schemas, workflows, and guidance.',
+            parameters: [
+              { name: 'format', type: 'string', description: "Tool schema format: 'openai' | 'anthropic' | 'generic'", required: false }
+            ],
+            category: 'introspection',
+            requiresDocument: false,
+            handler: async (args) => AgenticPDF.describeForAgent(args.format || 'openai')
+          },
+          {
+            name: 'listSkills',
+            description: 'List all registered agent skills.',
+            parameters: [],
+            category: 'introspection',
+            requiresDocument: false,
+            handler: async () => AgenticPDF.listSkills().map(s => ({
+              id: s.id, name: s.name, description: s.description, version: s.version,
+              toolCount: s.tools.length, tools: s.tools.map(t => t.name)
+            }))
+          },
+          {
+            name: 'listTools',
+            description: 'List all available agent tools, optionally filtered by category.',
+            parameters: [
+              { name: 'category', type: 'string', description: 'Filter by category', required: false }
+            ],
+            category: 'introspection',
+            requiresDocument: false,
+            handler: async (args) => AgenticPDF.listTools(args.category).map(t => ({
+              name: t.name, description: t.description, category: t.category,
+              requiresDocument: t.requiresDocument,
+              parameters: t.parameters
+            }))
+          }
+        ]
+      }
+    ];
   }
 
   /**
@@ -4546,6 +5379,92 @@ export class AgenticPDF {
         streaming: false,
         requiresDocument: false,
         example: "const meta = await AgenticPDF.readAPDFMetadata(data);"
+      },
+      // ── agent skills & tools ────────────────────────────────────
+      {
+        name: 'registerSkill',
+        description: 'Register an AgentSkill (a named group of callable tools) in the static skill registry.',
+        parameters: [
+          { name: 'skill', type: 'AgentSkill', description: 'Skill with unique id, name, tools, and optional setup/teardown', required: true }
+        ],
+        returnType: 'void',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: false,
+        example: "AgenticPDF.registerSkill({ id: 'my-skill', name: 'My Skill', description: 'Custom tools', version: '1.0', tools: [tool] });"
+      },
+      {
+        name: 'unregisterSkill',
+        description: 'Remove a registered skill from the static registry.',
+        parameters: [
+          { name: 'skillId', type: 'string', description: 'The id of the skill to remove', required: true }
+        ],
+        returnType: 'boolean',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: false,
+        example: "const removed = AgenticPDF.unregisterSkill('my-skill');"
+      },
+      {
+        name: 'listSkills',
+        description: 'List all registered agent skills (auto-registers built-in skills on first call).',
+        parameters: [],
+        returnType: 'AgentSkill[]',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: false,
+        example: "const skills = AgenticPDF.listSkills();"
+      },
+      {
+        name: 'listTools',
+        description: 'List all tools across registered skills, optionally filtered by category.',
+        parameters: [
+          { name: 'category', type: 'string', description: "Filter by category: 'extraction' | 'analysis' | 'forms' | 'export' | 'apdf' | 'introspection'", required: false }
+        ],
+        returnType: 'AgentTool[]',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: false,
+        example: "const tools = AgenticPDF.listTools('extraction');"
+      },
+      {
+        name: 'createAgentContext',
+        description: 'Create an AgentContext bound to this document with optional security policy, middleware, and metadata.',
+        parameters: [
+          { name: 'securityPolicy', type: 'AgentSecurityPolicy', description: 'Security policy (allowed/blocked tools, call limits, mutation control)', required: false },
+          { name: 'middleware', type: 'AgentMiddleware[]', description: 'Middleware pipeline for intercepting tool calls', required: false },
+          { name: 'metadata', type: 'Record<string, any>', description: 'Custom metadata attached to the context session', required: false }
+        ],
+        returnType: 'AgentContext',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: true,
+        example: "const ctx = pdf.createAgentContext({ securityPolicy: { allowMutations: false } });"
+      },
+      {
+        name: 'executeTool',
+        description: 'Execute a single tool call against this document (convenience method that creates a temporary context).',
+        parameters: [
+          { name: 'name', type: 'string', description: 'Name of the tool to execute', required: true },
+          { name: 'arguments', type: 'object', description: 'Arguments to pass to the tool', required: false }
+        ],
+        returnType: 'Promise<AgentToolResult>',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: true,
+        example: "const result = await pdf.executeTool({ name: 'extractText', arguments: { preserveFormatting: true } });"
+      },
+      {
+        name: 'executeToolBatch',
+        description: 'Execute multiple tool calls sequentially against this document.',
+        parameters: [
+          { name: 'calls', type: 'AgentToolCall[]', description: 'Array of tool calls to execute in order', required: true }
+        ],
+        returnType: 'Promise<AgentToolResult[]>',
+        category: 'agent',
+        streaming: false,
+        requiresDocument: true,
+        example: "const results = await pdf.executeToolBatch([{ name: 'getMetadata' }, { name: 'extractText' }]);"
       }
     ];
   }
@@ -5614,9 +6533,10 @@ class PDFParser {
     currentPageNum: number,
     depth: number = 0
   ): Promise<number> {
-    // Prevent infinite recursion
-    if (depth > 100) {
-      console.error('Maximum page tree depth exceeded');
+    // Prevent infinite recursion — use security limit
+    const maxDepth = DEFAULT_SECURITY_CONFIG.maxRecursionDepth;
+    if (depth > maxDepth) {
+      console.error(`Maximum page tree depth (${maxDepth}) exceeded`);
       return currentPageNum;
     }
 
@@ -7163,12 +8083,14 @@ class AESCipher {
    * Encrypt AES-CBC data. Returns IV + ciphertext.
    */
   static encrypt(key: Uint8Array, plaintext: Uint8Array): Uint8Array {
-    // Generate random IV
+    // Generate random IV — require cryptographic RNG
     const iv = new Uint8Array(16);
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
       crypto.getRandomValues(iv);
+    } else if (typeof globalThis !== 'undefined' && (globalThis as any).crypto?.getRandomValues) {
+      (globalThis as any).crypto.getRandomValues(iv);
     } else {
-      for (let i = 0; i < 16; i++) iv[i] = Math.floor(Math.random() * 256);
+      throw new Error('Cryptographically secure random number generator is required for AES encryption but not available in this environment');
     }
     const padded = AESCipher.pkcs7Pad(plaintext);
     const encrypted = AESCipher.encryptCBC(key, iv, padded);
@@ -7407,14 +8329,21 @@ class AESCipher {
     return padded;
   }
 
-  /** Remove PKCS#7 padding. */
+  /** Remove PKCS#7 padding with constant-time validation to prevent padding oracle attacks. */
   private static pkcs7Unpad(data: Uint8Array): Uint8Array {
     if (data.length === 0) return data;
     const padLen = data[data.length - 1];
-    if (padLen < 1 || padLen > 16) return data;
-    // Validate padding bytes
-    for (let i = data.length - padLen; i < data.length; i++) {
-      if (data[i] !== padLen) return data;
+    // Constant-time validation: always inspect all potential padding bytes
+    let valid = 1;
+    valid &= (padLen >= 1 && padLen <= 16) ? 1 : 0;
+    const checkLen = padLen <= 16 ? padLen : 0;
+    for (let i = 0; i < 16 && i < data.length; i++) {
+      if (i < checkLen) {
+        valid &= (data[data.length - 1 - i] === padLen) ? 1 : 0;
+      }
+    }
+    if (!valid) {
+      throw new Error('Invalid PKCS#7 padding');
     }
     return data.slice(0, data.length - padLen);
   }
@@ -7770,7 +8699,7 @@ class PDFSecurityHandler {
   /** Get encryption algorithm info. */
   getAlgorithm(): EncryptionAlgorithm | null {
     if (!this.encryptDict) return null;
-    const { version, keyLength } = this.encryptDict;
+    const { version, keyLength: _keyLength } = this.encryptDict;
     if (version <= 1) return EncryptionAlgorithm.RC4_40;
     if (version <= 3) return EncryptionAlgorithm.RC4_128;
     if (version === 4) return EncryptionAlgorithm.AES_128;
@@ -8413,8 +9342,15 @@ class StreamingPDFParser {
 
   async *streamPages(): AsyncGenerator<PDFPage> {
     let pageNumber = 1;
+    const maxPages = DEFAULT_SECURITY_CONFIG.maxPageCount;
 
     while (true) {
+      // Guard against infinite loop on malformed PDFs
+      if (pageNumber > maxPages) {
+        console.error(`Maximum streaming page count (${maxPages}) exceeded`);
+        break;
+      }
+
       try {
         const page = await this.parseNextPage(pageNumber);
         if (!page) break;
@@ -10871,7 +11807,14 @@ class PDFSearcher {
     const text = await this.pdf.extractText();
 
     const queryLower = query.toLowerCase();
-    const regex = options?.regex ? new RegExp(query, options.caseSensitive ? 'g' : 'gi') : null;
+    let regex: RegExp | null = null;
+    if (options?.regex) {
+      try {
+        regex = new RegExp(query, options.caseSensitive ? 'g' : 'gi');
+      } catch {
+        throw new Error(`Invalid regex pattern: ${query}`);
+      }
+    }
 
     for (const block of text) {
       const content = options?.caseSensitive ? block.text : block.text.toLowerCase();
@@ -10890,8 +11833,9 @@ class PDFSearcher {
           });
         }
       } else if (options?.wholeWord) {
-        // Whole word search
-        const wordRegex = new RegExp(`\\b${searchQuery}\\b`, options.caseSensitive ? 'g' : 'gi');
+        // Whole word search — escape regex special chars in query
+        const escapedQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const wordRegex = new RegExp(`\\b${escapedQuery}\\b`, options.caseSensitive ? 'g' : 'gi');
         let match;
         while ((match = wordRegex.exec(block.text)) !== null) {
           matches.push({
@@ -14931,6 +15875,19 @@ class WorkerRenderPipeline {
     if (typeof Worker === 'undefined') {
       throw new Error('Web Workers not available in this environment');
     }
+    // Validate worker URL: allow only relative paths and same-origin URLs
+    if (this.workerUrl.includes('://')) {
+      try {
+        const workerOrigin = new URL(this.workerUrl).origin;
+        const pageOrigin = typeof location !== 'undefined' ? location.origin : '';
+        if (pageOrigin && workerOrigin !== pageOrigin) {
+          throw new Error(`Worker URL must be same-origin (expected ${pageOrigin}, got ${workerOrigin})`);
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.includes('same-origin')) throw e;
+        throw new Error('Invalid worker URL');
+      }
+    }
     this.worker = new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (e: MessageEvent) => this.handleMessage(e);
     this.worker.onerror = (e: ErrorEvent) => this.handleError(e);
@@ -16275,7 +17232,7 @@ class IncrementalSaver {
     // Write trailer
     const xrefTable = (this.pdf as any).xrefTable as XRefTable | undefined;
     const maxObjNum = Math.max(...sorted.map(e => e.objNum), 0);
-    const prevSize = xrefTable ? 100 : 0; // Approximate
+    const _prevSize = xrefTable ? 100 : 0; // Approximate
 
     this.writer.writeString('trailer\n');
     this.writer.writeString('<<\n');
@@ -16648,6 +17605,9 @@ class DigitalSignatureHandler {
   /**
    * Verify signatures in the document.
    * Returns verification status for each signature found.
+   * Note: The `valid` field is always `null` because cryptographic signature
+   * verification requires external PKCS#7/CAdES libraries. Do not treat
+   * `null` as indicating validity.
    */
   async getSignatures(): Promise<Array<{
     signerName: string;
@@ -17376,25 +18336,25 @@ class StructuredExtractor {
     }
 
     // Date
-    const dateMatch = fullText.match(/(?:date|issued)[:\s]*([\d]{1,2}[\/-][\d]{1,2}[\/-][\d]{2,4})/i);
+    const dateMatch = fullText.match(/(?:date|issued)[:\s]*([\d]{1,2}[/-][\d]{1,2}[/-][\d]{2,4})/i);
     if (dateMatch) {
       fields['date'] = { value: dateMatch[1], confidence: 0.85, pageNumber: this.findPage(text, dateMatch[0]) };
     }
 
     // Total
-    const totalMatch = fullText.match(/(?:total|amount\s*due)[:\s]*[\$€£]?\s*([\d,]+\.\d{2})/i);
+    const totalMatch = fullText.match(/(?:total|amount\s*due)[:\s]*[$€£]?\s*([\d,]+\.\d{2})/i);
     if (totalMatch) {
       fields['total'] = { value: totalMatch[1], confidence: 0.9, pageNumber: this.findPage(text, totalMatch[0]) };
     }
 
     // Tax
-    const taxMatch = fullText.match(/(?:tax|vat|gst)[:\s]*[\$€£]?\s*([\d,]+\.\d{2})/i);
+    const taxMatch = fullText.match(/(?:tax|vat|gst)[:\s]*[$€£]?\s*([\d,]+\.\d{2})/i);
     if (taxMatch) {
       fields['tax'] = { value: taxMatch[1], confidence: 0.8, pageNumber: this.findPage(text, taxMatch[0]) };
     }
 
     // Currency
-    const currencyMatch = fullText.match(/[\$\u20AC\u00A3\u00A5]/);
+    const currencyMatch = fullText.match(/[$\u20AC\u00A3\u00A5]/);
     if (currencyMatch) {
       const currMap: Record<string, string> = { '$': 'USD', '\u20AC': 'EUR', '\u00A3': 'GBP', '\u00A5': 'JPY' };
       fields['currency'] = { value: currMap[currencyMatch[0]] || currencyMatch[0], confidence: 0.95, pageNumber: 1 };
@@ -17472,7 +18432,7 @@ class StructuredExtractor {
     fields: Record<string, { value: string; confidence: number; pageNumber: number; boundingBox?: Rectangle }>
   ): void {
     // Dates
-    const datePattern = /\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g;
+    const datePattern = /\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/g;
     const dates = fullText.match(datePattern);
     if (dates && dates.length > 0) {
       fields['dates'] = { value: dates.join(', '), confidence: 0.7, pageNumber: 1 };
@@ -17486,7 +18446,7 @@ class StructuredExtractor {
     }
 
     // Monetary amounts
-    const moneyPattern = /[\$\u20AC\u00A3\u00A5]\s?[\d,]+(?:\.\d{2})?/g;
+    const moneyPattern = /[$\u20AC\u00A3\u00A5]\s?[\d,]+(?:\.\d{2})?/g;
     const amounts = fullText.match(moneyPattern);
     if (amounts && amounts.length > 0) {
       fields['amounts'] = { value: amounts.join(', '), confidence: 0.85, pageNumber: 1 };
@@ -17497,7 +18457,7 @@ class StructuredExtractor {
     fullText: string
   ): Array<Record<string, string>> {
     const items: Array<Record<string, string>> = [];
-    const linePattern = /^\s*(.+?)\s+(\d+)\s+[\$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s+[\$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s*$/gm;
+    const linePattern = /^\s*(.+?)\s+(\d+)\s+[$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s+[$\u20AC\u00A3]?\s?([\d,]+\.\d{2})\s*$/gm;
     let m: RegExpExecArray | null;
     while ((m = linePattern.exec(fullText)) !== null) {
       items.push({ description: m[1].trim(), quantity: m[2], unitPrice: m[3], total: m[4] });
@@ -17585,7 +18545,7 @@ class PDFExporter {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>${metadata?.title || 'PDF Document'}</title>
+  <title>${this.escapeHtml(metadata?.title || 'PDF Document')}</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 40px; }
     .page { page-break-after: always; margin-bottom: 40px; }
@@ -17601,9 +18561,9 @@ class PDFExporter {
     if (this.options?.includeMetadata && metadata) {
       html += `
   <div class="metadata">
-    <h1>${metadata.title || 'Untitled'}</h1>
-    ${metadata.author ? `<p><strong>Author:</strong> ${metadata.author}</p>` : ''}
-    ${metadata.subject ? `<p><strong>Subject:</strong> ${metadata.subject}</p>` : ''}
+    <h1>${this.escapeHtml(metadata.title || 'Untitled')}</h1>
+    ${metadata.author ? `<p><strong>Author:</strong> ${this.escapeHtml(metadata.author)}</p>` : ''}
+    ${metadata.subject ? `<p><strong>Subject:</strong> ${this.escapeHtml(metadata.subject)}</p>` : ''}
     ${metadata.creationDate ? `<p><strong>Created:</strong> ${metadata.creationDate.toLocaleDateString()}</p>` : ''}
     <p><strong>Pages:</strong> ${metadata.pageCount}</p>
   </div>`;
@@ -17646,8 +18606,8 @@ class PDFExporter {
     // Add metadata as frontmatter
     if (this.options?.includeMetadata && metadata) {
       markdown += '---\n';
-      if (metadata.title) markdown += `title: "${metadata.title}"\n`;
-      if (metadata.author) markdown += `author: "${metadata.author}"\n`;
+      if (metadata.title) markdown += `title: "${metadata.title.replace(/[\\"\\n\\r]/g, '')}"\n`;
+      if (metadata.author) markdown += `author: "${metadata.author.replace(/[\\"\\n\\r]/g, '')}"\n`;
       if (metadata.creationDate) markdown += `date: ${metadata.creationDate.toISOString()}\n`;
       markdown += `pages: ${metadata.pageCount}\n`;
       markdown += '---\n\n';
@@ -17935,7 +18895,12 @@ class PDFExporter {
   }
 
   private escapeCSV(text: string): string {
-    return text.replace(/"/g, '""');
+    let escaped = text.replace(/"/g, '""');
+    // CSV formula injection protection: prefix dangerous characters
+    if (/^[=+\-@\t\r]/.test(escaped)) {
+      escaped = "'" + escaped;
+    }
+    return escaped;
   }
 }
 
@@ -18056,7 +19021,7 @@ class APDFMetadataGenerator {
     }
 
     // Fallback: regex for "Abstract" followed by text
-    const abstractMatch = fullText.match(/\bAbstract\s*[:\-—]?\s*\n?([\s\S]{50,2000}?)(?:\n\s*\n|\b(?:1\s*[\.\)]?\s*Introduction|Keywords|Index Terms)\b)/i);
+    const abstractMatch = fullText.match(/\bAbstract\s*[:\-—]?\s*\n?([\s\S]{50,2000}?)(?:\n\s*\n|\b(?:1\s*[.)]?\s*Introduction|Keywords|Index Terms)\b)/i);
     if (abstractMatch) {
       return abstractMatch[1].trim().replace(/\s+/g, ' ');
     }
@@ -18072,7 +19037,7 @@ class APDFMetadataGenerator {
     const ids: APDFIdentifiers = {};
 
     // DOI
-    const doiMatch = text.match(/\b(10\.\d{4,9}\/[^\s,;\"'<>]+)/);
+    const doiMatch = text.match(/\b(10\.\d{4,9}\/[^\s,;"'<>]+)/);
     if (doiMatch) ids.doi = doiMatch[1].replace(/[.)]+$/, '');
 
     // arXiv ID
@@ -18315,7 +19280,7 @@ class APDFMetadataGenerator {
   /**
    * Extract subject classifications from text and identifiers.
    */
-  private extractSubjects(text: string, identifiers: APDFIdentifiers): APDFSubject[] {
+  private extractSubjects(text: string, _identifiers: APDFIdentifiers): APDFSubject[] {
     const subjects: APDFSubject[] = [];
 
     // arXiv categories
@@ -18536,7 +19501,7 @@ class APDFMetadataGenerator {
    * Build lightweight TextContent-like data from AI chunks to avoid redundant extractText() call.
    * Falls back to empty array if no chunk metadata is available.
    */
-  private buildTextContentFromChunks(ai: AIFeatures, pages: PDFPage[]): TextContent[] {
+  private buildTextContentFromChunks(ai: AIFeatures, _pages: PDFPage[]): TextContent[] {
     // If structural analysis sections have positioning data, synthesize minimal entries
     // Otherwise return empty — display hints will use safe defaults
     const textItems: TextContent[] = [];
@@ -18740,9 +19705,9 @@ class APDFCrypto {
   static async deriveKey(password: string, salt: Uint8Array, iterations: number): Promise<CryptoKey> {
     const subtle = this.getSubtle();
     const enc = new TextEncoder();
-    const keyMaterial = await subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    const keyMaterial = await subtle.importKey('raw', enc.encode(password) as BufferSource, 'PBKDF2', false, ['deriveKey']);
     return subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+      { name: 'PBKDF2', salt: salt as BufferSource, iterations, hash: 'SHA-256' },
       keyMaterial,
       { name: 'AES-GCM', length: 256 },
       false,
@@ -18752,13 +19717,13 @@ class APDFCrypto {
 
   static async encrypt(key: CryptoKey, iv: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
     const subtle = this.getSubtle();
-    const ct = await subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+    const ct = await subtle.encrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, data as BufferSource);
     return new Uint8Array(ct);
   }
 
   static async decrypt(key: CryptoKey, iv: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
     const subtle = this.getSubtle();
-    const pt = await subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+    const pt = await subtle.decrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, data as BufferSource);
     return new Uint8Array(pt);
   }
 }
@@ -18777,13 +19742,13 @@ class APDFBinaryWriter {
 
     // Prepare plaintext sections
     const jsonStr = JSON.stringify(metadata, null, 2);
-    let jsonBytes: Uint8Array = new TextEncoder().encode(jsonStr);
-    let pdfBytes: Uint8Array = pdfData;
+    let jsonBytes: Uint8Array<ArrayBufferLike> = new TextEncoder().encode(jsonStr);
+    let pdfBytes: Uint8Array<ArrayBufferLike> = pdfData;
 
     // Encryption material
-    let salt = new Uint8Array(APDF_SALT_LENGTH);
-    let metaIV = new Uint8Array(APDF_IV_LENGTH);
-    let pdfIV = new Uint8Array(APDF_IV_LENGTH);
+    let salt: Uint8Array<ArrayBufferLike> = new Uint8Array(APDF_SALT_LENGTH);
+    let metaIV: Uint8Array<ArrayBufferLike> = new Uint8Array(APDF_IV_LENGTH);
+    let pdfIV: Uint8Array<ArrayBufferLike> = new Uint8Array(APDF_IV_LENGTH);
 
     if (hasEncryption) {
       salt = APDFCrypto.randomBytes(APDF_SALT_LENGTH);
@@ -18867,6 +19832,10 @@ class APDFBinaryReader {
       const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
       const jsonLength = view.getUint32(10, false);
       const pdfLength = view.getUint32(14, false);
+      // Enforce maximum sizes to prevent excessive memory allocation
+      const MAX_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
+      if (jsonLength > MAX_SIZE) throw new Error(`Invalid aPDF v1.0: JSON section too large (${jsonLength} bytes)`);
+      if (pdfLength > MAX_SIZE) throw new Error(`Invalid aPDF v1.0: PDF section too large (${pdfLength} bytes)`);
       const bodyStart = 21; // v1.0 header size
       return {
         version: '1.0',
@@ -18912,11 +19881,17 @@ class APDFBinaryReader {
   static async readMetadata(data: Uint8Array, password?: string): Promise<APDFDocument> {
     const header = this.readHeader(data);
 
+    // Enforce maximum metadata size (256 MB) to prevent excessive memory allocation
+    const MAX_METADATA_SIZE = 256 * 1024 * 1024;
+    if (header.metadataLength > MAX_METADATA_SIZE) {
+      throw new Error(`Invalid aPDF file: metadata section too large (${header.metadataLength} bytes, max ${MAX_METADATA_SIZE})`);
+    }
+
     if (header.metadataOffset + header.metadataLength > data.length) {
       throw new Error('Invalid aPDF file: metadata section extends beyond available data');
     }
 
-    let jsonBytes = data.slice(header.metadataOffset, header.metadataOffset + header.metadataLength);
+    let jsonBytes: Uint8Array<ArrayBufferLike> = data.slice(header.metadataOffset, header.metadataOffset + header.metadataLength);
 
     if (header.metadataEncrypted) {
       if (!password) throw new Error('aPDF metadata is encrypted — password required');
@@ -18925,7 +19900,11 @@ class APDFBinaryReader {
       jsonBytes = await APDFCrypto.decrypt(key, encHeader.metaIV, jsonBytes);
     }
 
-    return JSON.parse(new TextDecoder().decode(jsonBytes));
+    try {
+      return JSON.parse(new TextDecoder().decode(jsonBytes));
+    } catch (e: unknown) {
+      throw new Error(`Invalid aPDF metadata: malformed JSON — ${e instanceof Error ? e.message : 'parse error'}`);
+    }
   }
 
   /**
@@ -18939,7 +19918,7 @@ class APDFBinaryReader {
       throw new Error('Invalid aPDF file: PDF section extends beyond available data');
     }
 
-    let pdfBytes = data.slice(header.pdfOffset, header.pdfOffset + header.pdfLength);
+    let pdfBytes: Uint8Array<ArrayBufferLike> = data.slice(header.pdfOffset, header.pdfOffset + header.pdfLength);
 
     if (header.pdfEncrypted) {
       if (!password) throw new Error('aPDF PDF data is encrypted — password required');
@@ -19959,6 +20938,10 @@ export interface TelemetryEvent {
  * Telemetry client for anonymous usage tracking.
  * Enabled by default, can be disabled with AGENTICPDF_NO_TELEMETRY env var
  * or by calling Telemetry.disable().
+ *
+ * When OpenTelemetry is configured (via OTEL_EXPORTER_OTLP_ENDPOINT env var
+ * and the `otel.ts` setup module) events are also exported as OTEL spans
+ * and metrics to the configured OTLP collector.
  */
 export class Telemetry {
   private static instance: Telemetry | null = null;
@@ -19981,7 +20964,37 @@ export class Telemetry {
     anonymize: true,
   };
 
+  // ── OTEL handles (resolved lazily) ──────────────────────────────
+  private static _otelResolved = false;
+  private static _otelTracer: any = null;  // otel Tracer | null
+  private static _otelCounter: any = null; // otel Counter | null
+  private static _otelHistogram: any = null; // otel Histogram | null
+
   private constructor() {}
+
+  /**
+   * Lazily attempt to acquire OTEL tracer + meter from @opentelemetry/api.
+   * This succeeds only when the app has initialised the SDK (e.g. via otel.ts).
+   */
+  private static resolveOtel(): void {
+    if (this._otelResolved) return;
+    this._otelResolved = true;
+    try {
+      // Dynamic require — absent package ⇒ catch silently
+      const api = require('@opentelemetry/api');
+      this._otelTracer = api.trace.getTracer('agenticpdf', this.version);
+      const meter = api.metrics.getMeter('agenticpdf', this.version);
+      this._otelCounter = meter.createCounter('agenticpdf.events', {
+        description: 'AgenticPDF telemetry events',
+      });
+      this._otelHistogram = meter.createHistogram('agenticpdf.duration', {
+        description: 'AgenticPDF operation duration',
+        unit: 'ms',
+      });
+    } catch {
+      // OTEL not installed — remain in internal-only mode
+    }
+  }
 
   private static initialize(): void {
     if (this.sessionId) return;
@@ -20084,10 +21097,13 @@ export class Telemetry {
     const array = new Uint8Array(16);
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
       crypto.getRandomValues(array);
+    } else if (typeof globalThis !== 'undefined' && (globalThis as any).crypto?.getRandomValues) {
+      (globalThis as any).crypto.getRandomValues(array);
     } else {
-      for (let i = 0; i < 16; i++) {
-        array[i] = Math.floor(Math.random() * 256);
-      }
+      // Fallback for non-security-critical session IDs using timestamp + counter
+      const ts = Date.now();
+      for (let i = 0; i < 8; i++) array[i] = (ts >> (i * 8)) & 0xFF;
+      for (let i = 8; i < 16; i++) array[i] = (i * 17 + ts) & 0xFF;
     }
     return Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
   }
@@ -20109,7 +21125,14 @@ export class Telemetry {
    * Configure telemetry settings. Call before any tracking.
    */
   static configure(options: Partial<TelemetryConfig>): void {
-    Object.assign(this.config, options);
+    // Only merge known config keys to prevent prototype pollution
+    // Note: 'endpoint' is intentionally excluded to prevent data exfiltration
+    const allowedKeys: (keyof TelemetryConfig)[] = ['enabled', 'anonymize', 'flushInterval', 'maxBatchSize', 'maxQueueSize', 'maxRetries'];
+    for (const key of allowedKeys) {
+      if (key in options) {
+        (this.config as any)[key] = (options as any)[key];
+      }
+    }
   }
 
   /**
@@ -20124,14 +21147,38 @@ export class Telemetry {
       this.eventQueue.splice(0, this.eventQueue.length - this.config.maxQueueSize + 1);
     }
     
+    const eventData = this.config.anonymize ? this.anonymizeData(data) : data;
+
     const event: TelemetryEvent = {
       type,
       timestamp: Date.now(),
       sessionId: this.sessionId,
-      data: this.config.anonymize ? this.anonymizeData(data) : data,
+      data: eventData,
     };
     
     this.eventQueue.push(event);
+
+    // ── OTEL: emit span + counter if SDK is active ──
+    this.resolveOtel();
+    if (this._otelTracer) {
+      try {
+        this._otelTracer.startActiveSpan(`agenticpdf.${type}`, (span: any) => {
+          span.setAttribute('event.type', type);
+          span.setAttribute('session.id', this.sessionId);
+          for (const [k, v] of Object.entries(eventData)) {
+            if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+              span.setAttribute(`event.data.${k}`, v);
+            }
+          }
+          span.end();
+        });
+      } catch { /* never let OTEL break the library */ }
+    }
+    if (this._otelCounter) {
+      try {
+        this._otelCounter.add(1, { 'event.type': type });
+      } catch { /* */ }
+    }
     
     if (this.eventQueue.length >= this.config.maxBatchSize) {
       this.flush().catch(() => {});
@@ -20147,6 +21194,16 @@ export class Telemetry {
       fileSize: this.bucketSize(metadata.fileSize),
       duration: Math.round(metadata.duration),
     });
+
+    // OTEL histogram for load duration
+    if (this._otelHistogram) {
+      try {
+        this._otelHistogram.record(Math.round(metadata.duration), {
+          'operation': 'document_load',
+          'page_count_bucket': metadata.pageCount <= 10 ? '1-10' : metadata.pageCount <= 100 ? '11-100' : '100+',
+        });
+      } catch { /* */ }
+    }
   }
 
   /**
@@ -20299,6 +21356,300 @@ export class Telemetry {
 }
 
 // ============================================================================
+// Agent Context — Session Manager & Tool Dispatcher
+// ============================================================================
+
+/**
+ * AgentContext manages a stateful session between an AI agent and a loaded PDF.
+ * It provides tool dispatch, middleware, security policies, and history tracking.
+ */
+export class AgentContext {
+  readonly session: AgentSession;
+  readonly document: AgenticPDF;
+  private _securityPolicy: AgentSecurityPolicy;
+  private _middleware: AgentMiddleware[];
+  private _history: AgentToolResult[] = [];
+  private _activeSkills: Set<string> = new Set();
+  private _toolIndex: Map<string, AgentTool> = new Map();
+  private _metadata: Record<string, any>;
+  private _closed = false;
+
+  constructor(document: AgenticPDF, options?: AgentContextOptions) {
+    this.document = document;
+    this.session = document.createAgentSession();
+    this._metadata = options?.metadata ?? {};
+    this._middleware = options?.middleware ? [...options.middleware] : [];
+    this._securityPolicy = {
+      allowedTools: [],
+      blockedTools: [],
+      maxCallsPerSession: 10000,
+      maxExecutionTimeMs: 300000,
+      allowMutations: true,
+      ...options?.securityPolicy
+    };
+    // Index all tools from all registered skills
+    this._rebuildToolIndex();
+  }
+
+  /** Rebuild the tool lookup index from active skills (or all skills if none active). */
+  private _rebuildToolIndex(): void {
+    this._toolIndex.clear();
+    const skills = AgenticPDF.listSkills();
+    for (const skill of skills) {
+      if (this._activeSkills.size === 0 || this._activeSkills.has(skill.id)) {
+        for (const tool of skill.tools) {
+          this._toolIndex.set(tool.name, tool);
+        }
+      }
+    }
+  }
+
+  /**
+   * Activate only the specified skills. When skills are active, only their
+   * tools are available. Pass an empty array to deactivate all filters.
+   */
+  activateSkills(skillIds: string[]): void {
+    this._activeSkills.clear();
+    for (const id of skillIds) {
+      this._activeSkills.add(id);
+    }
+    this._rebuildToolIndex();
+  }
+
+  /**
+   * Get the list of currently active skill IDs. Empty means all skills are active.
+   */
+  getActiveSkills(): string[] {
+    return Array.from(this._activeSkills);
+  }
+
+  /**
+   * Add middleware for intercepting tool execution.
+   */
+  addMiddleware(middleware: AgentMiddleware): void {
+    this._middleware.push(middleware);
+  }
+
+  /**
+   * Get a tool by name from the active skill set.
+   */
+  getTool(name: string): AgentTool | undefined {
+    return this._toolIndex.get(name);
+  }
+
+  /**
+   * List all available tools in the current context (respecting active skills and security).
+   */
+  getAvailableTools(): AgentTool[] {
+    const tools: AgentTool[] = [];
+    for (const tool of this._toolIndex.values()) {
+      if (this._isToolAllowed(tool.name)) {
+        tools.push(tool);
+      }
+    }
+    return tools;
+  }
+
+  /**
+   * Generate tool schemas for the currently available tools in OpenAI/Anthropic format.
+   */
+  getToolSchemas(format: ToolSchemaFormat = 'openai'): any[] {
+    const available = this.getAvailableTools();
+    return available.map(tool => {
+      const params: Record<string, any> = {};
+      const required: string[] = [];
+      for (const p of tool.parameters) {
+        params[p.name] = {
+          type: p.type === 'number' ? 'number' : p.type === 'boolean' ? 'boolean' : 'string',
+          description: p.description,
+          ...(p.enum ? { enum: p.enum } : {})
+        };
+        if (p.required) required.push(p.name);
+      }
+      if (format === 'openai') {
+        return {
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: { type: 'object', properties: params, required }
+          }
+        };
+      }
+      if (format === 'anthropic') {
+        return {
+          name: tool.name,
+          description: tool.description,
+          input_schema: { type: 'object', properties: params, required }
+        };
+      }
+      return { name: tool.name, description: tool.description, parameters: tool.parameters };
+    });
+  }
+
+  /**
+   * Execute a single tool call. Validates the call, runs middleware, enforces
+   * security policies, executes the handler, and records history.
+   */
+  async executeTool(call: AgentToolCall): Promise<AgentToolResult> {
+    if (this._closed) {
+      return { toolCallId: call.id, toolName: call.name, success: false, error: 'Context is closed', durationMs: 0 };
+    }
+    if (this._history.length >= this._securityPolicy.maxCallsPerSession) {
+      return { toolCallId: call.id, toolName: call.name, success: false, error: `Maximum tool calls per session (${this._securityPolicy.maxCallsPerSession}) exceeded`, durationMs: 0 };
+    }
+    if (!this._isToolAllowed(call.name)) {
+      return { toolCallId: call.id, toolName: call.name, success: false, error: `Tool '${call.name}' is not allowed by security policy`, durationMs: 0 };
+    }
+
+    const tool = this._toolIndex.get(call.name);
+    if (!tool) {
+      return { toolCallId: call.id, toolName: call.name, success: false, error: `Unknown tool '${call.name}'`, durationMs: 0 };
+    }
+
+    // Check mutation policy
+    const mutatingTools = ['fillForm', 'addAnnotation', 'save', 'generateAPDFBinary', 'generateAPDFMetadata'];
+    if (!this._securityPolicy.allowMutations && mutatingTools.includes(call.name)) {
+      return { toolCallId: call.id, toolName: call.name, success: false, error: `Mutation not allowed: tool '${call.name}' modifies the document`, durationMs: 0 };
+    }
+
+    // Validate required parameters
+    for (const param of tool.parameters) {
+      if (param.required && !(param.name in call.arguments)) {
+        return { toolCallId: call.id, toolName: call.name, success: false, error: `Missing required parameter '${param.name}'`, durationMs: 0 };
+    }
+    }
+
+    // Run "before" middleware
+    let processedCall = call;
+    for (const mw of this._middleware) {
+      if (mw.before) {
+        processedCall = await mw.before(processedCall, this);
+      }
+    }
+
+    const start = Date.now();
+    let result: AgentToolResult;
+
+    try {
+      // Enforce timeout
+      const timeoutMs = this._securityPolicy.maxExecutionTimeMs;
+      const execPromise = tool.handler(processedCall.arguments, this);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Tool '${call.name}' timed out after ${timeoutMs}ms`)), timeoutMs)
+      );
+      const value = await Promise.race([execPromise, timeoutPromise]);
+      result = {
+        toolCallId: call.id,
+        toolName: call.name,
+        success: true,
+        result: value,
+        durationMs: Date.now() - start
+      };
+    } catch (err: any) {
+      // Run "onError" middleware
+      for (const mw of this._middleware) {
+        if (mw.onError) {
+          const recovered = await mw.onError(processedCall, err, this);
+          if (recovered) {
+            this._recordResult(recovered);
+            return recovered;
+          }
+        }
+      }
+      result = {
+        toolCallId: call.id,
+        toolName: call.name,
+        success: false,
+        error: err?.message ?? String(err),
+        durationMs: Date.now() - start
+      };
+    }
+
+    // Run "after" middleware
+    for (const mw of this._middleware) {
+      if (mw.after) {
+        result = await mw.after(processedCall, result, this);
+      }
+    }
+
+    this._recordResult(result);
+    return result;
+  }
+
+  /**
+   * Execute a batch of tool calls sequentially.
+   */
+  async executeToolBatch(calls: AgentToolCall[]): Promise<AgentToolResult[]> {
+    const results: AgentToolResult[] = [];
+    for (const call of calls) {
+      results.push(await this.executeTool(call));
+    }
+    return results;
+  }
+
+  /**
+   * Get the execution history for this session.
+   */
+  getHistory(): AgentToolResult[] {
+    return [...this._history];
+  }
+
+  /**
+   * Get session statistics.
+   */
+  getStats(): {
+    sessionId: string;
+    callCount: number;
+    successCount: number;
+    errorCount: number;
+    totalDurationMs: number;
+    toolsUsed: string[];
+    activeSkills: string[];
+  } {
+    const successes = this._history.filter(r => r.success).length;
+    const toolsUsed = [...new Set(this._history.map(r => r.toolName))];
+    const totalMs = this._history.reduce((sum, r) => sum + r.durationMs, 0);
+    return {
+      sessionId: this.session.sessionId,
+      callCount: this._history.length,
+      successCount: successes,
+      errorCount: this._history.length - successes,
+      totalDurationMs: totalMs,
+      toolsUsed,
+      activeSkills: this.getActiveSkills()
+    };
+  }
+
+  /**
+   * Get or set context metadata (for passing state between tool calls).
+   */
+  get metadata(): Record<string, any> { return this._metadata; }
+
+  /**
+   * Close this context. No more tool calls can be made.
+   */
+  close(): void {
+    this._closed = true;
+  }
+
+  /** Check if a tool is allowed by the security policy. */
+  private _isToolAllowed(toolName: string): boolean {
+    if (this._securityPolicy.blockedTools.includes(toolName)) return false;
+    if (this._securityPolicy.allowedTools.length > 0) {
+      return this._securityPolicy.allowedTools.includes(toolName);
+    }
+    return true;
+  }
+
+  /** Record a result in history and session. */
+  private _recordResult(result: AgentToolResult): void {
+    this._history.push(result);
+    this.session.operationsPerformed.push(result.toolName);
+  }
+}
+
+// ============================================================================
 // Additional Exports
 // ============================================================================
 
@@ -20307,6 +21658,8 @@ export { TextLayerBuilder, renderTextLayer };
 export { APDFBinaryWriter, APDFBinaryReader, APDFCrypto };
 export type { APDFEncryptionOptions, APDFBinaryOptions, APDFHeader };
 export type { TextLayerRenderOptions, TextLayerItem };
+// AgentTool, AgentSkill, AgentToolCall, AgentToolResult, AgentMiddleware, AgentSecurityPolicy, AgentContextOptions
+// are already exported at their interface declarations above.
 
 // ============================================================================
 // Default Export

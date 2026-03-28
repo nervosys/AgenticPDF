@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NeoPDF Examples - Interactive Demo</title>
+    <title>AgenticPDF Examples - Interactive Demo</title>
     <style>
         * {
             margin: 0;
@@ -316,8 +316,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚀 NeoPDF Examples</h1>
-            <p>Interactive demonstrations of NeoPDF's powerful capabilities</p>
+            <h1>🚀 AgenticPDF Examples</h1>
+            <p>Interactive demonstrations of AgenticPDF's powerful capabilities</p>
         </div>
 
         <div class="main-content">
@@ -383,7 +383,7 @@
         </div>
     </div>
 
-    <!-- Include NeoPDF library -->
+    <!-- Include AgenticPDF library -->
     <script type="module">
         // Example definitions (these would typically come from the examples index)
         const examples = [
@@ -408,7 +408,7 @@
                     await new Promise(resolve => setTimeout(resolve, 800));
                     console.log('✅ Metadata extracted');
                     console.log('📄 Title: Sample Document');
-                    console.log('👤 Author: NeoPDF');
+                    console.log('👤 Author: AgenticPDF');
                     console.log('📅 Created: 2025-09-22');
                 }
             },
@@ -563,12 +563,21 @@
                     ? `${(totalSize / 1024 / 1024).toFixed(2)} MB`
                     : `${(totalSize / 1024).toFixed(2)} KB`;
 
-                fileDetails.innerHTML = `
-                    <strong>📁 Selected Files:</strong><br>
-                    ${currentFiles.map(file => `• ${file.name}`).join('<br>')}
-                    <br><br>
-                    <strong>📊 Total Size:</strong> ${sizeText}
-                `;
+                fileDetails.innerHTML = '';
+                const header = document.createElement('strong');
+                header.textContent = '📁 Selected Files:';
+                fileDetails.appendChild(header);
+                fileDetails.appendChild(document.createElement('br'));
+                currentFiles.forEach(file => {
+                    const span = document.createElement('span');
+                    span.textContent = '• ' + file.name;
+                    fileDetails.appendChild(span);
+                    fileDetails.appendChild(document.createElement('br'));
+                });
+                fileDetails.appendChild(document.createElement('br'));
+                const sizeHeader = document.createElement('strong');
+                sizeHeader.textContent = '📊 Total Size: ' + sizeText;
+                fileDetails.appendChild(sizeHeader);
                 fileInfo.style.display = 'block';
                 updateButtonStates();
                 updateStatus('✅ Files selected - ready to run examples', 'success');
@@ -722,7 +731,7 @@
             try {
                 setupConsoleRedirection();
 
-                console.log('🚀 Starting comprehensive NeoPDF demonstration...');
+                console.log('🚀 Starting comprehensive AgenticPDF demonstration...');
                 console.log(`📁 Processing: ${currentFiles[0].name}`);
                 console.log(`🔑 API Key: ${apiKeyInput.value.trim() ? 'Provided' : 'Not provided'}`);
                 console.log('');

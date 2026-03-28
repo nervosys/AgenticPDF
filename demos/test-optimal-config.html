@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Test NeoPDF Optimal Configuration</title>
+    <title>Test AgenticPDF Optimal Configuration</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -77,12 +77,12 @@
 
 <body>
     <div class="container">
-        <h1>NeoPDF Optimal Configuration Test</h1>
-        <p>This page tests the new optimal viewer configuration that's now the default for NeoPDF.</p>
+        <h1>AgenticPDF Optimal Configuration Test</h1>
+        <p>This page tests the new optimal viewer configuration that's now the default for AgenticPDF.</p>
 
         <div class="test-section">
             <h2>Test 1: Default Configuration</h2>
-            <p>Testing that NeoPDF applies optimal viewer settings by default.</p>
+            <p>Testing that AgenticPDF applies optimal viewer settings by default.</p>
             <button onclick="testDefaultConfig()">Run Test</button>
             <div id="test1-result"></div>
         </div>
@@ -124,7 +124,7 @@
     </div>
 
     <script type="module">
-        // Mock NeoPDF classes for testing
+        // Mock AgenticPDF classes for testing
         class MockRenderOptions {
             constructor(options = {}) {
                 Object.assign(this, options);
@@ -181,7 +181,7 @@
             }
         }
 
-        class MockNeoPDF {
+        class MockAgenticPDF {
             constructor(options = {}) {
                 this.options = options;
                 if (!this.options.renderOptions) {
@@ -194,7 +194,7 @@
         window.testDefaultConfig = function () {
             const resultDiv = document.getElementById('test1-result');
             try {
-                const pdf = new MockNeoPDF();
+                const pdf = new MockAgenticPDF();
                 const renderOptions = pdf.options.renderOptions;
 
                 if (renderOptions && renderOptions.darkMode && renderOptions.fitToWidth && renderOptions.renderScale === 2.0) {

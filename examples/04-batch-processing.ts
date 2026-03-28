@@ -8,7 +8,7 @@
  * - Different processing strategies
  */
 
-import AgenticPDF, { SemanticChunk, PDFMetadata, DocumentType } from '../neopdf';
+import AgenticPDF, { SemanticChunk, PDFMetadata, DocumentType } from '../agenticpdf';
 
 interface ProcessingResult {
     fileName: string;

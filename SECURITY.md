@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-We actively support the following versions of NeoPDF with security updates:
+We actively support the following versions of AgenticPDF with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -11,7 +11,7 @@ We actively support the following versions of NeoPDF with security updates:
 
 ## Reporting a Vulnerability
 
-The NeoPDF team takes security seriously. If you discover a security vulnerability, please follow these steps:
+The AgenticPDF team takes security seriously. If you discover a security vulnerability, please follow these steps:
 
 ### 🔒 Private Disclosure
 
@@ -20,7 +20,7 @@ The NeoPDF team takes security seriously. If you discover a security vulnerabili
 Instead, please report security issues privately by:
 
 1. **Email**: Send details to [security@nervosys.com](mailto:security@nervosys.com)
-2. **GitHub Security**: Use [GitHub's private vulnerability reporting](https://github.com/nervosys/NeoPDF/security/advisories/new)
+2. **GitHub Security**: Use [GitHub's private vulnerability reporting](https://github.com/nervosys/AgenticPDF/security/advisories/new)
 
 ### 📝 What to Include
 
@@ -53,7 +53,7 @@ We commit to the following response times:
 
 ## 🛡️ Security Best Practices
 
-When using NeoPDF:
+When using AgenticPDF:
 
 ### Input Validation
 
@@ -72,7 +72,7 @@ function validatePDFSource(url: string): boolean {
 
 // Use validation before processing
 if (validatePDFSource(pdfUrl)) {
-  const pdf = await NeoPDF.fromUrl(pdfUrl);
+  const pdf = await AgenticPDF.fromUrl(pdfUrl);
   // Process safely...
 }
 ```
@@ -81,7 +81,7 @@ if (validatePDFSource(pdfUrl)) {
 
 ```typescript
 // Set memory limits to prevent DoS
-const pdf = await NeoPDF.fromFile(file, {
+const pdf = await AgenticPDF.fromFile(file, {
   maxMemoryUsage: 50 * 1024 * 1024, // 50MB limit
   maxProcessingTime: 30000 // 30 second timeout
 });
@@ -104,7 +104,7 @@ const safeText = sanitizeText(text);
 
 ## 🔍 Security Features
 
-NeoPDF includes several built-in security features:
+AgenticPDF includes several built-in security features:
 
 ### Safe PDF Processing
 
@@ -143,14 +143,14 @@ Please be aware of these security considerations:
 
 ## 📋 Security Checklist
 
-For applications using NeoPDF:
+For applications using AgenticPDF:
 
 - [ ] Validate all PDF sources and inputs
 - [ ] Set appropriate memory and processing limits
 - [ ] Sanitize extracted content before display
 - [ ] Use HTTPS for URL-based PDF loading
 - [ ] Implement proper error handling
-- [ ] Keep NeoPDF updated to latest version
+- [ ] Keep AgenticPDF updated to latest version
 - [ ] Monitor for security advisories
 - [ ] Test with malicious/malformed PDF samples
 
@@ -166,13 +166,13 @@ For applications using NeoPDF:
 
 ```bash
 # Check for updates
-npm outdated NeoPDF
+npm outdated AgenticPDF
 
 # Update to latest secure version
-npm update NeoPDF
+npm update AgenticPDF
 
 # Verify update
-npm ls NeoPDF
+npm ls AgenticPDF
 ```
 
 ## 📞 Contact
@@ -180,8 +180,8 @@ npm ls NeoPDF
 For security-related questions or concerns:
 
 - **Security Email**: [security@nervosys.com](mailto:security@nervosys.com)
-- **General Issues**: [GitHub Issues](https://github.com/nervosys/NeoPDF/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/nervosys/NeoPDF/discussions)
+- **General Issues**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
 
 ## 🏆 Responsible Disclosure
 
@@ -194,7 +194,7 @@ We appreciate security researchers who:
 
 ### Hall of Fame
 
-We maintain a list of security researchers who have helped improve NeoPDF security. Contributors will be acknowledged (with permission) in:
+We maintain a list of security researchers who have helped improve AgenticPDF security. Contributors will be acknowledged (with permission) in:
 
 - Security advisory credits
 - Repository contributors list
@@ -202,4 +202,4 @@ We maintain a list of security researchers who have helped improve NeoPDF securi
 
 ---
 
-**Thank you for helping keep NeoPDF and its users safe!** 🛡️
+**Thank you for helping keep AgenticPDF and its users safe!** 🛡️

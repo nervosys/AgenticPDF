@@ -8,7 +8,7 @@
  * - Client-server communication patterns
  */
 
-import AgenticPDF, { SemanticChunk, ProgressInfo } from '../neopdf';
+import AgenticPDF, { SemanticChunk, ProgressInfo } from '../agenticpdf';
 
 // WebSocket message types
 interface WebSocketMessage {

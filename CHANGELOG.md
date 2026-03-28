@@ -85,11 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Technical Specifications
 
 - **Minimum Node.js Version**: 18.0.0
-- **TypeScript Version**: 5.3.2
-- **Test Coverage**: 177 comprehensive tests
-- **License**: Apache 2.0
-- **Bundle Size**: Single file, zero dependencies
-- **Browser Support**: Modern browsers with ES2020+ support
+- **TypeScript Version**: 5.9.3
+- **Test Coverage**: 871 tests across 23 suites
+- **License**: AGPL-3.0-or-later
+- **Architecture**: Single file (`agenticpdf.ts`), optional `otel.ts` module
+- **Browser Support**: Modern browsers with ES2022+ support
 
 ### Documentation
 
@@ -116,16 +116,56 @@ This is the first stable release. For users upgrading from pre-release versions:
 
 ### Contributors
 
-- NeoPDF Team
+- AgenticPDF Team
 - Community contributors
 
 ### Security
 
-This release includes:
-- Input validation for all PDF processing
-- Safe handling of embedded content
-- Memory management safeguards
-- Secure defaults for all configurations
+Two comprehensive security audit passes (25 total fixes):
+
+#### Pass 1 (12 fixes)
+- SSRF protocol validation on `fromUrl()`
+- Path traversal prevention in file operations
+- Replaced `Math.random` with cryptographic PRNG
+- XSS sanitization in HTML export
+- ReDoS-safe regex patterns
+- Prototype pollution protection in object merging
+- Bounded streaming (max buffer sizes)
+- Recursion depth limits in PDF object parsing
+- aPDF metadata size limits
+- Error message information disclosure prevention
+- Fixed duplicate TypeScript exports (TS2484)
+- Fixed `Uint8Array` type handling
+
+#### Pass 2 (13 findings, 10 code fixes)
+- SSRF private IP blocking (RFC 1918, link-local, loopback)
+- HTTP redirect validation (limit count, block protocol downgrade)
+- Telemetry endpoint exfiltration prevention (hardcoded endpoint removed)
+- YAML frontmatter injection sanitization
+- CSV formula injection prevention in exports
+- PKCS#7 padding oracle mitigation
+- aPDF v1.0 entry size limits
+- `JSON.parse` safety wrappers
+- Demo DOM XSS fixes (input sanitization)
+- Worker URL validation (same-origin, blob/data only)
+- Digital signature verification documentation
+
+### OpenTelemetry Integration
+
+- Added `@opentelemetry/api` integration in `Telemetry` class
+- Lazy resolution — OTEL activated only when packages are present
+- Span emission for all tracked operations
+- Counter and histogram metrics for events and durations
+- Standalone `otel.ts` module for full SDK bootstrap
+- `.env` / `.env.example` for OTEL configuration
+- Graceful degradation to no-ops when OTEL is unavailable
+
+### aPDF Binary Format (v1.1)
+
+- Custom binary serialization with LZ77 compression
+- Full metadata round-trip fidelity
+- Configurable entry size limits for security
+- `.apdf` file extension support
 
 ---
 
@@ -139,4 +179,4 @@ Future planned features:
 
 ---
 
-For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/NeoPDF/releases).
+For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/AgenticPDF/releases).

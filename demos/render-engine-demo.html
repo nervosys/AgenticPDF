@@ -656,7 +656,11 @@
     function log(msg, level = 'info') {
         const ts = ((performance.now() - startTs) / 1000).toFixed(2);
         const cls = level === 'warn' ? 'log-warn' : level === 'error' ? 'log-error' : level === 'success' ? 'log-success' : '';
-        logPanel.innerHTML += `<div class="log-entry"><span class="log-time">[${ts}s]</span> <span class="${cls}">${msg}</span></div>`;
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.innerHTML = `<span class="log-time">[${ts}s]</span> <span class="${cls}"></span>`;
+        entry.querySelector('span:last-child').textContent = msg;
+        logPanel.appendChild(entry);
         logPanel.scrollTop = logPanel.scrollHeight;
     }
 
