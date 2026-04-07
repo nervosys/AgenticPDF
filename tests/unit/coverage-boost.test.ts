@@ -45,7 +45,7 @@ describe('Ontology & Discovery API', () => {
     test('should include workflows', () => {
       const ontology = AgenticPDF.describe();
       expect(ontology.workflows).toBeDefined();
-      expect(ontology.workflows.length).toBe(14);
+      expect(ontology.workflows.length).toBe(16);
     });
 
     test('should include enums', () => {
@@ -129,9 +129,9 @@ describe('Ontology & Discovery API', () => {
   });
 
   describe('AgenticPDF.getWorkflows()', () => {
-    test('should return 14 workflow templates', () => {
+    test('should return 16 workflow templates', () => {
       const workflows = AgenticPDF.getWorkflows();
-      expect(workflows.length).toBe(14);
+      expect(workflows.length).toBe(16);
     });
 
     test('each workflow should have id, name, and steps', () => {

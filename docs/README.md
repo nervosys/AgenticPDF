@@ -23,7 +23,7 @@ Implementation notes for major features:
 - Color spaces, clipping paths, glyph widths, graphics state, image rendering
 - Text decoding, text layer, text rendering improvements
 - Performance optimization, rendering fixes, theme toggle
-- PDF.js integration approach
+- Text layer rendering approach
 
 ## 📚 Main Documentation
 

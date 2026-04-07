@@ -19,7 +19,7 @@ The AgenticPDF team takes security seriously. If you discover a security vulnera
 
 Instead, please report security issues privately by:
 
-1. **Email**: Send details to [security@nervosys.com](mailto:security@nervosys.com)
+1. **Email**: Send details to [security@nervosys.ai](mailto:security@nervosys.ai)
 2. **GitHub Security**: Use [GitHub's private vulnerability reporting](https://github.com/nervosys/AgenticPDF/security/advisories/new)
 
 ### 📝 What to Include
@@ -179,7 +179,7 @@ npm ls AgenticPDF
 
 For security-related questions or concerns:
 
-- **Security Email**: [security@nervosys.com](mailto:security@nervosys.com)
+- **Security Email**: [security@nervosys.ai](mailto:security@nervosys.ai)
 - **General Issues**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
 

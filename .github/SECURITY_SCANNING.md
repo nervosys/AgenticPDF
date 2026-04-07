@@ -153,7 +153,7 @@ This document outlines the security scanning and continuous integration measures
 
 For security issues and vulnerabilities:
 - **Private disclosure**: Use GitHub Security Advisories
-- **Email**: security@nervosys.com
+- **Email**: security@nervosys.ai
 - **Public issues**: Only for non-security bugs
 
 See [SECURITY.md](SECURITY.md) for complete security policy and reporting guidelines.

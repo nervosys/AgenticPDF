@@ -2,7 +2,7 @@
 name = "agenticpdf"
 version = "1.0.0"
 edition = "2024"
-authors = ["Nervosys, LLC"]
+authors = ["NERVOSYS, LLC"]
 license = "AGPL-3.0-or-later"
 description = "High-performance PDF processing CLI and WASM library for agentic AI workflows"
 repository = "https://github.com/nervosys/AgenticPDF"
@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
-name = "agenticpdf"
+name = "apdf"
 path = "src/main.rs"
 
 [dependencies]

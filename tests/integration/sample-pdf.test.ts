@@ -179,7 +179,7 @@ describe('Real PDF: Ontology & Discovery', () => {
 
   test('should return workflow templates', () => {
     const workflows = AgenticPDF.getWorkflows();
-    expect(workflows.length).toBe(14);
+    expect(workflows.length).toBe(16);
   });
 
   test('describeDocument should report on loaded PDF', () => {

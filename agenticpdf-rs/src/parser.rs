@@ -2,8 +2,11 @@
 //!
 //! Handles PDF structure: header, xref table, trailer, indirect objects,
 //! dictionaries, arrays, streams, and content stream operators.
+//! Extracts text with positioning, metadata, annotations, and outlines.
 
-use crate::{PdfDocument, PdfError, PdfMetadata, PdfPage, TextBlock, XRefEntry};
+use crate::{
+    OutlineItem, PdfAnnotation, PdfDocument, PdfError, PdfMetadata, PdfPage, TextBlock, XRefEntry,
+};
 use miniz_oxide::inflate::decompress_to_vec_zlib;
 
 /// Maximum recursion depth for object resolution to prevent stack overflow.
@@ -40,11 +43,15 @@ impl<'a> PdfParser<'a> {
         self.parse_xref()?;
         let metadata = self.parse_metadata(&version)?;
         let pages = self.parse_pages()?;
+        let annotations = self.parse_annotations(&pages);
+        let outline = self.parse_outline();
 
         Ok(PdfDocument {
             version,
             pages,
             metadata,
+            annotations,
+            outline,
             xref: self.xref.clone(),
             data: self.data.to_vec(),
         })
@@ -173,20 +180,28 @@ impl<'a> PdfParser<'a> {
             ..Default::default()
         };
 
-        // Find trailer dictionary
+        // Find trailer dictionary for /Info reference
         if let Some(trailer_pos) = self.find_reverse(b"trailer") {
-            if let Some(title) = self.extract_string_value(trailer_pos, b"/Title") {
-                metadata.title = Some(title);
-            }
-            if let Some(author) = self.extract_string_value(trailer_pos, b"/Author") {
-                metadata.author = Some(author);
+            // Try to extract metadata from /Info indirect object
+            if let Some(info_ref) = self.find_value_in_dict(trailer_pos, b"/Info") {
+                // Parse "N G R" indirect reference
+                let parts: Vec<&str> = info_ref.trim().split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Ok(obj_num) = parts[0].parse::<u32>() {
+                        self.extract_info_dict(&mut metadata, obj_num);
+                    }
+                }
             }
 
-            // Get page count from /Size or by counting page objects
-            if let Some(size_str) = self.find_value_in_dict(trailer_pos, b"/Size") {
-                if let Ok(n) = size_str.parse::<usize>() {
-                    // /Size is object count, not page count — we'll count pages separately
-                    let _ = n;
+            // Fallback: try to find metadata directly in trailer region
+            if metadata.title.is_none() {
+                if let Some(title) = self.extract_string_value(trailer_pos, b"/Title") {
+                    metadata.title = Some(title);
+                }
+            }
+            if metadata.author.is_none() {
+                if let Some(author) = self.extract_string_value(trailer_pos, b"/Author") {
+                    metadata.author = Some(author);
                 }
             }
         }
@@ -197,7 +212,43 @@ impl<'a> PdfParser<'a> {
         // Check for encryption
         metadata.encrypted = self.find_reverse(b"/Encrypt").is_some();
 
+        // Feature detection
+        metadata.has_forms = self.find_forward_from(b"/AcroForm", 0).is_some();
+        metadata.has_outlines = self.find_forward_from(b"/Outlines", 0).is_some();
+        metadata.has_annotations = self.find_forward_from(b"/Annots", 0).is_some();
+
         Ok(metadata)
+    }
+
+    /// Extract metadata fields from the /Info dictionary object.
+    fn extract_info_dict(&self, metadata: &mut PdfMetadata, obj_num: u32) {
+        let entry = self.xref.iter().find(|e| e.obj_num == obj_num && e.in_use);
+        let offset = match entry {
+            Some(e) if e.offset < self.data.len() => e.offset,
+            _ => return,
+        };
+
+        if let Some(title) = self.extract_string_value(offset, b"/Title") {
+            metadata.title = Some(title);
+        }
+        if let Some(author) = self.extract_string_value(offset, b"/Author") {
+            metadata.author = Some(author);
+        }
+        if let Some(subject) = self.extract_string_value(offset, b"/Subject") {
+            metadata.subject = Some(subject);
+        }
+        if let Some(creator) = self.extract_string_value(offset, b"/Creator") {
+            metadata.creator = Some(creator);
+        }
+        if let Some(producer) = self.extract_string_value(offset, b"/Producer") {
+            metadata.producer = Some(producer);
+        }
+        if let Some(date) = self.extract_string_value(offset, b"/CreationDate") {
+            metadata.creation_date = Some(date);
+        }
+        if let Some(date) = self.extract_string_value(offset, b"/ModDate") {
+            metadata.modification_date = Some(date);
+        }
     }
 
     fn count_pages(&self) -> usize {
@@ -372,8 +423,10 @@ impl<'a> PdfParser<'a> {
     fn parse_text_operators(&self, content: &[u8], page_number: usize) -> Vec<TextBlock> {
         let mut blocks = Vec::new();
         let text = std::str::from_utf8(content).unwrap_or("");
+        let mut x_pos = 0.0f64;
         let mut y_pos = 0.0f64;
         let mut font_size = 12.0f64;
+        let mut font_name = String::new();
         let mut current_text = String::new();
 
         for line in text.lines() {
@@ -386,6 +439,9 @@ impl<'a> PdfParser<'a> {
                     if let Ok(size) = parts[parts.len() - 2].parse::<f64>() {
                         font_size = size;
                     }
+                    // Extract font name (strip leading /)
+                    let name = parts[parts.len() - 3];
+                    font_name = name.strip_prefix('/').unwrap_or(name).to_string();
                 }
             }
 
@@ -393,8 +449,24 @@ impl<'a> PdfParser<'a> {
             if trimmed.ends_with("Td") || trimmed.ends_with("TD") {
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
                 if parts.len() >= 3 {
+                    if let Ok(x) = parts[parts.len() - 3].parse::<f64>() {
+                        x_pos += x;
+                    }
                     if let Ok(y) = parts[parts.len() - 2].parse::<f64>() {
                         y_pos += y;
+                    }
+                }
+            }
+
+            // Text matrix: a b c d e f Tm
+            if trimmed.ends_with("Tm") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 7 {
+                    if let Ok(x) = parts[parts.len() - 3].parse::<f64>() {
+                        x_pos = x;
+                    }
+                    if let Ok(y) = parts[parts.len() - 2].parse::<f64>() {
+                        y_pos = y;
                     }
                 }
             }
@@ -445,12 +517,12 @@ impl<'a> PdfParser<'a> {
             if trimmed == "ET" && !current_text.is_empty() {
                 blocks.push(TextBlock {
                     text: std::mem::take(&mut current_text),
-                    x: 0.0,
+                    x: x_pos,
                     y: y_pos,
                     width: 0.0,
                     height: font_size,
                     font_size,
-                    font_name: String::new(),
+                    font_name: font_name.clone(),
                     page_number,
                 });
             }
@@ -460,17 +532,368 @@ impl<'a> PdfParser<'a> {
         if !current_text.is_empty() {
             blocks.push(TextBlock {
                 text: current_text,
-                x: 0.0,
+                x: x_pos,
                 y: y_pos,
                 width: 0.0,
                 height: font_size,
                 font_size,
-                font_name: String::new(),
+                font_name,
                 page_number,
             });
         }
 
         blocks
+    }
+
+    // ========================================================================
+    // Annotation parsing
+    // ========================================================================
+
+    /// Extract annotations from all pages.
+    fn parse_annotations(&self, pages: &[PdfPage]) -> Vec<PdfAnnotation> {
+        let mut annotations = Vec::new();
+
+        // Scan for /Annots arrays in page dictionaries
+        let needle = b"/Type /Page";
+        let mut pos = 0;
+        let mut page_num = 0usize;
+
+        while let Some(found) = self.find_forward_from(needle, pos) {
+            let end = found + needle.len();
+
+            // Skip "/Type /Pages"
+            if end < self.data.len() && self.data[end] == b's' {
+                pos = end + 1;
+                continue;
+            }
+
+            page_num += 1;
+
+            if let Some(dict_start) = self.find_dict_start(found) {
+                let search_end = std::cmp::min(dict_start + 2000, self.data.len());
+                let region = &self.data[dict_start..search_end];
+
+                if let Some(annots_pos) = Self::find_in_slice(region, b"/Annots") {
+                    let after = annots_pos + 7;
+                    // Look for [ ... ] array of references
+                    if let Some(bracket_start) = Self::find_in_slice(&region[after..], b"[") {
+                        let arr_start = after + bracket_start + 1;
+                        if let Some(bracket_end) = Self::find_in_slice(&region[arr_start..], b"]") {
+                            let arr_data = &region[arr_start..arr_start + bracket_end];
+                            let arr_str = std::str::from_utf8(arr_data).unwrap_or("");
+
+                            // Parse indirect references: "N G R N G R ..."
+                            let parts: Vec<&str> = arr_str.split_whitespace().collect();
+                            let mut i = 0;
+                            while i + 2 < parts.len() {
+                                if parts[i + 2] == "R" {
+                                    if let Ok(obj_num) = parts[i].parse::<u32>() {
+                                        if let Some(annot) =
+                                            self.parse_annotation_object(obj_num, page_num)
+                                        {
+                                            annotations.push(annot);
+                                        }
+                                    }
+                                    i += 3;
+                                } else {
+                                    i += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            pos = end;
+            if page_num >= pages.len() {
+                break;
+            }
+        }
+
+        annotations
+    }
+
+    /// Parse a single annotation indirect object.
+    fn parse_annotation_object(&self, obj_num: u32, page_number: usize) -> Option<PdfAnnotation> {
+        let entry = self
+            .xref
+            .iter()
+            .find(|e| e.obj_num == obj_num && e.in_use)?;
+        if entry.offset >= self.data.len() {
+            return None;
+        }
+
+        let search_end = std::cmp::min(entry.offset + 2000, self.data.len());
+        let region = &self.data[entry.offset..search_end];
+
+        // Extract /Subtype
+        let subtype = self
+            .find_name_value(region, b"/Subtype")
+            .unwrap_or_default();
+
+        // Extract /Rect [x1 y1 x2 y2]
+        let rect = self.extract_rect(region).unwrap_or([0.0; 4]);
+
+        // Extract /Contents (string)
+        let contents = self.extract_string_in_region(region, b"/Contents");
+
+        // Extract /A >> /URI for link annotations
+        let uri = self.extract_uri_from_action(region);
+
+        // Extract /Dest
+        let dest = self.find_name_value(region, b"/Dest");
+
+        // Extract /T (title/author)
+        let title = self.extract_string_in_region(region, b"/T");
+
+        // Extract /C [r g b] color
+        let color = self.extract_color_array(region);
+
+        Some(PdfAnnotation {
+            subtype,
+            page_number,
+            rect,
+            contents,
+            uri,
+            dest,
+            title,
+            color,
+        })
+    }
+
+    // ========================================================================
+    // Outline / bookmarks parsing
+    // ========================================================================
+
+    /// Parse the document outline (bookmarks) from /Outlines.
+    fn parse_outline(&self) -> Vec<OutlineItem> {
+        // Find /Outlines in the catalog
+        let outlines_pos = match self.find_forward_from(b"/Outlines", 0) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        // Find the indirect reference after /Outlines
+        let search_end = std::cmp::min(outlines_pos + 100, self.data.len());
+        let region = &self.data[outlines_pos + 9..search_end];
+        let ref_str = std::str::from_utf8(region).unwrap_or("");
+        let parts: Vec<&str> = ref_str.split_whitespace().collect();
+
+        if parts.len() < 3 || parts[2] != "R" {
+            return Vec::new();
+        }
+
+        let obj_num = match parts[0].parse::<u32>() {
+            Ok(n) => n,
+            Err(_) => return Vec::new(),
+        };
+
+        // Find the outline root object and its /First child
+        let entry = self.xref.iter().find(|e| e.obj_num == obj_num && e.in_use);
+        let offset = match entry {
+            Some(e) if e.offset < self.data.len() => e.offset,
+            _ => return Vec::new(),
+        };
+
+        let search_end = std::cmp::min(offset + 2000, self.data.len());
+        let region = &self.data[offset..search_end];
+
+        // Get /First child reference
+        let first_ref = match self.find_ref_value(region, b"/First") {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+
+        self.parse_outline_items(first_ref, 0)
+    }
+
+    /// Recursively parse outline items following /First and /Next links.
+    fn parse_outline_items(&self, obj_num: u32, depth: usize) -> Vec<OutlineItem> {
+        if depth >= MAX_RECURSION_DEPTH {
+            return Vec::new();
+        }
+
+        let mut items = Vec::new();
+        let mut current = Some(obj_num);
+
+        while let Some(cur_obj) = current {
+            let entry = self.xref.iter().find(|e| e.obj_num == cur_obj && e.in_use);
+            let offset = match entry {
+                Some(e) if e.offset < self.data.len() => e.offset,
+                _ => break,
+            };
+
+            let search_end = std::cmp::min(offset + 2000, self.data.len());
+            let region = &self.data[offset..search_end];
+
+            // Extract /Title
+            let title = self
+                .extract_string_in_region(region, b"/Title")
+                .unwrap_or_default();
+
+            // Extract destination page (simplified: look for /Dest or /A)
+            let dest = self.find_name_value(region, b"/Dest");
+
+            // Extract children via /First
+            let children = match self.find_ref_value(region, b"/First") {
+                Some(first) => self.parse_outline_items(first, depth + 1),
+                None => Vec::new(),
+            };
+
+            items.push(OutlineItem {
+                title,
+                page_number: None, // Would need full dest resolution
+                dest,
+                children,
+            });
+
+            // Follow /Next sibling
+            current = self.find_ref_value(region, b"/Next");
+
+            if items.len() >= 10_000 {
+                break; // Safety limit
+            }
+        }
+
+        items
+    }
+
+    // ========================================================================
+    // Annotation/outline helper methods
+    // ========================================================================
+
+    /// Find a /Name value in a byte region (returns the name without /).
+    fn find_name_value(&self, region: &[u8], key: &[u8]) -> Option<String> {
+        let key_pos = Self::find_in_slice(region, key)?;
+        let after = key_pos + key.len();
+        let value_region = &region[after..std::cmp::min(after + 100, region.len())];
+        let s = std::str::from_utf8(value_region).ok()?;
+        let trimmed = s.trim();
+
+        if trimmed.starts_with('/') {
+            let end_pos = trimmed[1..]
+                .find(|c: char| c.is_whitespace() || c == '/' || c == '>' || c == '[')
+                .map(|p| p + 1)
+                .unwrap_or(trimmed.len());
+            Some(trimmed[1..end_pos].to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Extract a [x1 y1 x2 y2] rectangle from a region after /Rect.
+    fn extract_rect(&self, region: &[u8]) -> Option<[f64; 4]> {
+        let key_pos = Self::find_in_slice(region, b"/Rect")?;
+        let after = key_pos + 5;
+        let bracket = Self::find_in_slice(&region[after..], b"[")?;
+        let arr_start = after + bracket + 1;
+        let bracket_end = Self::find_in_slice(&region[arr_start..], b"]")?;
+        let arr_data = &region[arr_start..arr_start + bracket_end];
+        let arr_str = std::str::from_utf8(arr_data).ok()?;
+        let nums: Vec<f64> = arr_str
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if nums.len() >= 4 {
+            Some([nums[0], nums[1], nums[2], nums[3]])
+        } else {
+            None
+        }
+    }
+
+    /// Extract a URI from an /A action dictionary.
+    fn extract_uri_from_action(&self, region: &[u8]) -> Option<String> {
+        // Look for /URI within the region
+        let uri_pos = Self::find_in_slice(region, b"/URI")?;
+        let after = uri_pos + 4;
+        // URI can be (string) or <hex>
+        self.extract_string_in_region(&region[after..], b"")
+            .or_else(|| {
+                // Try finding a parenthesized string right after /URI
+                let value_region = &region[after..std::cmp::min(after + 500, region.len())];
+                let paren_start = Self::find_in_slice(value_region, b"(")?;
+                let str_start = paren_start + 1;
+                let paren_end = Self::find_in_slice(&value_region[str_start..], b")")?;
+                let bytes = &value_region[str_start..str_start + paren_end];
+                std::str::from_utf8(bytes).ok().map(String::from)
+            })
+    }
+
+    /// Extract a [r g b] color array from /C.
+    fn extract_color_array(&self, region: &[u8]) -> Option<[f64; 3]> {
+        let key_pos = Self::find_in_slice(region, b"/C")?;
+        // Make sure it's actually /C and not /Contents, /Creator, etc.
+        let after_c = key_pos + 2;
+        if after_c < region.len() && region[after_c].is_ascii_alphabetic() {
+            return None;
+        }
+        let bracket = Self::find_in_slice(&region[after_c..], b"[")?;
+        let arr_start = after_c + bracket + 1;
+        let bracket_end = Self::find_in_slice(&region[arr_start..], b"]")?;
+        let arr_data = &region[arr_start..arr_start + bracket_end];
+        let arr_str = std::str::from_utf8(arr_data).ok()?;
+        let nums: Vec<f64> = arr_str
+            .split_whitespace()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if nums.len() >= 3 {
+            Some([nums[0], nums[1], nums[2]])
+        } else {
+            None
+        }
+    }
+
+    /// Extract a string value from a region at a given key.
+    fn extract_string_in_region(&self, region: &[u8], key: &[u8]) -> Option<String> {
+        let search_region = if key.is_empty() {
+            region
+        } else {
+            let key_pos = Self::find_in_slice(region, key)?;
+            &region[key_pos + key.len()..]
+        };
+
+        let paren_start = Self::find_in_slice(search_region, b"(")?;
+        let str_start = paren_start + 1;
+
+        // Handle nested parentheses and escapes
+        let mut depth = 1;
+        let mut end = str_start;
+        let mut escaped = false;
+        while end < search_region.len() && depth > 0 {
+            if escaped {
+                escaped = false;
+                end += 1;
+                continue;
+            }
+            match search_region[end] {
+                b'\\' => escaped = true,
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            if depth > 0 {
+                end += 1;
+            }
+        }
+
+        let bytes = &search_region[str_start..end];
+        std::str::from_utf8(bytes)
+            .ok()
+            .map(|s| Self::unescape_pdf_string(s))
+    }
+
+    /// Find an indirect reference "N G R" after a key and return the object number.
+    fn find_ref_value(&self, region: &[u8], key: &[u8]) -> Option<u32> {
+        let key_pos = Self::find_in_slice(region, key)?;
+        let after = key_pos + key.len();
+        let value_region = &region[after..std::cmp::min(after + 50, region.len())];
+        let s = std::str::from_utf8(value_region).ok()?;
+        let parts: Vec<&str> = s.split_whitespace().collect();
+        if parts.len() >= 3 && parts[2] == "R" {
+            parts[0].parse::<u32>().ok()
+        } else {
+            None
+        }
     }
 
     // ========================================================================
@@ -689,21 +1112,8 @@ impl<'a> PdfParser<'a> {
         let end = std::cmp::min(region_start + 5000, self.data.len());
         let region = &self.data[region_start..end];
 
-        let key_pos = Self::find_in_slice(region, key)?;
-        let after_key = key_pos + key.len();
-
-        // Look for (string) or <hex>
-        let value_region = &region[after_key..std::cmp::min(after_key + 500, region.len())];
-
-        if let Some(paren_start) = Self::find_in_slice(value_region, b"(") {
-            let str_start = paren_start + 1;
-            if let Some(paren_end) = Self::find_in_slice(&value_region[str_start..], b")") {
-                let bytes = &value_region[str_start..str_start + paren_end];
-                return std::str::from_utf8(bytes).ok().map(String::from);
-            }
-        }
-
-        None
+        // Delegate to extract_string_in_region which handles nested parens and escapes
+        self.extract_string_in_region(region, key)
     }
 }
 

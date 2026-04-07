@@ -5,123 +5,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2025-09-23
+## [1.0.0] - 2026-04-01
 
 ### Added
 
-#### 🎨 Modern UI Features
-- **Theme Toggle Support**: Built-in dark/light mode functionality for PDF viewers
-- **Optimal Viewer Configuration**: Pre-configured viewer settings with theme management
-- **Theme Persistence**: User theme preferences saved across sessions
-- **Responsive Design**: Auto-fitting viewers that maintain aspect ratios
-
-#### 🚀 Core Features
-- **Streaming-First Architecture**: Memory-efficient processing of large PDF files
-- **AI-Native Design**: Built-in semantic chunking and structural analysis
-- **Zero Dependencies**: Complete TypeScript implementation in a single file
-- **Complete PDF Support**: Text extraction, images, forms, annotations, and rendering
+#### Core Library (`agenticpdf.ts`)
+- **Streaming-First Architecture**: `streamText()`, `streamSemanticChunks()` for memory-efficient processing
+- **AI-Native Design**: Semantic chunking, structural analysis, embedding provider interface
+- **Canvas Rendering**: PDF-to-canvas with text, images, vector graphics, form XObjects
+- **Complete Extraction**: Text, images, forms, annotations, metadata
+- **Zero Dependencies**: Single TypeScript file, no runtime deps
 - **Web Worker Support**: CPU-intensive operations offloaded to workers
-- **Memory Management**: Configurable limits and lazy loading capabilities
+- **Memory Management**: Configurable limits, lazy loading, automatic cleanup
+- **Multi-format Export**: Text, HTML, Markdown, JSON, aPDF
 
-#### 🤖 AI Integration
-- **Semantic Chunking**: Intelligent content segmentation for RAG systems
-- **Embedding Provider Interface**: Support for custom embedding models
-- **Structural Analysis**: Automatic document structure detection
-- **NLP-Ready Processing**: Text processing optimized for language models
+#### PretextLayout Engine
+- Native multiline text layout (inspired by [pretext](https://github.com/chenglou/pretext))
+- Grapheme-aware line breaking via `Intl.Segmenter`
+- CJK support with per-character breakable segments
+- Canvas/OffscreenCanvas measurement with LRU cache (10K entries)
+- Server-side heuristic fallback when canvas is unavailable
 
-#### 🌐 Cross-Platform Support
-- **Browser Compatibility**: Works in modern browsers with CDN support
-- **Node.js Support**: Full server-side functionality
-- **TypeScript Native**: Complete type safety and IntelliSense support
-- **Progressive Enhancement**: Graceful degradation for older environments
+#### PDF Writing & Modification
+- Incremental save (append-only, preserves signatures)
+- Page management: insert, delete, reorder
+- Annotation persistence: text, highlight, link annotations
+- Digital signature preparation and application
+- PDF/A compliance validation and XMP metadata generation
 
-#### 📦 Developer Experience
-- **Interactive Demos**: Comprehensive HTML demo suite
-- **CLI Examples**: TypeScript examples for common use cases
-- **Comprehensive Testing**: 177+ tests with full coverage
-- **Documentation**: Complete API documentation and guides
+#### AI & RAG Enhancements
+- Embedding generator with custom provider interface
+- Vector store helper for semantic search indexing
+- Document differ for PDF comparison
+- Summarization pipeline (extractive, no external services)
+- Structured data extraction (invoices, papers, resumes)
 
-#### 🔧 Distribution Options
-- **NPM Package**: Traditional package installation
-- **Single File**: Direct file inclusion for maximum portability
-- **CDN Support**: Browser-ready distribution via unpkg
-- **Type Definitions**: Full TypeScript declarations included
+#### aPDF Binary Format (v1.1)
+- Custom binary container: `%aPDF-1.1` magic, JSON metadata + PDF data
+- LZ77 compression with full round-trip fidelity
+- Security: 2GB size caps, bounded metadata, `JSON.parse` safety
+- CLI support: `apdf generate -i paper.pdf -o paper.apdf`
 
-### Features Breakdown
+#### Ontology & Agent Discovery
+- `AgenticPDF.describe()` returns full JSON-LD ontology
+- `AgenticPDF.getCapabilities()` organized by category
+- `AgenticPDF.getMethodSignatures()` for code generation
+- `AgenticPDF.getWorkflows()` — 16 pre-built workflow templates
+- Instance-level `pdf.describeDocument()` for loaded documents
 
-#### Theme Toggle System
-- Automatic theme detection based on system preferences
-- Manual theme switching with smooth transitions
-- Persistent theme storage using localStorage
-- Customizable color schemes and styling
-- Event-driven theme change notifications
+#### Unified Agentic Ingestion
+- `pdf.ingest(options?)` — single call returns metadata, structure, semantic chunks, and stats
+- `pdf.streamIngest(options?)` — streaming NDJSON variant (header → chunks → footer)
+- `AgenticPDF.describeForAgent(format?)` — full introspection payload (ontology + tools + schemas + guidance)
+- `AgenticPDF.getToolSchemas(format)` — OpenAI, Anthropic, and generic function-calling schemas
+- `AgenticPDF.getMCPManifest()` — MCP server manifest for MCP-compatible agents
+- `AgenticPDF.getJSONSchemas()` — JSON schemas for all library types
+- CLI `apdf ingest` command with `--ndjson`, `--include-text`, `--chunk-size` flags
+- CLI `apdf tool-schema` command with `--tool-schema openai|anthropic|generic|mcp`
+- 34 tool definitions, 43 JSON schemas, skill handler for agentic workflows
 
-#### Optimal Configuration
-- Pre-tuned settings for best performance and user experience
-- Automatic viewport fitting and aspect ratio maintenance
-- Optimized rendering settings for different document types
-- Built-in error handling and recovery mechanisms
+#### Rust CLI (`agenticpdf-rs/`)
+- Native `apdf` binary (801 KB release build, opt-level "z", LTO, stripped)
+- 10 commands: `text`, `meta`, `annotations`, `outline`, `images`, `chunk`, `all`, `describe`, `info`, `generate`
+- `apdf describe` outputs full JSON-LD ontology (673 lines)
+- Parser: annotation extraction, recursive outline parsing, font name detection
+- 10 Rust tests, zero warnings
 
-#### Interactive Demo Suite
-- **PDF Viewer Demo**: Full-featured viewer with all capabilities
-- **Simple Demo**: Basic integration example for quick start
-- **Theme Toggle Demo**: Focused demonstration of theme functionality
-- **Configuration Test**: Validation of optimal settings
-- **API Examples**: Interactive exploration of library features
+#### OpenTelemetry Integration
+- `@opentelemetry/api` integration in `Telemetry` class
+- Lazy resolution — activated only when OTEL packages are present
+- Span emission for tracked operations; counter and histogram metrics
+- Standalone `otel.ts` module for full SDK bootstrap
+- `.env` / `.env.example` for OTEL configuration
+- Graceful degradation to no-ops when OTEL is unavailable
 
-#### Streaming Capabilities
-- **Memory-Efficient Processing**: Handle large files without memory overflow
-- **Progress Tracking**: Real-time processing feedback
-- **Abort Signals**: Cancellable operations for better UX
-- **Backpressure Handling**: Automatic flow control for smooth streaming
+#### Website
+- Next.js 15.3 + React 19.1 + Tailwind CSS 4.1
+- Shiki 4.0 syntax highlighting for all code examples
+- Dark/light theme support
 
-#### AI and Machine Learning
-- **Semantic Analysis**: Content understanding and classification
-- **Document Structure**: Automatic detection of sections, tables, figures
-- **Entity Recognition**: Extraction of key information and entities
-- **Similarity Matching**: Content comparison and clustering
-- **Embedding Generation**: Vector representations for semantic search
+#### Theme Toggle & Modern UI
+- Built-in dark/light mode for PDF viewers
+- Theme persistence via localStorage
+- Responsive design with auto-fitting viewers
 
-### Technical Specifications
+#### Interactive Demos
+- Full PDF viewer (`demos/pdf-viewer.html`)
+- Render engine demo with sidebar controls
+- Theme toggle showcase
+- API explorer with interactive examples
 
-- **Minimum Node.js Version**: 18.0.0
-- **TypeScript Version**: 5.9.3
-- **Test Coverage**: 871 tests across 23 suites
-- **License**: AGPL-3.0-or-later
-- **Architecture**: Single file (`agenticpdf.ts`), optional `otel.ts` module
-- **Browser Support**: Modern browsers with ES2022+ support
-
-### Documentation
-
-- Complete README with quick start guide
-- Interactive demo documentation
-- CLI examples documentation
-- API reference and type definitions
-- Contributing guidelines and code of conduct
-- Security policy and vulnerability reporting
-- Comprehensive test suite documentation
-
-### Breaking Changes
-
-This is the initial 1.0.0 release, so no breaking changes apply.
-
-### Migration Guide
-
-This is the first stable release. For users upgrading from pre-release versions:
-
-1. Update import statements to use the stable API
-2. Review configuration options for optimal viewer settings
-3. Update theme-related code to use the new theme toggle system
-4. Test integration with the updated demo examples
-
-### Contributors
-
-- AgenticPDF Team
-- Community contributors
+#### Developer Experience
+- CLI: `apdf` / `agenticpdf` commands via npm bin
+- TypeScript examples in `examples/` (8 scenarios)
+- Jest test suite: **950 tests** across 25 suites — all passing
+- GitHub Actions CI on Node 18/20/22
+- Automated release workflow with npm provenance
 
 ### Security
 
-Two comprehensive security audit passes (25 total fixes):
+Three comprehensive security audit passes (25+ total fixes):
 
 #### Pass 1 (12 fixes)
 - SSRF protocol validation on `fromUrl()`
@@ -135,47 +118,34 @@ Two comprehensive security audit passes (25 total fixes):
 - aPDF metadata size limits
 - Error message information disclosure prevention
 - Fixed duplicate TypeScript exports (TS2484)
-- Fixed `Uint8Array` type handling
 
 #### Pass 2 (13 findings, 10 code fixes)
 - SSRF private IP blocking (RFC 1918, link-local, loopback)
 - HTTP redirect validation (limit count, block protocol downgrade)
-- Telemetry endpoint exfiltration prevention (hardcoded endpoint removed)
+- Telemetry endpoint exfiltration prevention
 - YAML frontmatter injection sanitization
 - CSV formula injection prevention in exports
-- PKCS#7 padding oracle mitigation
+- PKCS#7 padding oracle mitigation (constant-time validation)
 - aPDF v1.0 entry size limits
 - `JSON.parse` safety wrappers
 - Demo DOM XSS fixes (input sanitization)
 - Worker URL validation (same-origin, blob/data only)
-- Digital signature verification documentation
 
-### OpenTelemetry Integration
+#### Pass 3 — 4-Framework Audit (CVE, MITRE ATT&CK, NIST FIPS 140-3, CMMC 2.0 Level 2)
+- CLI path traversal hardening (`validateOutputPath()` on all write operations)
+- `crypto.getRandomValues()` for all ID generation (replaced remaining `Math.random` usage)
+- ReDoS guard with 64-char limit on user-supplied regex
+- Regex special character escaping for whole-word search
+- Security headers in `server.cjs` (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
 
-- Added `@opentelemetry/api` integration in `Telemetry` class
-- Lazy resolution — OTEL activated only when packages are present
-- Span emission for all tracked operations
-- Counter and histogram metrics for events and durations
-- Standalone `otel.ts` module for full SDK bootstrap
-- `.env` / `.env.example` for OTEL configuration
-- Graceful degradation to no-ops when OTEL is unavailable
+### Technical Specifications
 
-### aPDF Binary Format (v1.1)
-
-- Custom binary serialization with LZ77 compression
-- Full metadata round-trip fidelity
-- Configurable entry size limits for security
-- `.apdf` file extension support
-
----
-
-## [Unreleased]
-
-Future planned features:
-- Additional theme customization options
-- Enhanced AI analysis capabilities
-- Performance optimizations
-- Extended format support
+- **Node.js**: >= 18.0.0
+- **TypeScript**: 5.9.3
+- **Tests**: 950 across 25 suites
+- **License**: AGPL-3.0-or-later
+- **Architecture**: Single file (`agenticpdf.ts`), optional `otel.ts` module
+- **Browser Support**: ES2022+
 
 ---
 

@@ -17,7 +17,7 @@ if (!fs.existsSync(tempDir)) {
 const browserTsConfig = {
     compilerOptions: {
         target: "ES2020",
-        lib: ["ES2020", "DOM"],
+        lib: ["ES2022", "DOM"],
         module: "ES2020",
         moduleResolution: "node",
         strict: true,

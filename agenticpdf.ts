@@ -1,5 +1,5 @@
 /**
- * AgenticPDF - Complete TypeScript rewrite of Mozilla PDF.js
+ * AgenticPDF - Complete TypeScript-native PDF processing library
  * with modern streaming, AI integration, and performance optimizations
  */
 
@@ -21,6 +21,10 @@ export interface PDFMetadata {
   isEncrypted: boolean;
   isLinearized: boolean;
   fileSize: number;
+  hasPageLabels?: boolean;
+  hasStructureTree?: boolean;
+  hasEmbeddedFiles?: boolean;
+  marked?: boolean;
 }
 
 export interface PDFPage {
@@ -159,6 +163,18 @@ export interface TextContent {
   transform: TransformMatrix;
   style: TextStyle;
   pageNumber: number;
+  charSpacing?: number;
+  wordSpacing?: number;
+  textLeading?: number;
+  horizontalScaling?: number;
+  textRise?: number;
+  renderingMode?: number;
+  markedContent?: MarkedContentInfo;
+}
+
+export interface MarkedContentInfo {
+  tag: string;
+  properties?: Record<string, any>;
 }
 
 export interface TextStyle {
@@ -215,6 +231,34 @@ export interface Annotation {
   borderStyle?: BorderStyle;
   appearance?: AppearanceStream;
   destination?: string | number[];
+  fileSpec?: EmbeddedFileSpec;
+  soundSpec?: SoundSpec;
+  movieSpec?: MovieSpec;
+}
+
+export interface EmbeddedFileSpec {
+  name: string;
+  mimeType?: string;
+  size?: number;
+  data?: Uint8Array;
+  description?: string;
+  creationDate?: Date;
+  modificationDate?: Date;
+  checksum?: string;
+}
+
+export interface SoundSpec {
+  encoding?: string;
+  samplingRate?: number;
+  channels?: number;
+  bitsPerSample?: number;
+  data?: Uint8Array;
+}
+
+export interface MovieSpec {
+  mimeType?: string;
+  fileName?: string;
+  poster?: boolean;
 }
 
 export enum AnnotationType {
@@ -469,6 +513,35 @@ export interface EmbeddingProvider {
   generateBatch(texts: string[]): Promise<Float32Array[]>;
 }
 
+export interface EmbeddedFile {
+  name: string;
+  mimeType?: string;
+  size?: number;
+  data?: Uint8Array;
+  description?: string;
+  creationDate?: Date;
+  modificationDate?: Date;
+  relationship?: string;
+}
+
+export interface PageLabel {
+  startPage: number;
+  style?: 'D' | 'r' | 'R' | 'a' | 'A';
+  prefix?: string;
+  startNumber?: number;
+}
+
+export interface StructureTreeNode {
+  type: string;
+  role?: string;
+  title?: string;
+  lang?: string;
+  alt?: string;
+  actualText?: string;
+  children: StructureTreeNode[];
+  pageNumber?: number;
+}
+
 
 
 // ============================================================================
@@ -618,6 +691,83 @@ export interface TTSOptions {
   abortSignal?: AbortSignal;
   /** Progress callback. */
   progressCallback?: (progress: { pagesComplete: number; totalPages: number; segmentsSynthesized: number; totalDurationMs: number }) => void;
+}
+
+// ============================================================================
+// Unified Agentic Ingestion Types
+// ============================================================================
+
+/**
+ * Options for the unified `ingest()` / `streamIngest()` methods.
+ * Controls chunking strategy, size, and what data is included.
+ */
+export interface IngestOptions {
+  /** Chunking strategy (default: 'semantic') */
+  strategy?: 'semantic' | 'fixed' | 'sliding' | 'recursive';
+  /** Maximum tokens per chunk (default: 1000) */
+  maxChunkSize?: number;
+  /** Token overlap between chunks (default: 100) */
+  overlapSize?: number;
+  /** Include structural analysis in the result (default: true) */
+  includeStructure?: boolean;
+  /** Include per-page raw text in the result (default: false) */
+  includePageText?: boolean;
+  /** Restrict processing to a page range */
+  pageRange?: { start: number; end: number };
+}
+
+/**
+ * Result returned by `ingest()`. Contains everything an AI agent needs
+ * from a single call: metadata, structure, chunks, and statistics.
+ */
+export interface IngestResult {
+  /** PDF metadata (title, author, pages, etc.) */
+  metadata: PDFMetadata;
+  /** Auto-detected document type */
+  documentType: string;
+  /** Brief document summary */
+  summary: string;
+  /** Extracted keywords */
+  keywords: string[];
+  /** Document structure counts */
+  structure: {
+    sections: number;
+    tables: number;
+    figures: number;
+  };
+  /** Semantic chunks ready for embedding / vector store */
+  chunks: IngestChunk[];
+  /** Per-page text (only when `includePageText: true`) */
+  pageTexts?: Array<{ page: number; text: string }>;
+  /** Processing statistics */
+  stats: {
+    pageCount: number;
+    fileSize: number;
+    totalChunks: number;
+    totalTokens: number;
+    processingTimeMs: number;
+  };
+}
+
+/**
+ * A single chunk within an `IngestResult`, optimised for direct
+ * consumption by embedding models and vector stores.
+ */
+export interface IngestChunk {
+  /** Unique chunk identifier */
+  id: string;
+  /** Chunk text content */
+  content: string;
+  /** Source page numbers */
+  pages: number[];
+  /** Content type classification */
+  type: string;
+  /** Estimated token count */
+  tokenCount: number;
+  /** Importance score 0–1 */
+  importance: number;
+  /** Extracted keywords for this chunk */
+  keywords: string[];
 }
 
 // ============================================================================
@@ -1407,7 +1557,7 @@ export class AgenticPDF {
   }
 
   /**
-   * Get raw PDF data for external rendering libraries (e.g., PDF.js)
+   * Get raw PDF data for external rendering libraries
    */
   getRawData(): ArrayBuffer | undefined {
     return this.buffer;
@@ -1578,6 +1728,151 @@ export class AgenticPDF {
     Telemetry.trackFeature('streamSemanticChunks');
     const chunker = new SemanticChunker(this, options);
     yield* chunker.stream();
+  }
+
+  /**
+   * Unified single-call ingestion optimised for AI agents.
+   * Performs metadata extraction, AI analysis (structural + semantic chunks),
+   * and returns everything in one flat, agent-friendly structure.
+   *
+   * @param options - Controls chunking strategy, size, and included data
+   * @returns IngestResult with metadata, structure, chunks, and stats
+   */
+  async ingest(options?: IngestOptions): Promise<IngestResult> {
+    const startTime = performance.now();
+    Telemetry.trackFeature('ingest');
+
+    const aiOpts: AIOptions = {
+      enableStructuralAnalysis: options?.includeStructure !== false,
+      enableSemanticChunking: true,
+      chunkSize: options?.maxChunkSize ?? 1000,
+      chunkOverlap: options?.overlapSize ?? 100,
+    };
+
+    const ai = await this.getAIFeatures(aiOpts);
+    const meta = this.getMetadata() ?? {} as PDFMetadata;
+
+    const chunks: IngestChunk[] = ai.semanticChunks.map(sc => ({
+      id: sc.id,
+      content: sc.content,
+      pages: sc.pageNumbers,
+      type: sc.type,
+      tokenCount: sc.metadata.tokenCount,
+      importance: sc.metadata.importance,
+      keywords: sc.metadata.keywords ?? [],
+    }));
+
+    let pageTexts: Array<{ page: number; text: string }> | undefined;
+    if (options?.includePageText) {
+      pageTexts = [];
+      const pageRange = options.pageRange;
+      const pageCount = this.getPageCount();
+      const start = pageRange?.start ?? 1;
+      const end = Math.min(pageRange?.end ?? pageCount, pageCount);
+      for (let p = start; p <= end; p++) {
+        const textContents = await this.extractText({
+          pageRange: { start: p, end: p },
+          normalizeWhitespace: true,
+        } as any);
+        const text = Array.isArray(textContents)
+          ? textContents.map((tc: any) => tc.text ?? '').join(' ')
+          : '';
+        pageTexts.push({ page: p, text });
+      }
+    }
+
+    const totalTokens = chunks.reduce((sum, c) => sum + c.tokenCount, 0);
+
+    return {
+      metadata: meta,
+      documentType: ai.structuralAnalysis?.documentType ?? 'Other',
+      summary: ai.nlpReady?.summary ?? '',
+      keywords: ai.nlpReady?.keywords ?? [],
+      structure: {
+        sections: ai.structuralAnalysis?.sections?.length ?? 0,
+        tables: ai.structuralAnalysis?.tables?.length ?? 0,
+        figures: ai.structuralAnalysis?.figures?.length ?? 0,
+      },
+      chunks,
+      ...(pageTexts ? { pageTexts } : {}),
+      stats: {
+        pageCount: this.getPageCount(),
+        fileSize: this.getFileSize(),
+        totalChunks: chunks.length,
+        totalTokens,
+        processingTimeMs: Math.round(performance.now() - startTime),
+      },
+    };
+  }
+
+  /**
+   * Streaming version of `ingest()` that yields NDJSON-compatible records.
+   *
+   * Emission order:
+   * 1. `{ type: 'header', metadata, documentType, summary, keywords, structure }` — one record
+   * 2. `{ type: 'chunk', ...IngestChunk }` — one per chunk
+   * 3. `{ type: 'footer', stats }` — one record
+   *
+   * @param options - Same options as ingest()
+   * @yields Objects that can be serialised with JSON.stringify per line
+   */
+  async *streamIngest(options?: IngestOptions): AsyncGenerator<Record<string, any>> {
+    const startTime = performance.now();
+    Telemetry.trackFeature('streamIngest');
+
+    const aiOpts: AIOptions = {
+      enableStructuralAnalysis: options?.includeStructure !== false,
+      enableSemanticChunking: true,
+      chunkSize: options?.maxChunkSize ?? 1000,
+      chunkOverlap: options?.overlapSize ?? 100,
+    };
+
+    const ai = await this.getAIFeatures(aiOpts);
+    const meta = this.getMetadata() ?? {} as PDFMetadata;
+
+    // Yield header
+    yield {
+      type: 'header',
+      metadata: meta,
+      documentType: ai.structuralAnalysis?.documentType ?? 'Other',
+      summary: ai.nlpReady?.summary ?? '',
+      keywords: ai.nlpReady?.keywords ?? [],
+      structure: {
+        sections: ai.structuralAnalysis?.sections?.length ?? 0,
+        tables: ai.structuralAnalysis?.tables?.length ?? 0,
+        figures: ai.structuralAnalysis?.figures?.length ?? 0,
+      },
+    };
+
+    // Yield chunks one by one
+    let totalTokens = 0;
+    let totalChunks = 0;
+    for (const sc of ai.semanticChunks) {
+      totalChunks++;
+      totalTokens += sc.metadata.tokenCount;
+      yield {
+        type: 'chunk',
+        id: sc.id,
+        content: sc.content,
+        pages: sc.pageNumbers,
+        chunkType: sc.type,
+        tokenCount: sc.metadata.tokenCount,
+        importance: sc.metadata.importance,
+        keywords: sc.metadata.keywords ?? [],
+      };
+    }
+
+    // Yield footer
+    yield {
+      type: 'footer',
+      stats: {
+        pageCount: this.getPageCount(),
+        fileSize: this.getFileSize(),
+        totalChunks,
+        totalTokens,
+        processingTimeMs: Math.round(performance.now() - startTime),
+      },
+    };
   }
 
   /**
@@ -2042,6 +2337,48 @@ export class AgenticPDF {
   static clearAllCaches(): void {
     ContentStreamParser.clearCache();
     PDFColorSpaceProcessor.clearCaches();
+    if (PretextLayout.isCacheDirty()) {
+      PretextLayout.clearCache();
+    }
+  }
+
+  // ==========================================================================
+  // Text Layout (Pretext Engine)
+  // ==========================================================================
+
+  /**
+   * Prepare text for layout measurement using the built-in Pretext engine.
+   * Returns a prepared handle that can be passed to `layoutText()`.
+   *
+   * @param text - The text string to prepare.
+   * @param font - CSS font shorthand (e.g. `'16px Inter'`).
+   * @param options - Optional whitespace mode ('normal' or 'pre-wrap').
+   */
+  static prepareText(text: string, font: string, options?: PretextOptions & { enablePretextLayout?: boolean }): PreparedTextWithSegments {
+    if (!options?.enablePretextLayout) {
+      throw new Error('PretextLayout is not enabled. Pass { enablePretextLayout: true } to use this method, or call PretextLayout directly.');
+    }
+    return PretextLayout.prepareWithSegments(text, font, options);
+  }
+
+  /**
+   * Lay out prepared text into lines at a given max width and line height.
+   * Returns the total height, line count, and all layout lines.
+   *
+   * @param prepared - Handle from `prepareText()`.
+   * @param maxWidth - Maximum line width in pixels.
+   * @param lineHeight - Line height in pixels.
+   */
+  static layoutText(
+    prepared: PreparedTextWithSegments,
+    maxWidth: number,
+    lineHeight: number,
+    options?: { enablePretextLayout?: boolean }
+  ): PretextLayoutResult & { lines: PretextLayoutLine[] } {
+    if (!options?.enablePretextLayout) {
+      throw new Error('PretextLayout is not enabled. Pass { enablePretextLayout: true } to use this method, or call PretextLayout directly.');
+    }
+    return PretextLayout.layoutWithLines(prepared, maxWidth, lineHeight);
   }
 
   /**
@@ -3178,6 +3515,26 @@ export class AgenticPDF {
         ]
       },
       {
+        id: 'agentic-ingest',
+        name: 'Unified Agentic Ingestion',
+        description: 'Single-call PDF ingestion for AI agents. Returns metadata, structure, semantic chunks, and stats in one pass.',
+        steps: [
+          { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });" },
+          { order: 2, method: 'ingest', description: 'Single-call ingestion', example: "const result = await pdf.ingest({ strategy: 'semantic', maxChunkSize: 1000 });" },
+          { order: 3, method: 'close', description: 'Release resources', example: "pdf.close();" }
+        ]
+      },
+      {
+        id: 'agentic-ingest-streaming',
+        name: 'Streaming Agentic Ingestion (NDJSON)',
+        description: 'Stream PDF ingestion results as NDJSON records for memory-efficient pipeline consumption.',
+        steps: [
+          { order: 1, method: 'fromFile', description: 'Load the PDF', example: "const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });" },
+          { order: 2, method: 'streamIngest', description: 'Stream NDJSON records', example: "for await (const record of pdf.streamIngest()) { process.stdout.write(JSON.stringify(record) + '\\n'); }" },
+          { order: 3, method: 'close', description: 'Release resources', example: "pdf.close();" }
+        ]
+      },
+      {
         id: 'agent-discovery',
         name: 'AI Agent Discovery & Integration',
         description: 'Discover all library capabilities, generate tool schemas for function calling, and get workflow recommendations. Use this as the first step when integrating AgenticPDF with an AI agent or LLM system.',
@@ -3793,6 +4150,372 @@ export class AgenticPDF {
     return walkOutline(firstEntry);
   }
 
+  /**
+   * Get embedded files from the document's Names/EmbeddedFiles tree.
+   * Also includes file attachments found in annotations.
+   * @returns Array of EmbeddedFile objects with name, MIME type, size, and data
+   */
+  getEmbeddedFiles(): EmbeddedFile[] {
+    const files: EmbeddedFile[] = [];
+    if (!this.parser || !this.xrefTable || !this.catalog) return files;
+
+    const parser = this.parser;
+    const xref = this.xrefTable;
+
+    const resolve = (obj: PDFObject): PDFObject => {
+      if (obj && obj.type === PDFObjectType.Reference) {
+        const ref = obj.value as PDFReference;
+        return parser.parseIndirectObject(ref.objectNumber, ref.generationNumber, xref);
+      }
+      return obj;
+    };
+
+    const getString = (dict: PDFDictionary, key: string): string | undefined => {
+      const obj = dict.entries.get(key);
+      return obj && obj.type === PDFObjectType.String ? obj.value as string : undefined;
+    };
+
+    const getNumber = (dict: PDFDictionary, key: string): number | undefined => {
+      const obj = dict.entries.get(key);
+      return obj && obj.type === PDFObjectType.Number ? obj.value as number : undefined;
+    };
+
+    // Walk the /Names -> /EmbeddedFiles name tree
+    const namesRef = this.catalog.entries.get('Names');
+    if (!namesRef) return files;
+
+    const namesObj = resolve(namesRef);
+    if (namesObj.type !== PDFObjectType.Dictionary) return files;
+    const namesDict = namesObj.value as PDFDictionary;
+
+    const efRef = namesDict.entries.get('EmbeddedFiles');
+    if (!efRef) return files;
+
+    const efObj = resolve(efRef);
+    if (efObj.type !== PDFObjectType.Dictionary) return files;
+
+    // Name tree: walk /Names array (leaf node) or /Kids array (intermediate node)
+    const visited = new Set<string>();
+    const walkNameTree = (node: PDFDictionary): void => {
+      // Leaf node: /Names is [name1, filespec1, name2, filespec2, ...]
+      const namesArr = node.entries.get('Names');
+      if (namesArr) {
+        const resolved = resolve(namesArr);
+        if (resolved.type === PDFObjectType.Array) {
+          const arr = resolved.value as PDFObject[];
+          for (let i = 0; i + 1 < arr.length; i += 2) {
+            const nameObj = resolve(arr[i]);
+            const fsObj = resolve(arr[i + 1]);
+            const name = nameObj.type === PDFObjectType.String ? nameObj.value as string : `file_${i / 2}`;
+
+            if (visited.has(name)) continue;
+            visited.add(name);
+
+            if (fsObj.type === PDFObjectType.Dictionary) {
+              const fsDict = fsObj.value as PDFDictionary;
+              const file: EmbeddedFile = {
+                name: getString(fsDict, 'UF') || getString(fsDict, 'F') || name,
+                description: getString(fsDict, 'Desc'),
+              };
+
+              // Get relationship (PDF 2.0)
+              const afRel = fsDict.entries.get('AFRelationship');
+              if (afRel?.type === PDFObjectType.Name) {
+                file.relationship = afRel.value as string;
+              }
+
+              // Extract from /EF dictionary
+              const efStreamRef = fsDict.entries.get('EF');
+              if (efStreamRef) {
+                const efStreamObj = resolve(efStreamRef);
+                if (efStreamObj.type === PDFObjectType.Dictionary) {
+                  const efStreamDict = efStreamObj.value as PDFDictionary;
+                  const fRef = efStreamDict.entries.get('F') || efStreamDict.entries.get('UF');
+                  if (fRef) {
+                    const streamObj = resolve(fRef);
+                    if (streamObj.type === PDFObjectType.Dictionary) {
+                      const sd = streamObj.value as PDFDictionary;
+                      const subtypeObj = sd.entries.get('Subtype');
+                      if (subtypeObj?.type === PDFObjectType.Name) {
+                        file.mimeType = (subtypeObj.value as string).replace('#2F', '/');
+                      }
+                      const paramsRef = sd.entries.get('Params');
+                      if (paramsRef) {
+                        const paramsObj = resolve(paramsRef);
+                        if (paramsObj.type === PDFObjectType.Dictionary) {
+                          const pd = paramsObj.value as PDFDictionary;
+                          file.size = getNumber(pd, 'Size');
+                          const cd = getString(pd, 'CreationDate');
+                          if (cd) file.creationDate = parser.parsePDFDate(cd);
+                          const md = getString(pd, 'ModDate');
+                          if (md) file.modificationDate = parser.parsePDFDate(md);
+                        }
+                      }
+                    }
+                    if (streamObj.type === PDFObjectType.Stream) {
+                      file.data = streamObj.value as Uint8Array;
+                    }
+                  }
+                }
+              }
+
+              files.push(file);
+            }
+          }
+        }
+      }
+
+      // Intermediate node: /Kids is an array of sub-tree nodes
+      const kidsRef = node.entries.get('Kids');
+      if (kidsRef) {
+        const kidsObj = resolve(kidsRef);
+        if (kidsObj.type === PDFObjectType.Array) {
+          for (const kidRef of kidsObj.value as PDFObject[]) {
+            const kidObj = resolve(kidRef);
+            if (kidObj.type === PDFObjectType.Dictionary) {
+              walkNameTree(kidObj.value as PDFDictionary);
+            }
+          }
+        }
+      }
+    };
+
+    walkNameTree(efObj.value as PDFDictionary);
+    return files;
+  }
+
+  /**
+   * Get page labels defined in the document.
+   * Page labels allow custom numbering (e.g., roman numerals for preface, arabic for body).
+   * @returns Array of PageLabel entries describing numbering ranges
+   */
+  getPageLabels(): PageLabel[] {
+    const labels: PageLabel[] = [];
+    if (!this.parser || !this.xrefTable || !this.catalog) return labels;
+
+    const parser = this.parser;
+    const xref = this.xrefTable;
+
+    const resolve = (obj: PDFObject): PDFObject => {
+      if (obj && obj.type === PDFObjectType.Reference) {
+        const ref = obj.value as PDFReference;
+        return parser.parseIndirectObject(ref.objectNumber, ref.generationNumber, xref);
+      }
+      return obj;
+    };
+
+    const plRef = this.catalog.entries.get('PageLabels');
+    if (!plRef) return labels;
+
+    const plObj = resolve(plRef);
+    if (plObj.type !== PDFObjectType.Dictionary) return labels;
+    const plDict = plObj.value as PDFDictionary;
+
+    // Number tree: /Nums is [key1, val1, key2, val2, ...]
+    // where key is a 0-based page index and val is a label dictionary
+    const walkNumberTree = (node: PDFDictionary): void => {
+      const numsRef = node.entries.get('Nums');
+      if (numsRef) {
+        const numsObj = resolve(numsRef);
+        if (numsObj.type === PDFObjectType.Array) {
+          const arr = numsObj.value as PDFObject[];
+          for (let i = 0; i + 1 < arr.length; i += 2) {
+            const keyObj = resolve(arr[i]);
+            const valObj = resolve(arr[i + 1]);
+            if (keyObj.type !== PDFObjectType.Number) continue;
+
+            const startPage = (keyObj.value as number) + 1; // Convert 0-based to 1-based
+            const label: PageLabel = { startPage };
+
+            if (valObj.type === PDFObjectType.Dictionary) {
+              const valDict = valObj.value as PDFDictionary;
+              const sObj = valDict.entries.get('S');
+              if (sObj?.type === PDFObjectType.Name) {
+                label.style = sObj.value as 'D' | 'r' | 'R' | 'a' | 'A';
+              }
+              const pObj = valDict.entries.get('P');
+              if (pObj?.type === PDFObjectType.String) {
+                label.prefix = pObj.value as string;
+              }
+              const stObj = valDict.entries.get('St');
+              if (stObj?.type === PDFObjectType.Number) {
+                label.startNumber = stObj.value as number;
+              }
+            }
+
+            labels.push(label);
+          }
+        }
+      }
+
+      // Intermediate node
+      const kidsRef = node.entries.get('Kids');
+      if (kidsRef) {
+        const kidsObj = resolve(kidsRef);
+        if (kidsObj.type === PDFObjectType.Array) {
+          for (const kidRef of kidsObj.value as PDFObject[]) {
+            const kidObj = resolve(kidRef);
+            if (kidObj.type === PDFObjectType.Dictionary) {
+              walkNumberTree(kidObj.value as PDFDictionary);
+            }
+          }
+        }
+      }
+    };
+
+    walkNumberTree(plDict);
+    // Sort by start page in case the tree isn't ordered
+    labels.sort((a, b) => a.startPage - b.startPage);
+    return labels;
+  }
+
+  /**
+   * Get the structure tree (tagged PDF) for accessibility and semantic understanding.
+   * Returns the root nodes of the document's logical structure.
+   * @returns Array of StructureTreeNode objects representing the document structure
+   */
+  getStructureTree(): StructureTreeNode[] {
+    if (!this.parser || !this.xrefTable || !this.catalog) return [];
+
+    const parser = this.parser;
+    const xref = this.xrefTable;
+
+    const resolve = (obj: PDFObject): PDFObject => {
+      if (obj && obj.type === PDFObjectType.Reference) {
+        const ref = obj.value as PDFReference;
+        return parser.parseIndirectObject(ref.objectNumber, ref.generationNumber, xref);
+      }
+      return obj;
+    };
+
+    const stRef = this.catalog.entries.get('StructTreeRoot');
+    if (!stRef) return [];
+
+    const stObj = resolve(stRef);
+    if (stObj.type !== PDFObjectType.Dictionary) return [];
+    const stDict = stObj.value as PDFDictionary;
+
+    // Build page object number -> page index map for page references
+    const objNumToPage = new Map<number, number>();
+    const collectPages = (node: PDFObject, ref?: PDFObject): void => {
+      const dict = resolve(node);
+      if (dict.type !== PDFObjectType.Dictionary) return;
+      const d = dict.value as PDFDictionary;
+      const typeEntry = d.entries.get('Type');
+      const typeName = typeEntry?.type === PDFObjectType.Name ? typeEntry.value as string : '';
+      if (typeName === 'Page') {
+        if (ref && ref.type === PDFObjectType.Reference) {
+          objNumToPage.set((ref.value as PDFReference).objectNumber, objNumToPage.size + 1);
+        }
+        return;
+      }
+      const kids = d.entries.get('Kids');
+      if (!kids) return;
+      const kidsArr = resolve(kids);
+      if (kidsArr.type !== PDFObjectType.Array) return;
+      for (const kid of kidsArr.value as PDFObject[]) {
+        collectPages(kid, kid);
+      }
+    };
+    const pagesRef = this.catalog.entries.get('Pages');
+    if (pagesRef) collectPages(pagesRef);
+
+    // Walk structure elements recursively
+    const visited = new Set<number>();
+    const maxDepth = 64;
+
+    const walkStructElement = (elemObj: PDFObject, depth: number): StructureTreeNode | null => {
+      if (depth > maxDepth) return null;
+      const elem = resolve(elemObj);
+      if (elem.type !== PDFObjectType.Dictionary) return null;
+      const dict = elem.value as PDFDictionary;
+
+      // Prevent cycles
+      if (elemObj.type === PDFObjectType.Reference) {
+        const objNum = (elemObj.value as PDFReference).objectNumber;
+        if (visited.has(objNum)) return null;
+        visited.add(objNum);
+      }
+
+      const typeObj = dict.entries.get('S');
+      const type = typeObj?.type === PDFObjectType.Name ? typeObj.value as string : 'Unknown';
+
+      const node: StructureTreeNode = {
+        type,
+        children: [],
+      };
+
+      // Optional attributes
+      const titleObj = dict.entries.get('T');
+      if (titleObj) {
+        const tr = resolve(titleObj);
+        if (tr.type === PDFObjectType.String) node.title = tr.value as string;
+      }
+      const langObj = dict.entries.get('Lang');
+      if (langObj) {
+        const lr = resolve(langObj);
+        if (lr.type === PDFObjectType.String) node.lang = lr.value as string;
+      }
+      const altObj = dict.entries.get('Alt');
+      if (altObj) {
+        const ar = resolve(altObj);
+        if (ar.type === PDFObjectType.String) node.alt = ar.value as string;
+      }
+      const actTextObj = dict.entries.get('ActualText');
+      if (actTextObj) {
+        const atr = resolve(actTextObj);
+        if (atr.type === PDFObjectType.String) node.actualText = atr.value as string;
+      }
+
+      // Role mapping
+      // Page reference
+      const pgObj = dict.entries.get('Pg');
+      if (pgObj?.type === PDFObjectType.Reference) {
+        node.pageNumber = objNumToPage.get((pgObj.value as PDFReference).objectNumber);
+      }
+
+      // Children: /K can be a single element, array, or MCID integer
+      const kObj = dict.entries.get('K');
+      if (kObj) {
+        const kr = resolve(kObj);
+        if (kr.type === PDFObjectType.Array) {
+          for (const childRef of kr.value as PDFObject[]) {
+            const child = walkStructElement(childRef, depth + 1);
+            if (child) node.children.push(child);
+          }
+        } else if (kr.type === PDFObjectType.Dictionary) {
+          const child = walkStructElement(kr, depth + 1);
+          if (child) node.children.push(child);
+        } else if (kr.type === PDFObjectType.Reference) {
+          const child = walkStructElement(kr, depth + 1);
+          if (child) node.children.push(child);
+        }
+        // If kr is a Number, it's a MCID — leaf content reference, no children to add
+      }
+
+      return node;
+    };
+
+    // The root's /K entry contains the top-level structure elements
+    const rootK = stDict.entries.get('K');
+    if (!rootK) return [];
+
+    const rootKResolved = resolve(rootK);
+    const nodes: StructureTreeNode[] = [];
+
+    if (rootKResolved.type === PDFObjectType.Array) {
+      for (const childRef of rootKResolved.value as PDFObject[]) {
+        const child = walkStructElement(childRef, 0);
+        if (child) nodes.push(child);
+      }
+    } else {
+      const child = walkStructElement(rootKResolved, 0);
+      if (child) nodes.push(child);
+    }
+
+    return nodes;
+  }
+
 /**
    * Describes the currently loaded document's available operations and
    * recommends workflows based on document characteristics.
@@ -3808,12 +4531,14 @@ export class AgenticPDF {
     const operations = [
       'extractText', 'streamText', 'extractImages',
       'getAIFeatures', 'generateSemanticChunks', 'streamSemanticChunks',
+      'ingest', 'streamIngest',
       'search', 'getAnnotations', 'addAnnotation',
       'getFormFields', 'fillForm',
       'renderPage', 'renderPageToImage', 'buildTextLayer',
       'exportAs', 'save',
       'generateAPDFMetadata', 'generateAPDFBinary',
       'getMetadata', 'getPage', 'getAllPages', 'getNamedDestinations',
+      'getEmbeddedFiles', 'getPageLabels', 'getStructureTree', 'getOutline',
       'close', 'unloadPages', 'getMemoryStats',
       'describeDocument'
     ];
@@ -4451,6 +5176,48 @@ export class AgenticPDF {
         },
         required: ['version', 'flags', 'pdfEncrypted', 'metadataEncrypted', 'metadataOffset', 'metadataLength', 'pdfOffset', 'pdfLength', 'totalSize']
       },
+      // ── unified ingest types ──────────────────────────────────
+      IngestOptions: {
+        type: 'object',
+        description: 'Options for the unified ingest() / streamIngest() methods',
+        properties: {
+          strategy: { type: 'string', enum: ['semantic', 'fixed', 'sliding', 'recursive'], default: 'semantic' },
+          maxChunkSize: { type: 'number', minimum: 50, default: 1000 },
+          overlapSize: { type: 'number', minimum: 0, default: 100 },
+          includeStructure: { type: 'boolean', default: true },
+          includePageText: { type: 'boolean', default: false },
+          pageRange: { type: 'object', properties: { start: { type: 'number', minimum: 1 }, end: { type: 'number', minimum: 1 } } }
+        }
+      },
+      IngestResult: {
+        type: 'object',
+        description: 'Unified AI ingestion result with metadata, structure, chunks, and stats',
+        properties: {
+          metadata: { description: 'PDF metadata' },
+          documentType: { type: 'string' },
+          summary: { type: 'string' },
+          keywords: { type: 'array', items: { type: 'string' } },
+          structure: { type: 'object', properties: { sections: { type: 'number' }, tables: { type: 'number' }, figures: { type: 'number' } } },
+          chunks: { type: 'array', items: { $ref: '#/IngestChunk' } },
+          pageTexts: { type: 'array', items: { type: 'object', properties: { page: { type: 'number' }, text: { type: 'string' } } } },
+          stats: { type: 'object', properties: { pageCount: { type: 'number' }, fileSize: { type: 'number' }, totalChunks: { type: 'number' }, totalTokens: { type: 'number' }, processingTimeMs: { type: 'number' } } }
+        },
+        required: ['metadata', 'documentType', 'summary', 'keywords', 'structure', 'chunks', 'stats']
+      },
+      IngestChunk: {
+        type: 'object',
+        description: 'A semantic chunk from the unified ingest pipeline',
+        properties: {
+          id: { type: 'string' },
+          content: { type: 'string' },
+          pages: { type: 'array', items: { type: 'number' } },
+          type: { type: 'string' },
+          tokenCount: { type: 'number', minimum: 0 },
+          importance: { type: 'number', minimum: 0, maximum: 1 },
+          keywords: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['id', 'content', 'pages', 'type', 'tokenCount', 'importance', 'keywords']
+      },
       // ── agent skills & tools ────────────────────────────────────
       AgentTool: {
         type: 'object',
@@ -4588,8 +5355,10 @@ export class AgenticPDF {
       schemas: AgenticPDF.getJSONSchemas(),
       workflows: AgenticPDF.getWorkflows(),
       agentGuidance: {
-        quickStart: 'Load a PDF with AgenticPDF.fromFile(file) or AgenticPDF.fromBuffer(buffer). Then call extractText(), getAIFeatures(), or generateSemanticChunks() as needed. For aPDF format, call generateAPDFMetadata() for JSON-LD or generateAPDFBinary() for the streaming binary container. Always call close() when done.',
+        quickStart: 'For fastest AI ingestion, call pdf.ingest() — one call returns metadata, structure, semantic chunks, and stats. For streaming, use pdf.streamIngest() which yields NDJSON records. Load a PDF with AgenticPDF.fromFile(file) or AgenticPDF.fromBuffer(buffer). Always call close() when done.',
         bestPractices: [
+          'Use ingest() for single-call AI-ready output (metadata + chunks + stats)',
+          'Use streamIngest() for NDJSON streaming to pipelines or CLI',
           'Use streaming APIs (streamText, streamSemanticChunks) for documents > 10MB',
           'Set lazyLoad: true for documents > 50 pages',
           'Set maxMemoryUsage for memory-constrained environments',
@@ -4621,7 +5390,7 @@ export class AgenticPDF {
           overview: 'AgenticPDF provides a runtime for AI agents to register skills (groups of callable tools), create secure contexts, and dispatch tool calls. 6 built-in skills with 24 tools are auto-registered on first use.',
           security: 'Use AgentSecurityPolicy to control access: allowedTools/blockedTools for whitelisting/blacklisting, maxCallsPerSession for rate limiting, maxExecutionTimeMs for timeout enforcement, allowMutations to prevent document modification.',
           middleware: 'Add AgentMiddleware to intercept tool calls: before() for validation/logging/auth, after() for result transformation, onError() for error handling. Middleware runs in registration order.',
-          builtinSkills: 'Built-in skills: pdf-extraction (6 tools), pdf-analysis (4 tools), pdf-forms (3 tools), pdf-export (3 tools), apdf-format (4 tools), introspection (4 tools). All handlers call real library methods.',
+          builtinSkills: 'Built-in skills: pdf-extraction (6 tools), pdf-analysis (5 tools incl. ingest), pdf-forms (3 tools), pdf-export (3 tools), apdf-format (4 tools), introspection (4 tools). All handlers call real library methods.',
           customSkills: 'Register custom skills via AgenticPDF.registerSkill(). Each skill has a unique id, tools array, and optional setup/teardown callbacks. Use activateSkills() on AgentContext to limit active skills.',
           workflow: 'Create context: pdf.createAgentContext(options). Get schemas: ctx.getToolSchemas("openai"). Execute: ctx.executeTool({ name, arguments }). Check stats: ctx.getStats(). Close: ctx.close().'
         }
@@ -4634,7 +5403,7 @@ export class AgenticPDF {
    */
   createAgentSession(): AgentSession {
     return {
-      sessionId: `session_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      sessionId: generateSecureId('session'),
       startedAt: Date.now(),
       documentPath: undefined,
       operationsPerformed: [],
@@ -4875,6 +5644,25 @@ export class AgenticPDF {
             category: 'analysis',
             requiresDocument: true,
             handler: async (_args, ctx) => ctx.document.describeDocument()
+          },
+          {
+            name: 'ingest',
+            description: 'Unified single-call AI ingestion returning metadata, structure, chunks, and stats.',
+            parameters: [
+              { name: 'strategy', type: 'string', description: 'Chunking strategy', required: false },
+              { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false },
+              { name: 'overlapSize', type: 'number', description: 'Token overlap between chunks', required: false },
+              { name: 'includeStructure', type: 'boolean', description: 'Include structural analysis', required: false },
+              { name: 'includePageText', type: 'boolean', description: 'Include per-page raw text', required: false }
+            ],
+            category: 'analysis',
+            requiresDocument: true,
+            handler: async (args, ctx) => {
+              const result = await ctx.document.ingest(args as any);
+              ctx.session.chunksProcessed += result.chunks.length;
+              ctx.session.tokensEstimated += result.stats.totalTokens;
+              return result;
+            }
           }
         ]
       },
@@ -5191,6 +5979,38 @@ export class AgenticPDF {
         example: "for await (const chunk of pdf.streamSemanticChunks()) { embed(chunk); }"
       },
       {
+        name: 'ingest',
+        description: 'Unified single-call AI ingestion. Returns metadata, document type, summary, keywords, structure, semantic chunks, and processing stats in one pass.',
+        parameters: [
+          { name: 'strategy', type: 'string', description: 'Chunking strategy', required: false, enum: ['semantic', 'fixed', 'sliding', 'recursive'] },
+          { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false, minimum: 50, default: 1000 },
+          { name: 'overlapSize', type: 'number', description: 'Token overlap between chunks', required: false, minimum: 0, default: 100 },
+          { name: 'includeStructure', type: 'boolean', description: 'Include structural analysis', required: false, default: true },
+          { name: 'includePageText', type: 'boolean', description: 'Include per-page raw text', required: false, default: false },
+          { name: 'pageRange', type: 'object', description: 'Pages to process {start, end}', required: false }
+        ],
+        returnType: 'IngestResult',
+        category: 'analysis',
+        streaming: false,
+        requiresDocument: true,
+        example: "const result = await pdf.ingest({ strategy: 'semantic', maxChunkSize: 1000 });"
+      },
+      {
+        name: 'streamIngest',
+        description: 'Streaming AI ingestion yielding NDJSON records: header (metadata + structure) → chunk records → footer (stats).',
+        parameters: [
+          { name: 'strategy', type: 'string', description: 'Chunking strategy', required: false, enum: ['semantic', 'fixed', 'sliding', 'recursive'] },
+          { name: 'maxChunkSize', type: 'number', description: 'Max tokens per chunk', required: false, minimum: 50, default: 1000 },
+          { name: 'overlapSize', type: 'number', description: 'Token overlap between chunks', required: false, minimum: 0, default: 100 },
+          { name: 'includeStructure', type: 'boolean', description: 'Include structural analysis in header', required: false, default: true }
+        ],
+        returnType: 'AsyncGenerator<Record<string, any>>',
+        category: 'analysis',
+        streaming: true,
+        requiresDocument: true,
+        example: "for await (const record of pdf.streamIngest()) { process.stdout.write(JSON.stringify(record) + '\\n'); }"
+      },
+      {
         name: 'search',
         description: 'Search for text within the document, returning matches with page numbers and positions.',
         parameters: [
@@ -5501,7 +6321,7 @@ export class AgenticPDF {
           license: 'AGPL-3.0-or-later',
           type: 'library',
           purl: 'pkg:npm/agenticpdf@1.0.0',
-          supplier: 'Nervosys, LLC'
+          supplier: 'NERVOSYS, LLC'
         }
         // Zero external runtime dependencies — single-file architecture
       ]
@@ -6073,6 +6893,30 @@ function _formatSrtTime(totalSeconds: number): string {
 }
 
 
+/**
+ * Generate a secure random ID string using crypto APIs (CWE-338 mitigation).
+ * Falls back to Math.random() only in environments without crypto support.
+ */
+function generateSecureId(prefix: string): string {
+  const timestamp = Date.now();
+  let random: string;
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(6);
+      globalThis.crypto.getRandomValues(bytes);
+      random = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    } else {
+      // Node.js fallback
+      const { randomBytes } = require('crypto');
+      random = randomBytes(6).toString('hex');
+    }
+  } catch {
+    // Last resort fallback for constrained environments
+    random = Math.random().toString(36).substring(2, 14);
+  }
+  return `${prefix}_${timestamp}_${random}`;
+}
+
 
 // ============================================================================
 // PDF Parser Implementation
@@ -6497,6 +7341,35 @@ class PDFParser {
         } else if (!authResult.authenticated) {
           throw new Error('Invalid password for encrypted PDF');
         }
+      }
+    }
+
+    // Detect catalog-level features
+    metadata.hasPageLabels = catalog.entries.has('PageLabels');
+    metadata.hasStructureTree = catalog.entries.has('StructTreeRoot');
+
+    // Check for MarkInfo
+    const markInfoRef = catalog.entries.get('MarkInfo');
+    if (markInfoRef) {
+      const markObj = markInfoRef.type === PDFObjectType.Reference
+        ? this.parseIndirectObject((markInfoRef.value as PDFReference).objectNumber, (markInfoRef.value as PDFReference).generationNumber, xref)
+        : markInfoRef;
+      if (markObj.type === PDFObjectType.Dictionary) {
+        const markedEntry = (markObj.value as PDFDictionary).entries.get('Marked');
+        if (markedEntry?.type === PDFObjectType.Boolean) {
+          metadata.marked = markedEntry.value as boolean;
+        }
+      }
+    }
+
+    // Check for embedded files
+    const namesRef = catalog.entries.get('Names');
+    if (namesRef) {
+      const namesObj = namesRef.type === PDFObjectType.Reference
+        ? this.parseIndirectObject((namesRef.value as PDFReference).objectNumber, (namesRef.value as PDFReference).generationNumber, xref)
+        : namesRef;
+      if (namesObj.type === PDFObjectType.Dictionary) {
+        metadata.hasEmbeddedFiles = (namesObj.value as PDFDictionary).entries.has('EmbeddedFiles');
       }
     }
 
@@ -7966,7 +8839,7 @@ class PDFParser {
     return undefined;
   }
 
-  private parsePDFDate(dateStr: string): Date {
+  parsePDFDate(dateStr: string): Date {
     // PDF date format: D:YYYYMMDDHHmmSSOHH'mm
     if (!dateStr.startsWith('D:')) return new Date();
 
@@ -9577,6 +10450,7 @@ class TextExtractor {
       // Current graphics state
       let currentState: {
         textMatrix: TransformMatrix;
+        ctm: TransformMatrix;
         fontSize: number;
         fontName: string;
         textLeading: number;
@@ -9587,8 +10461,11 @@ class TextExtractor {
         renderingMode: number;
         fillColor: Color;
         fontResource?: FontResource;
+        markedContentTag?: string;
+        markedContentProps?: Record<string, any>;
       } = {
         textMatrix: [1, 0, 0, 1, 0, 0] as TransformMatrix,
+        ctm: [1, 0, 0, 1, 0, 0] as TransformMatrix,
         fontSize: 12,
         fontName: 'Helvetica',
         textLeading: 0,
@@ -9599,6 +10476,12 @@ class TextExtractor {
         renderingMode: 0,
         fillColor: { r: 0, g: 0, b: 0 } as Color
       };
+
+      // Graphics state stack for q/Q save/restore
+      const stateStack: typeof currentState[] = [];
+
+      // Marked content stack for BMC/BDC/EMC nesting
+      const markedContentStack: { tag: string; props?: Record<string, any> }[] = [];
 
       // Line matrix for T* operator
       let lineMatrix: TransformMatrix = [1, 0, 0, 1, 0, 0];
@@ -9726,6 +10609,144 @@ class TextExtractor {
               currentState.textLeading = op.operands[0] as number;
             }
             break;
+
+          case 'Tc': // Set character spacing
+            if (op.operands.length >= 1) {
+              currentState.charSpace = op.operands[0] as number;
+            }
+            break;
+
+          case 'Tw': // Set word spacing
+            if (op.operands.length >= 1) {
+              currentState.wordSpace = op.operands[0] as number;
+            }
+            break;
+
+          case 'Tz': // Set horizontal scaling
+            if (op.operands.length >= 1) {
+              currentState.horizontalScaling = op.operands[0] as number;
+            }
+            break;
+
+          case 'Tr': // Set text rendering mode
+            if (op.operands.length >= 1) {
+              currentState.renderingMode = op.operands[0] as number;
+            }
+            break;
+
+          case 'Ts': // Set text rise
+            if (op.operands.length >= 1) {
+              currentState.textRise = op.operands[0] as number;
+            }
+            break;
+
+          // Graphics state operators
+          case 'q': // Save graphics state
+            stateStack.push({
+              ...currentState,
+              textMatrix: [...currentState.textMatrix] as TransformMatrix,
+              ctm: [...currentState.ctm] as TransformMatrix,
+              fillColor: { ...currentState.fillColor },
+            });
+            break;
+
+          case 'Q': // Restore graphics state
+            if (stateStack.length > 0) {
+              currentState = stateStack.pop()!;
+            }
+            break;
+
+          case 'cm': // Concatenate matrix (update CTM)
+            if (op.operands.length >= 6) {
+              const [a, b, c, d, e, f] = op.operands as number[];
+              const prev = currentState.ctm;
+              currentState.ctm = [
+                prev[0] * a + prev[2] * b,
+                prev[1] * a + prev[3] * b,
+                prev[0] * c + prev[2] * d,
+                prev[1] * c + prev[3] * d,
+                prev[0] * e + prev[2] * f + prev[4],
+                prev[1] * e + prev[3] * f + prev[5],
+              ] as TransformMatrix;
+            }
+            break;
+
+          // Fill color operators (track for text style)
+          case 'g': // Grayscale fill
+            if (op.operands.length >= 1) {
+              const gray = Math.round((op.operands[0] as number) * 255);
+              currentState.fillColor = { r: gray, g: gray, b: gray };
+            }
+            break;
+
+          case 'rg': // RGB fill
+            if (op.operands.length >= 3) {
+              currentState.fillColor = {
+                r: Math.round((op.operands[0] as number) * 255),
+                g: Math.round((op.operands[1] as number) * 255),
+                b: Math.round((op.operands[2] as number) * 255),
+              };
+            }
+            break;
+
+          case 'k': // CMYK fill
+            if (op.operands.length >= 4) {
+              const ck = op.operands[0] as number;
+              const mk = op.operands[1] as number;
+              const yk = op.operands[2] as number;
+              const kk = op.operands[3] as number;
+              currentState.fillColor = {
+                r: Math.round(255 * (1 - Math.min(1, ck * (1 - kk) + kk))),
+                g: Math.round(255 * (1 - Math.min(1, mk * (1 - kk) + kk))),
+                b: Math.round(255 * (1 - Math.min(1, yk * (1 - kk) + kk))),
+              };
+            }
+            break;
+
+          // Marked content operators
+          case 'BMC': // Begin marked content (no properties)
+            {
+              const tag = (op.operands[0] as string) || '';
+              markedContentStack.push({ tag });
+              currentState.markedContentTag = tag;
+              currentState.markedContentProps = undefined;
+            }
+            break;
+
+          case 'BDC': // Begin marked content with properties
+            {
+              const bdcTag = (op.operands[0] as string) || '';
+              let bdcProps: Record<string, any> | undefined;
+              if (op.operands.length >= 2 && typeof op.operands[1] === 'object' && op.operands[1] !== null) {
+                bdcProps = {};
+                const propObj = op.operands[1];
+                if (propObj.entries && propObj.entries instanceof Map) {
+                  for (const [k, v] of propObj.entries) {
+                    bdcProps[k] = (v as any).value ?? v;
+                  }
+                } else if (typeof propObj === 'object') {
+                  for (const k of Object.keys(propObj)) {
+                    bdcProps[k] = propObj[k];
+                  }
+                }
+              }
+              markedContentStack.push({ tag: bdcTag, props: bdcProps });
+              currentState.markedContentTag = bdcTag;
+              currentState.markedContentProps = bdcProps;
+            }
+            break;
+
+          case 'EMC': // End marked content
+            markedContentStack.pop();
+            if (markedContentStack.length > 0) {
+              const top = markedContentStack[markedContentStack.length - 1];
+              currentState.markedContentTag = top.tag;
+              currentState.markedContentProps = top.props;
+            } else {
+              currentState.markedContentTag = undefined;
+              currentState.markedContentProps = undefined;
+            }
+            break;
         }
       }
 
@@ -9743,7 +10764,7 @@ class TextExtractor {
     const width = text.length * state.fontSize * 0.5; // Approximate
     const height = state.fontSize;
 
-    return {
+    const tc: TextContent = {
       text: text,
       x: state.textMatrix[4],
       y: page.height - state.textMatrix[5], // Flip Y coordinate
@@ -9758,10 +10779,26 @@ class TextExtractor {
         italic: state.fontName.toLowerCase().includes('italic'),
         underline: false,
         strikethrough: false,
-        color: state.fillColor
+        color: state.fillColor ? { ...state.fillColor } : { r: 0, g: 0, b: 0 }
       },
       pageNumber: page.pageNumber
     };
+
+    // Expose layout context when non-default
+    if (state.charSpace !== 0) tc.charSpacing = state.charSpace;
+    if (state.wordSpace !== 0) tc.wordSpacing = state.wordSpace;
+    if (state.textLeading !== 0) tc.textLeading = state.textLeading;
+    if (state.horizontalScaling !== 100) tc.horizontalScaling = state.horizontalScaling;
+    if (state.textRise !== 0) tc.textRise = state.textRise;
+    if (state.renderingMode !== 0) tc.renderingMode = state.renderingMode;
+    if (state.markedContentTag) {
+      tc.markedContent = {
+        tag: state.markedContentTag,
+        properties: state.markedContentProps,
+      };
+    }
+
+    return tc;
   }
 
   private decodeTextWithFont(rawText: string, state: any): string {
@@ -10277,6 +11314,760 @@ class LayoutAnalyzer {
   }
 }
 
+
+
+
+// ============================================================================
+// Pretext Layout Engine — Pure-JS Multiline Text Measurement & Layout
+// ============================================================================
+// Inspired by @chenglou/pretext. Provides DOM-free text measurement and line
+// layout using the browser Canvas API as the font-shaping ground truth.
+// Supports all languages, emoji, mixed BiDi, CJK, grapheme-cluster-aware
+// breaking, white-space: normal | pre-wrap, and overflow-wrap: break-word.
+// ============================================================================
+
+/** Options for text preparation. */
+export interface PretextOptions {
+  /** Whitespace handling mode. 'normal' collapses runs of whitespace;
+   *  'pre-wrap' preserves spaces, tabs (\t) and hard breaks (\n). */
+  whiteSpace?: 'normal' | 'pre-wrap';
+}
+
+/** A single measured segment produced during preparation. */
+export interface PretextSegment {
+  /** The text content of this segment. */
+  text: string;
+  /** Measured pixel width via Canvas. */
+  width: number;
+  /** Whether this segment is breakable whitespace. */
+  isWhitespace: boolean;
+  /** Whether this segment is a hard line break (\n in pre-wrap mode). */
+  isNewline: boolean;
+  /** Whether this segment is a tab character (pre-wrap). */
+  isTab: boolean;
+}
+
+/** Opaque handle returned by `PretextLayout.prepare()`. */
+export interface PreparedText {
+  /** @internal */ readonly _segments: PretextSegment[];
+  /** @internal */ readonly _font: string;
+  /** @internal */ readonly _totalWidth: number;
+  /** The original input text. */
+  readonly text: string;
+}
+
+/** Richer handle returned by `PretextLayout.prepareWithSegments()`. */
+export interface PreparedTextWithSegments extends PreparedText {
+  /** The segments array is accessible for manual line-layout APIs. */
+  readonly segments: ReadonlyArray<PretextSegment>;
+}
+
+/** Result of `PretextLayout.layout()`. */
+export interface PretextLayoutResult {
+  /** Total pixel height of the laid-out paragraph. */
+  height: number;
+  /** Number of lines the text occupies. */
+  lineCount: number;
+}
+
+/** A laid-out line of text. */
+export interface PretextLayoutLine {
+  /** Full text content of this line. */
+  text: string;
+  /** Measured pixel width of this line. */
+  width: number;
+  /** Inclusive start cursor in the segment stream. */
+  start: PretextCursor;
+  /** Exclusive end cursor in the segment stream. */
+  end: PretextCursor;
+}
+
+/** A line range (width + cursors, no text string). */
+export interface PretextLayoutLineRange {
+  /** Measured pixel width of this line. */
+  width: number;
+  /** Inclusive start cursor. */
+  start: PretextCursor;
+  /** Exclusive end cursor. */
+  end: PretextCursor;
+}
+
+/** Cursor into the segment/grapheme stream. */
+export interface PretextCursor {
+  /** Segment index in the prepared segment array. */
+  segmentIndex: number;
+  /** Grapheme index within that segment (0 at segment boundaries). */
+  graphemeIndex: number;
+}
+
+/**
+ * Pure-JS multiline text measurement and layout engine.
+ *
+ * Usage:
+ * ```ts
+ * const prepared = PretextLayout.prepare('Hello world', '16px Inter');
+ * const { height, lineCount } = PretextLayout.layout(prepared, 320, 24);
+ * ```
+ */
+class PretextLayout {
+  // ── Shared caches ──────────────────────────────────────────────────────
+  private static _measureCanvas: OffscreenCanvas | HTMLCanvasElement | null = null;
+  private static _measureCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
+  private static _widthCache = new Map<string, number>();
+  private static readonly _MAX_CACHE = 10_000;
+  private static _locale: string | undefined;
+  private static _segmenter: Intl.Segmenter | null = null;
+  private static _wordSegmenter: Intl.Segmenter | null = null;
+  /** Default tab-size in space-widths (mirrors browser default tab-size: 8). */
+  private static readonly TAB_SIZE = 8;
+
+  // ── Public API ─────────────────────────────────────────────────────────
+
+  /**
+   * One-time text analysis and measurement pass.
+   * Returns an opaque handle for `layout()`.
+   *
+   * @param text  - The input string.
+   * @param font  - CSS font shorthand (e.g. `'16px Inter'`).
+   * @param options - Optional whitespace mode.
+   */
+  static prepare(text: string, font: string, options?: PretextOptions): PreparedText {
+    const segments = PretextLayout._buildSegments(text, font, options);
+    let totalWidth = 0;
+    for (const s of segments) totalWidth += s.width;
+    return { _segments: segments, _font: font, _totalWidth: totalWidth, text };
+  }
+
+  /**
+   * Like `prepare()` but exposes the segments array for manual layout APIs.
+   */
+  static prepareWithSegments(text: string, font: string, options?: PretextOptions): PreparedTextWithSegments {
+    const base = PretextLayout.prepare(text, font, options);
+    return { ...base, segments: base._segments };
+  }
+
+  /**
+   * Calculate text height and line count given a max width and line height.
+   * Pure arithmetic over cached widths — very fast after `prepare()`.
+   */
+  static layout(prepared: PreparedText, maxWidth: number, lineHeight: number): PretextLayoutResult {
+    const lineCount = PretextLayout._countLines(prepared._segments, maxWidth);
+    return { height: lineCount * lineHeight, lineCount };
+  }
+
+  /**
+   * High-level API: returns all lines at a fixed max width.
+   */
+  static layoutWithLines(
+    prepared: PreparedTextWithSegments,
+    maxWidth: number,
+    lineHeight: number
+  ): PretextLayoutResult & { lines: PretextLayoutLine[] } {
+    const lines = PretextLayout._buildLines(prepared._segments, maxWidth, prepared._font);
+    return { height: lines.length * lineHeight, lineCount: lines.length, lines };
+  }
+
+  /**
+   * Low-level API: calls `onLine` for each line with its measured width and
+   * start/end cursors, **without** building text strings.
+   * Returns the total number of lines.
+   */
+  static walkLineRanges(
+    prepared: PreparedTextWithSegments,
+    maxWidth: number,
+    onLine: (line: PretextLayoutLineRange) => void
+  ): number {
+    const segments = prepared._segments;
+    let lineCount = 0;
+    let cursor: PretextCursor = { segmentIndex: 0, graphemeIndex: 0 };
+
+    while (cursor.segmentIndex < segments.length) {
+      const range = PretextLayout._layoutNextRange(segments, cursor, maxWidth);
+      if (!range) break;
+      onLine(range);
+      cursor = range.end;
+      lineCount++;
+    }
+    return lineCount;
+  }
+
+  /**
+   * Iterator-like API: lay out one line at a time with a potentially
+   * different width per line (e.g. flowing text around a float).
+   *
+   * Pass the previous line's `end` cursor as the next `start`.
+   * Returns `null` when the paragraph is exhausted.
+   */
+  static layoutNextLine(
+    prepared: PreparedTextWithSegments,
+    start: PretextCursor,
+    maxWidth: number
+  ): PretextLayoutLine | null {
+    const segments = prepared._segments;
+    if (start.segmentIndex >= segments.length) return null;
+
+    const range = PretextLayout._layoutNextRange(segments, start, maxWidth);
+    if (!range) return null;
+
+    // Build the text string for this line
+    const text = PretextLayout._extractText(segments, range.start, range.end);
+    return { text, width: range.width, start: range.start, end: range.end };
+  }
+
+  /**
+   * Returns `true` if any internal caches have been populated.
+   */
+  static isCacheDirty(): boolean {
+    return PretextLayout._widthCache.size > 0 || PretextLayout._measureCanvas !== null;
+  }
+
+  /**
+   * Clear all internal caches.
+   */
+  static clearCache(): void {
+    PretextLayout._widthCache.clear();
+    PretextLayout._measureCanvas = null;
+    PretextLayout._measureCtx = null;
+    PretextLayout._segmenter = null;
+    PretextLayout._wordSegmenter = null;
+  }
+
+  /**
+   * Set the locale for future `prepare()` calls. Internally clears the
+   * cache (new locale may change segmentation boundaries).
+   * Does not mutate existing prepared states.
+   */
+  static setLocale(locale?: string): void {
+    PretextLayout._locale = locale;
+    PretextLayout.clearCache();
+  }
+
+  // ── Internal: Segmentation ────────────────────────────────────────────
+
+  private static _getGraphemeSegmenter(): Intl.Segmenter {
+    if (!PretextLayout._segmenter) {
+      PretextLayout._segmenter = new Intl.Segmenter(PretextLayout._locale, { granularity: 'grapheme' });
+    }
+    return PretextLayout._segmenter;
+  }
+
+  private static _getWordSegmenter(): Intl.Segmenter {
+    if (!PretextLayout._wordSegmenter) {
+      PretextLayout._wordSegmenter = new Intl.Segmenter(PretextLayout._locale, { granularity: 'word' });
+    }
+    return PretextLayout._wordSegmenter;
+  }
+
+  /** Segment text into breakable units with measured widths. */
+  private static _buildSegments(
+    text: string,
+    font: string,
+    options?: PretextOptions
+  ): PretextSegment[] {
+    const mode = options?.whiteSpace ?? 'normal';
+    const segments: PretextSegment[] = [];
+
+    if (text.length === 0) return segments;
+
+    if (mode === 'pre-wrap') {
+      return PretextLayout._buildPreWrapSegments(text, font);
+    }
+
+    // ── white-space: normal ──────────────────────────────────────────
+    // Collapse runs of whitespace into single spaces, then segment by
+    // word boundaries.
+    const collapsed = text.replace(/[\t\n\r ]+/g, ' ').trim();
+    if (collapsed.length === 0) return segments;
+
+    const wordSeg = PretextLayout._getWordSegmenter();
+    for (const { segment, isWordLike } of wordSeg.segment(collapsed)) {
+      if (isWordLike) {
+        // Non-whitespace word segment — may contain CJK that needs per-grapheme breaks
+        const subSegs = PretextLayout._splitCJK(segment, font);
+        segments.push(...subSegs);
+      } else {
+        // Whitespace or punctuation
+        const w = PretextLayout._measure(segment, font);
+        const isWs = /^\s+$/.test(segment);
+        segments.push({ text: segment, width: w, isWhitespace: isWs, isNewline: false, isTab: false });
+      }
+    }
+
+    return segments;
+  }
+
+  /** Build segments for pre-wrap mode — preserve spaces, tabs, newlines. */
+  private static _buildPreWrapSegments(text: string, font: string): PretextSegment[] {
+    const segments: PretextSegment[] = [];
+    const spaceWidth = PretextLayout._measure(' ', font);
+    const tabWidth = spaceWidth * PretextLayout.TAB_SIZE;
+
+    // Split into runs of: newline | tab | spaces | non-whitespace
+    const re = /(\n)|(\t)|( +)|([^\n\t ]+)/g;
+    let m: RegExpExecArray | null;
+
+    while ((m = re.exec(text)) !== null) {
+      if (m[1] !== undefined) {
+        // Newline — hard break
+        segments.push({ text: '\n', width: 0, isWhitespace: true, isNewline: true, isTab: false });
+      } else if (m[2] !== undefined) {
+        // Tab
+        segments.push({ text: '\t', width: tabWidth, isWhitespace: true, isNewline: false, isTab: true });
+      } else if (m[3] !== undefined) {
+        // Space run
+        const w = PretextLayout._measure(m[3], font);
+        segments.push({ text: m[3], width: w, isWhitespace: true, isNewline: false, isTab: false });
+      } else if (m[4] !== undefined) {
+        // Non-whitespace — may need CJK sub-splitting
+        const subSegs = PretextLayout._splitCJK(m[4], font);
+        segments.push(...subSegs);
+      }
+    }
+
+    return segments;
+  }
+
+  /**
+   * Split text that may contain CJK characters into per-character segments
+   * (CJK ideographs are breakable between any two characters) while keeping
+   * non-CJK runs together as single segments.
+   */
+  private static _splitCJK(text: string, font: string): PretextSegment[] {
+    const segments: PretextSegment[] = [];
+    const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+    let buffer = '';
+    let bufferIsCJK = false;
+
+    for (const { segment: grapheme } of graphemeSeg.segment(text)) {
+      const isCJK = PretextLayout._isCJKGrapheme(grapheme);
+
+      if (isCJK) {
+        // Flush non-CJK buffer
+        if (buffer.length > 0 && !bufferIsCJK) {
+          const w = PretextLayout._measure(buffer, font);
+          segments.push({ text: buffer, width: w, isWhitespace: false, isNewline: false, isTab: false });
+          buffer = '';
+        }
+        // Each CJK grapheme is its own breakable segment
+        const w = PretextLayout._measure(grapheme, font);
+        segments.push({ text: grapheme, width: w, isWhitespace: false, isNewline: false, isTab: false });
+        bufferIsCJK = true;
+      } else {
+        // Non-CJK: accumulate
+        if (bufferIsCJK) {
+          buffer = '';
+          bufferIsCJK = false;
+        }
+        buffer += grapheme;
+      }
+    }
+
+    // Flush remaining buffer
+    if (buffer.length > 0 && !bufferIsCJK) {
+      const w = PretextLayout._measure(buffer, font);
+      segments.push({ text: buffer, width: w, isWhitespace: false, isNewline: false, isTab: false });
+    }
+
+    return segments;
+  }
+
+  /** Check if a grapheme cluster is a CJK ideograph. */
+  private static _isCJKGrapheme(grapheme: string): boolean {
+    const cp = grapheme.codePointAt(0);
+    if (cp === undefined) return false;
+    // CJK Unified Ideographs
+    if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
+    // CJK Extension A
+    if (cp >= 0x3400 && cp <= 0x4DBF) return true;
+    // CJK Extension B
+    if (cp >= 0x20000 && cp <= 0x2A6DF) return true;
+    // CJK Compatibility Ideographs
+    if (cp >= 0xF900 && cp <= 0xFAFF) return true;
+    // Katakana & Hiragana (breakable in Japanese)
+    if (cp >= 0x3040 && cp <= 0x30FF) return true;
+    // CJK Symbols & Punctuation
+    if (cp >= 0x3000 && cp <= 0x303F) return true;
+    // Fullwidth forms
+    if (cp >= 0xFF00 && cp <= 0xFFEF) return true;
+    // Hangul Syllables
+    if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
+    return false;
+  }
+
+  // ── Internal: Measurement ─────────────────────────────────────────────
+
+  private static _getContext(): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D {
+    if (!PretextLayout._measureCtx) {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        PretextLayout._measureCanvas = new OffscreenCanvas(1, 1);
+        PretextLayout._measureCtx = PretextLayout._measureCanvas.getContext('2d')!;
+      } else if (typeof document !== 'undefined') {
+        try {
+          const c = document.createElement('canvas');
+          c.width = 1;
+          c.height = 1;
+          const ctx = c.getContext('2d');
+          if (ctx) {
+            PretextLayout._measureCanvas = c;
+            PretextLayout._measureCtx = ctx;
+          }
+        } catch { /* fall through to server-side fallback */ }
+      }
+      if (!PretextLayout._measureCtx) {
+        // Server-side fallback: estimate widths from character count
+        return PretextLayout._createFallbackContext();
+      }
+    }
+    return PretextLayout._measureCtx!;
+  }
+
+  /** Server-side fallback: estimate ~0.6 * fontSize per character. */
+  private static _createFallbackContext(): any {
+    const parseFontSize = (font: string): number => {
+      const m = font.match(/(\d+(?:\.\d+)?)px/);
+      return m ? parseFloat(m[1]) : 16;
+    };
+    let currentFont = '16px sans-serif';
+    return {
+      get font() { return currentFont; },
+      set font(f: string) { currentFont = f; },
+      measureText(text: string) {
+        const size = parseFontSize(currentFont);
+        // Rough heuristic: average character width ≈ 0.6 × font size
+        let width = 0;
+        for (const ch of text) {
+          const cp = ch.codePointAt(0) || 0;
+          // CJK & fullwidth characters are roughly 1.0 × font size
+          if ((cp >= 0x3000 && cp <= 0x9FFF) || (cp >= 0xAC00 && cp <= 0xD7AF) ||
+              (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFF00 && cp <= 0xFFEF) ||
+              (cp >= 0x20000 && cp <= 0x2A6DF)) {
+            width += size;
+          } else {
+            width += size * 0.6;
+          }
+        }
+        return { width };
+      }
+    };
+  }
+
+  /**
+   * Public API: measure text width via Canvas, with caching.
+   * Useful as a fallback for glyph advance calculation during rendering
+   * when PDF font metrics are unavailable.
+   *
+   * @param text  - The string to measure.
+   * @param font  - CSS font shorthand (e.g. `'12px Arial'`).
+   * @returns Width in CSS pixels at the given font size.
+   */
+  static measure(text: string, font: string): number {
+    return PretextLayout._measure(text, font);
+  }
+
+  /** Measure text width via Canvas, with caching. */
+  private static _measure(text: string, font: string): number {
+    const key = font + '\0' + text;
+    const cached = PretextLayout._widthCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const ctx = PretextLayout._getContext();
+    ctx.font = font;
+    const width = ctx.measureText(text).width;
+
+    // LRU-style eviction
+    if (PretextLayout._widthCache.size >= PretextLayout._MAX_CACHE) {
+      const firstKey = PretextLayout._widthCache.keys().next().value!;
+      PretextLayout._widthCache.delete(firstKey);
+    }
+    PretextLayout._widthCache.set(key, width);
+    return width;
+  }
+
+  // ── Internal: Line Breaking ───────────────────────────────────────────
+
+  /** Count lines using a greedy line-breaking algorithm. */
+  private static _countLines(segments: PretextSegment[], maxWidth: number): number {
+    if (segments.length === 0) return 0;
+
+    let lines = 1;
+    let lineWidth = 0;
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+
+      // Hard line break
+      if (seg.isNewline) {
+        lines++;
+        lineWidth = 0;
+        continue;
+      }
+
+      // Would this segment overflow?
+      if (lineWidth + seg.width > maxWidth && lineWidth > 0) {
+        // Break before this segment
+        lines++;
+        lineWidth = 0;
+
+        // Skip leading whitespace on new line (normal mode)
+        if (seg.isWhitespace) continue;
+      }
+
+      // If a single segment is wider than maxWidth, we need to break
+      // it at grapheme boundaries (overflow-wrap: break-word).
+      if (seg.width > maxWidth && !seg.isWhitespace) {
+        const subLines = PretextLayout._breakWord(seg, maxWidth, lineWidth);
+        lines += subLines.lines;
+        lineWidth = subLines.trailingWidth;
+        continue;
+      }
+
+      lineWidth += seg.width;
+    }
+
+    return lines;
+  }
+
+  /** Break a single wide word at grapheme boundaries. Returns extra lines added. */
+  private static _breakWord(
+    seg: PretextSegment,
+    maxWidth: number,
+    currentLineWidth: number
+  ): { lines: number; trailingWidth: number } {
+    const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+    let extraLines = 0;
+    let lineW = currentLineWidth;
+
+    for (const { segment: grapheme } of graphemeSeg.segment(seg.text)) {
+      // We approximate per-grapheme width. For accuracy we'd measure each
+      // grapheme individually, but that would be expensive. Instead, estimate
+      // proportionally from the segment's total measured width.
+      const ratio = grapheme.length / seg.text.length;
+      const gw = seg.width * ratio;
+
+      if (lineW + gw > maxWidth && lineW > 0) {
+        extraLines++;
+        lineW = 0;
+      }
+      lineW += gw;
+    }
+
+    return { lines: extraLines, trailingWidth: lineW };
+  }
+
+  /** Build full LayoutLine objects for all lines. */
+  private static _buildLines(
+    segments: PretextSegment[],
+    maxWidth: number,
+    _font: string
+  ): PretextLayoutLine[] {
+    const lines: PretextLayoutLine[] = [];
+    let cursor: PretextCursor = { segmentIndex: 0, graphemeIndex: 0 };
+
+    while (cursor.segmentIndex < segments.length) {
+      const range = PretextLayout._layoutNextRange(segments, cursor, maxWidth);
+      if (!range) break;
+      const text = PretextLayout._extractText(segments, range.start, range.end);
+      lines.push({ text, width: range.width, start: range.start, end: range.end });
+      cursor = range.end;
+    }
+
+    // Always at least one line
+    if (lines.length === 0) {
+      lines.push({
+        text: '',
+        width: 0,
+        start: { segmentIndex: 0, graphemeIndex: 0 },
+        end: { segmentIndex: 0, graphemeIndex: 0 }
+      });
+    }
+
+    return lines;
+  }
+
+  /** Lay out one line starting at `start`, return range with width. */
+  private static _layoutNextRange(
+    segments: PretextSegment[],
+    start: PretextCursor,
+    maxWidth: number
+  ): PretextLayoutLineRange | null {
+    if (start.segmentIndex >= segments.length) return null;
+
+    let lineWidth = 0;
+    let lastBreakableEnd: PretextCursor | null = null;
+    let widthAtBreak = 0;
+    let i = start.segmentIndex;
+
+    // Handle partial segment start (from word-breaking)
+    if (start.graphemeIndex > 0 && i < segments.length) {
+      const seg = segments[i];
+      const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+      const graphemes = [...graphemeSeg.segment(seg.text)].map(g => g.segment);
+      const remaining = graphemes.slice(start.graphemeIndex).join('');
+      const ratio = remaining.length / seg.text.length;
+      const remWidth = seg.width * ratio;
+
+      if (remWidth > maxWidth) {
+        // Still need to break within this segment
+        let _gIdx = start.graphemeIndex;
+        let w = 0;
+        for (let g = start.graphemeIndex; g < graphemes.length; g++) {
+          const gw = seg.width * (graphemes[g].length / seg.text.length);
+          if (w + gw > maxWidth && w > 0) {
+            return {
+              width: w,
+              start,
+              end: { segmentIndex: i, graphemeIndex: g }
+            };
+          }
+          w += gw;
+          _gIdx = g + 1;
+        }
+        // Entire remainder fits on one line
+        lineWidth = w;
+        i++;
+      } else {
+        lineWidth = remWidth;
+        i++;
+      }
+    }
+
+    while (i < segments.length) {
+      const seg = segments[i];
+
+      // Hard line break
+      if (seg.isNewline) {
+        return {
+          width: lineWidth,
+          start,
+          end: { segmentIndex: i + 1, graphemeIndex: 0 }
+        };
+      }
+
+      // Would adding this segment overflow?
+      if (lineWidth + seg.width > maxWidth && lineWidth > 0) {
+        // Can we break here?
+        if (seg.isWhitespace) {
+          // Consume the whitespace and break after it
+          return {
+            width: lineWidth,
+            start,
+            end: { segmentIndex: i + 1, graphemeIndex: 0 }
+          };
+        }
+
+        // Break before this non-whitespace segment
+        if (lastBreakableEnd) {
+          return {
+            width: widthAtBreak,
+            start,
+            end: lastBreakableEnd
+          };
+        }
+
+        // No previous break point: overflow-wrap: break-word
+        // Break within this segment at grapheme boundaries
+        const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+        const graphemes = [...graphemeSeg.segment(seg.text)].map(g => g.segment);
+        let w = lineWidth;
+
+        for (let g = 0; g < graphemes.length; g++) {
+          const gw = seg.width * (graphemes[g].length / seg.text.length);
+          if (w + gw > maxWidth && w > 0) {
+            return {
+              width: w,
+              start,
+              end: { segmentIndex: i, graphemeIndex: g }
+            };
+          }
+          w += gw;
+        }
+
+        // Whole segment fits after all
+        lineWidth = w;
+        i++;
+        continue;
+      }
+
+      // Single segment wider than maxWidth at line start (lineWidth === 0):
+      // overflow-wrap: break-word — break within this segment at grapheme boundaries
+      if (seg.width > maxWidth && !seg.isWhitespace && lineWidth === 0) {
+        const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+        const graphemes = [...graphemeSeg.segment(seg.text)].map(g => g.segment);
+        let w = 0;
+
+        for (let g = 0; g < graphemes.length; g++) {
+          const gw = seg.width * (graphemes[g].length / seg.text.length);
+          if (w + gw > maxWidth && w > 0) {
+            return {
+              width: w,
+              start,
+              end: { segmentIndex: i, graphemeIndex: g }
+            };
+          }
+          w += gw;
+        }
+
+        // Whole segment fits after all (shouldn't happen given the condition)
+        lineWidth = w;
+        i++;
+        continue;
+      }
+
+      // Segment fits — track breakable positions
+      if (seg.isWhitespace) {
+        lineWidth += seg.width;
+        lastBreakableEnd = { segmentIndex: i + 1, graphemeIndex: 0 };
+        widthAtBreak = lineWidth;
+      } else {
+        lineWidth += seg.width;
+      }
+
+      i++;
+    }
+
+    // End of text
+    if (i > start.segmentIndex || start.graphemeIndex > 0) {
+      return {
+        width: lineWidth,
+        start,
+        end: { segmentIndex: segments.length, graphemeIndex: 0 }
+      };
+    }
+
+    return null;
+  }
+
+  /** Extract text string from segments between two cursors. */
+  private static _extractText(
+    segments: PretextSegment[],
+    start: PretextCursor,
+    end: PretextCursor
+  ): string {
+    let result = '';
+    const graphemeSeg = PretextLayout._getGraphemeSegmenter();
+
+    for (let i = start.segmentIndex; i < end.segmentIndex && i < segments.length; i++) {
+      const seg = segments[i];
+
+      if (i === start.segmentIndex && start.graphemeIndex > 0) {
+        // Partial start segment
+        const graphemes = [...graphemeSeg.segment(seg.text)].map(g => g.segment);
+        const endG = (i === end.segmentIndex - 1 && end.graphemeIndex > 0)
+          ? end.graphemeIndex
+          : graphemes.length;
+        result += graphemes.slice(start.graphemeIndex, endG).join('');
+      } else if (i === end.segmentIndex - 1 && end.graphemeIndex > 0 && end.segmentIndex < segments.length) {
+        // This case is handled by the end cursor being at a segment boundary
+        result += seg.text;
+      } else {
+        result += seg.text;
+      }
+    }
+
+    // Trim trailing whitespace from normal-mode lines
+    return result.replace(/\s+$/, '');
+  }
+}
 
 class ContentStreamParser {
   private position: number = 0;
@@ -12401,6 +14192,146 @@ class AnnotationExtractor {
         };
       }
     }
+
+    // Parse FileAttachment-specific properties
+    if (annotation.type === AnnotationType.FileAttachment) {
+      this.parseFileAttachmentProperties(annotation, dict);
+    }
+
+    // Parse Sound-specific properties
+    if (annotation.type === AnnotationType.Sound) {
+      this.parseSoundProperties(annotation, dict);
+    }
+
+    // Parse Movie-specific properties
+    if (annotation.type === AnnotationType.Movie) {
+      this.parseMovieProperties(annotation, dict);
+    }
+  }
+
+  private resolveObj(obj: PDFObject): PDFObject {
+    if (obj && obj.type === PDFObjectType.Reference) {
+      const ref = obj.value as PDFReference;
+      const parser = (this.pdf as any).parser;
+      const xref = (this.pdf as any).xrefTable;
+      if (parser && xref) {
+        return parser.parseIndirectObject(ref.objectNumber, ref.generationNumber, xref);
+      }
+    }
+    return obj;
+  }
+
+  private parseFileAttachmentProperties(annotation: Annotation, dict: PDFDictionary): void {
+    const fsRef = dict.entries.get('FS');
+    if (!fsRef) return;
+
+    const fsObj = this.resolveObj(fsRef);
+    if (fsObj.type !== PDFObjectType.Dictionary) return;
+    const fsDict = fsObj.value as PDFDictionary;
+
+    const spec: EmbeddedFileSpec = {
+      name: this.getStringFromDict(fsDict, 'F')
+        || this.getStringFromDict(fsDict, 'UF')
+        || this.getStringFromDict(fsDict, 'Desc')
+        || 'unknown',
+      description: this.getStringFromDict(fsDict, 'Desc'),
+    };
+
+    // Extract the embedded file stream from /EF dictionary
+    const efRef = fsDict.entries.get('EF');
+    if (efRef) {
+      const efObj = this.resolveObj(efRef);
+      if (efObj.type === PDFObjectType.Dictionary) {
+        const efDict = efObj.value as PDFDictionary;
+        const fileStreamRef = efDict.entries.get('F') || efDict.entries.get('UF');
+        if (fileStreamRef) {
+          const fileStreamObj = this.resolveObj(fileStreamRef);
+          if (fileStreamObj.type === PDFObjectType.Dictionary) {
+            const streamDict = fileStreamObj.value as PDFDictionary;
+            // Extract Params if available
+            const paramsRef = streamDict.entries.get('Params');
+            if (paramsRef) {
+              const paramsObj = this.resolveObj(paramsRef);
+              if (paramsObj.type === PDFObjectType.Dictionary) {
+                const paramsDict = paramsObj.value as PDFDictionary;
+                spec.size = this.getNumberFromDict(paramsDict, 'Size');
+                const checksum = this.getStringFromDict(paramsDict, 'CheckSum');
+                if (checksum) spec.checksum = checksum;
+                const creationStr = this.getStringFromDict(paramsDict, 'CreationDate');
+                if (creationStr) {
+                  spec.creationDate = (this.pdf as any).parser?.parsePDFDate?.(creationStr);
+                }
+                const modStr = this.getStringFromDict(paramsDict, 'ModDate');
+                if (modStr) {
+                  spec.modificationDate = (this.pdf as any).parser?.parsePDFDate?.(modStr);
+                }
+              }
+            }
+            // Extract subtype (MIME type)
+            const subtypeObj = streamDict.entries.get('Subtype');
+            if (subtypeObj?.type === PDFObjectType.Name) {
+              spec.mimeType = (subtypeObj.value as string).replace('#2F', '/');
+            }
+          }
+          // Try to get raw data from the stream object
+          if (fileStreamObj.type === PDFObjectType.Stream) {
+            spec.data = fileStreamObj.value as Uint8Array;
+          }
+        }
+      }
+    }
+
+    annotation.fileSpec = spec;
+  }
+
+  private parseSoundProperties(annotation: Annotation, dict: PDFDictionary): void {
+    const soundRef = dict.entries.get('Sound');
+    if (!soundRef) return;
+
+    const soundObj = this.resolveObj(soundRef);
+    const spec: SoundSpec = {};
+
+    if (soundObj.type === PDFObjectType.Dictionary) {
+      const soundDict = soundObj.value as PDFDictionary;
+      spec.samplingRate = this.getNumberFromDict(soundDict, 'R');
+      spec.channels = this.getNumberFromDict(soundDict, 'C') || 1;
+      spec.bitsPerSample = this.getNumberFromDict(soundDict, 'B') || 8;
+      spec.encoding = this.getStringFromDict(soundDict, 'E') || 'Raw';
+    } else if (soundObj.type === PDFObjectType.Stream) {
+      spec.data = soundObj.value as Uint8Array;
+    }
+
+    annotation.soundSpec = spec;
+  }
+
+  private parseMovieProperties(annotation: Annotation, dict: PDFDictionary): void {
+    const movieRef = dict.entries.get('Movie');
+    if (!movieRef) return;
+
+    const movieObj = this.resolveObj(movieRef);
+    const spec: MovieSpec = {};
+
+    if (movieObj.type === PDFObjectType.Dictionary) {
+      const movieDict = movieObj.value as PDFDictionary;
+      // /F entry is the file specification for the movie file
+      const fRef = movieDict.entries.get('F');
+      if (fRef) {
+        const fObj = this.resolveObj(fRef);
+        if (fObj.type === PDFObjectType.String) {
+          spec.fileName = fObj.value as string;
+        } else if (fObj.type === PDFObjectType.Dictionary) {
+          const fDict = fObj.value as PDFDictionary;
+          spec.fileName = this.getStringFromDict(fDict, 'F')
+            || this.getStringFromDict(fDict, 'UF');
+        }
+      }
+      const posterObj = movieDict.entries.get('Poster');
+      if (posterObj?.type === PDFObjectType.Boolean) {
+        spec.poster = posterObj.value as boolean;
+      }
+    }
+
+    annotation.movieSpec = spec;
   }
 
   private parseColor(colorArray: PDFObject[]): Color | undefined {
@@ -12521,7 +14452,7 @@ class AnnotationManager {
 
 /**
  * Safe content stream parser that prevents infinite loops
- * Based on PDF.js approach with explicit position tracking
+ * Safe parser with explicit position tracking
  */
 class SafeContentStreamParser {
   private position = 0;
@@ -14662,6 +16593,16 @@ class PDFGraphicsExecutor {
     }
   }
 
+  /** Check whether the current font resource has explicit width data from the PDF. */
+  private fontHasExplicitWidths(): boolean {
+    const font = this.currentFontResource;
+    if (!font) return false;
+    return !!((font.cidWidths && font.cidWidths.size > 0) ||
+      (font.widths && font.widths.length > 0) ||
+      font.defaultWidth !== undefined ||
+      font.missingWidth !== undefined);
+  }
+
   private showText(operands: any[]): void {
     if (operands.length === 0) return;
     const rawInput = operands[0];
@@ -14749,7 +16690,14 @@ class PDFGraphicsExecutor {
         }
       }
 
-      const glyphWidth = PDFGlyphMetrics.getCharWidth(charCode, this.currentFontResource, fontSize);
+      const glyphWidth = this.fontHasExplicitWidths()
+        ? PDFGlyphMetrics.getCharWidth(charCode, this.currentFontResource, fontSize)
+        : shouldRender && displayChar
+          // Use PretextLayout's cached canvas measurement for accurate advance
+          // when the PDF lacks embedded font metrics.
+          ? PretextLayout.measure(displayChar,
+            (this.textState.fontStyle || '') + effectiveFontSize + 'px ' + this.textState.font) / tmScale
+          : PDFGlyphMetrics.getCharWidth(charCode, this.currentFontResource, fontSize);
       let advance = glyphWidth + charSpace;
       if (charCode === 32) advance += wordSpace;
       xOffset += advance;
@@ -15511,8 +17459,16 @@ class PDFRenderer {
     ctx.fillRect(0, 0, displayWidth, displayHeight);
 
     // Simple approach: Draw graphics operators directly to canvas
-    // Based on PDF.js approach but simplified and translated to TypeScript
+    // Native TypeScript rendering implementation
     await this.renderPageContent(ctx, page, scale);
+
+    // Render annotations and form fields if enabled
+    if (this.options?.renderAnnotations !== false) {
+      await this.renderAnnotations(ctx, page);
+    }
+    if (this.options?.renderText !== false) {
+      await this.renderForms(ctx, page);
+    }
 
     ctx.restore();
   }
@@ -15670,15 +17626,16 @@ class PDFRenderer {
             if (inText && op.operands.length > 0) {
               const text = PDFTextDecoder.decode(op.operands[0]);
               if (text) {
+                const fontStr = `${Math.abs(textState.fontSize)}px ${textState.font}`;
                 ctx.save();
                 const tm = textState.matrix;
-                ctx.font = `${Math.abs(textState.fontSize)}px ${textState.font}`;
+                ctx.font = fontStr;
                 ctx.fillStyle = '#000000';
                 ctx.transform(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]);
                 ctx.scale(1, -1);
                 ctx.fillText(text, 0, -(textState.rise || 0));
                 ctx.restore();
-                const w = text.length * textState.fontSize * 0.5;
+                const w = PretextLayout.measure(text, fontStr);
                 textState.matrix[4] += w * textState.matrix[0];
                 textState.matrix[5] += w * textState.matrix[1];
               }
@@ -15690,15 +17647,16 @@ class PDFRenderer {
                 if (typeof item === 'string') {
                   const text = PDFTextDecoder.decode(item);
                   if (text) {
+                    const fontStr = `${Math.abs(textState.fontSize)}px ${textState.font}`;
                     ctx.save();
                     const tm = textState.matrix;
-                    ctx.font = `${Math.abs(textState.fontSize)}px ${textState.font}`;
+                    ctx.font = fontStr;
                     ctx.fillStyle = '#000000';
                     ctx.transform(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5]);
                     ctx.scale(1, -1);
                     ctx.fillText(text, 0, -(textState.rise || 0));
                     ctx.restore();
-                    const w = text.length * textState.fontSize * 0.5;
+                    const w = PretextLayout.measure(text, fontStr);
                     textState.matrix[4] += w * textState.matrix[0];
                     textState.matrix[5] += w * textState.matrix[1];
                   }
@@ -15811,6 +17769,32 @@ class PDFRenderer {
         ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
         ctx.stroke();
         break;
+
+      case AnnotationType.FreeText:
+        if (annotation.contents) {
+          const fontSize = 12;
+          const fontStr = `${fontSize}px Arial`;
+          const lineHeight = fontSize * 1.2;
+          const padding = 4;
+          const boxX = annotation.rect.x;
+          const boxY = page.height - annotation.rect.y - annotation.rect.height;
+
+          // Use PretextLayout for accurate multiline text wrapping
+          const prepared = PretextLayout.prepareWithSegments(annotation.contents, fontStr);
+          const result = PretextLayout.layoutWithLines(prepared, annotation.rect.width - padding * 2, lineHeight);
+
+          ctx.fillStyle = annotation.color
+            ? `rgba(${annotation.color.r}, ${annotation.color.g}, ${annotation.color.b}, 1)`
+            : '#000000';
+          ctx.font = fontStr;
+
+          for (let i = 0; i < result.lines.length; i++) {
+            const y = boxY + padding + lineHeight * (i + 1);
+            if (y > boxY + annotation.rect.height) break; // clip to rect
+            ctx.fillText(result.lines[i].text, boxX + padding, y);
+          }
+        }
+        break;
     }
 
     ctx.restore();
@@ -15835,10 +17819,28 @@ class PDFRenderer {
     // Draw field value
     if (field.value) {
       ctx.fillStyle = '#000000';
-      ctx.font = '12px Arial';
+      const fontSize = 12;
+      const fontStr = `${fontSize}px Arial`;
+      ctx.font = fontStr;
 
       if (field.type === FormFieldType.Text) {
-        ctx.fillText(String(field.value), field.rect.x + 2, page.height - field.rect.y - 4);
+        const text = String(field.value);
+        const padding = 2;
+        const baseY = page.height - field.rect.y - field.rect.height;
+        const lineHeight = fontSize * 1.2;
+
+        if (field.multiline) {
+          // Use PretextLayout for multiline text wrapping within the field bounds
+          const prepared = PretextLayout.prepareWithSegments(text, fontStr);
+          const result = PretextLayout.layoutWithLines(prepared, field.rect.width - padding * 2, lineHeight);
+          for (let i = 0; i < result.lines.length; i++) {
+            const y = baseY + padding + lineHeight * (i + 1);
+            if (y > page.height - field.rect.y) break; // clip to field bounds
+            ctx.fillText(result.lines[i].text, field.rect.x + padding, y);
+          }
+        } else {
+          ctx.fillText(text, field.rect.x + padding, baseY + lineHeight);
+        }
       } else if (field.type === FormFieldType.Button && field.value) {
         // Draw checkmark for checked checkbox
         ctx.beginPath();
@@ -16464,7 +18466,7 @@ class IncrementalParser {
 /**
  * Text layer renderer for selectable text overlay
  * Implements canvas-independent text rendering for PDF documents
- * Based on PDF.js text layer concepts but rewritten for AgenticPDF
+ * Native text layer implementation for AgenticPDF
  */
 interface TextLayerItem {
   str: string;
@@ -16510,7 +18512,7 @@ class TextLayerBuilder {
     this.viewport = options.viewport;
     this.enhanceTextSelection = options.enhanceTextSelection ?? true;
 
-    // Following PDF.js approach exactly
+    // Standard text layer approach
     this.scale = options.viewport.scale;
     this.pageWidth = options.viewport.width / this.scale;
     this.pageHeight = options.viewport.height / this.scale;
@@ -16529,7 +18531,7 @@ class TextLayerBuilder {
   }
 
   /**
-   * Get canvas context for font measurements (PDF.js approach)
+   * Get canvas context for font measurements
    */
   private static getCanvasContext(): CanvasRenderingContext2D {
     if (!this.canvasContext) {
@@ -16546,7 +18548,7 @@ class TextLayerBuilder {
   }
 
   /**
-   * Compute minimum font size enforced by browser (PDF.js approach)
+   * Compute minimum font size enforced by browser
    */
   private static ensureMinFontSizeComputed(): void {
     if (this.minFontSize !== null) {
@@ -16564,7 +18566,7 @@ class TextLayerBuilder {
   }
 
   /**
-   * Get font ascent ratio (PDF.js approach)
+   * Get font ascent ratio
    */
   private static getAscent(fontFamily: string): number {
     const cachedAscent = this.ascentCache.get(fontFamily);
@@ -16672,12 +18674,12 @@ class TextLayerBuilder {
   }
 
   /**
-   * Create a text div element for a text item (PDF.js approach)
+   * Create a text div element for a text item
    */
   private createTextDiv(textItem: TextContent): HTMLElement {
     const textDiv = document.createElement('span');
 
-    // Initialize properties (PDF.js uses these for layout)
+    // Initialize properties for layout
     const textDivProperties = {
       angle: 0,
       canvasWidth: 0,
@@ -16687,7 +18689,7 @@ class TextLayerBuilder {
     };
 
     // Transform the text item's transform matrix
-    // PDF.js uses: Util.transform(this.#transform, geom.transform)
+    // Apply page transform to text item transform
     // where this.#transform = [1, 0, 0, -1, -pageX, pageY + pageHeight]
     const tx = textItem.transform;
 
@@ -16697,11 +18699,11 @@ class TextLayerBuilder {
     // Get font info
     const fontFamily = this.mapFontFamily(textItem.fontName);
 
-    // Calculate font height from transform matrix (PDF.js approach)
+    // Calculate font height from transform matrix
     const fontHeight = Math.hypot(tx[2], tx[3]);
     const fontAscent = fontHeight * TextLayerBuilder.getAscent(fontFamily);
 
-    // Calculate position (PDF.js approach)
+    // Calculate position from transform
     let left: number, top: number;
     if (angle === 0) {
       left = tx[4];
@@ -16711,12 +18713,12 @@ class TextLayerBuilder {
       top = tx[5] - fontAscent * Math.cos(angle);
     }
 
-    // Apply styles (PDF.js approach with percentage-based positioning)
+    // Apply styles with percentage-based positioning
     const style = textDiv.style;
     style.left = `${((100 * left) / this.pageWidth).toFixed(2)}%`;
     style.top = `${((100 * top) / this.pageHeight).toFixed(2)}%`;
 
-    // Font size with minFontSize multiplier (PDF.js approach)
+    // Font size with minFontSize multiplier
     const minFontSize = TextLayerBuilder.minFontSize || 1;
     style.fontSize = `${(minFontSize * fontHeight).toFixed(2)}px`;
     style.fontFamily = fontFamily;
@@ -16741,7 +18743,7 @@ class TextLayerBuilder {
       textDivProperties.angle = angle * (180 / Math.PI);
     }
 
-    // Determine if we should scale text (PDF.js logic)
+    // Determine if we should scale text
     let shouldScaleText = false;
     if (textItem.text.length > 1) {
       shouldScaleText = true;
@@ -16763,7 +18765,7 @@ class TextLayerBuilder {
   }
 
   /**
-   * Apply transform to layout text div (PDF.js approach)
+   * Apply transform to layout text div
    */
   private applyTransform(textDiv: HTMLElement): void {
     const properties = this.textDivProperties.get(textDiv);
@@ -16778,7 +18780,7 @@ class TextLayerBuilder {
       transform = `scale(${1 / minFontSize})`;
     }
 
-    // Scale text to match canvas width (PDF.js approach)
+    // Scale text to match canvas width
     if (properties.canvasWidth !== 0 && properties.hasText) {
       const { fontFamily } = style;
       const { canvasWidth, fontSize } = properties;
@@ -17429,7 +19431,7 @@ class AnnotationPersistence {
     options?: { author?: string; color?: Color; open?: boolean }
   ): Annotation {
     const annotation: Annotation = {
-      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: generateSecureId('annot'),
       type: AnnotationType.Text,
       rect: { x, y, width: 24, height: 24 },
       pageNumber,
@@ -17451,7 +19453,7 @@ class AnnotationPersistence {
     options?: { author?: string; color?: Color; contents?: string }
   ): Annotation {
     const annotation: Annotation = {
-      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: generateSecureId('annot'),
       type: AnnotationType.Highlight,
       rect,
       pageNumber,
@@ -17474,7 +19476,7 @@ class AnnotationPersistence {
     options?: { fontSize?: number; fontColor?: Color; author?: string }
   ): Annotation {
     const annotation: Annotation = {
-      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: generateSecureId('annot'),
       type: AnnotationType.FreeText,
       rect,
       pageNumber,
@@ -17496,7 +19498,7 @@ class AnnotationPersistence {
     options?: { author?: string; color?: Color; width?: number }
   ): Annotation {
     const annotation: Annotation = {
-      id: `annot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: generateSecureId('annot'),
       type: AnnotationType.Ink,
       rect,
       pageNumber,
@@ -20469,6 +22471,10 @@ export interface PDFOptions {
   useWebWorkers?: boolean;
   lazyLoad?: boolean;
   renderOptions?: RenderOptions;
+  /** Enable the built-in PretextLayout text measurement & line-breaking engine.
+   *  When `false` (default), `AgenticPDF.prepareText()` and `layoutText()` throw.
+   *  The standalone `PretextLayout` class can still be imported and used directly. */
+  enablePretextLayout?: boolean;
 }
 
 export interface TextExtractionOptions {
@@ -21656,8 +23662,12 @@ export class AgentContext {
 export { ThemeManager };
 export { TextLayerBuilder, renderTextLayer };
 export { APDFBinaryWriter, APDFBinaryReader, APDFCrypto };
+export { PretextLayout };
 export type { APDFEncryptionOptions, APDFBinaryOptions, APDFHeader };
 export type { TextLayerRenderOptions, TextLayerItem };
+// PretextOptions, PretextSegment, PreparedText, PreparedTextWithSegments,
+// PretextLayoutResult, PretextLayoutLine, PretextLayoutLineRange, PretextCursor
+// are already exported at their interface declarations above.
 // AgentTool, AgentSkill, AgentToolCall, AgentToolResult, AgentMiddleware, AgentSecurityPolicy, AgentContextOptions
 // are already exported at their interface declarations above.
 

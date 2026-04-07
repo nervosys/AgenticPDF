@@ -1,12 +1,12 @@
-# Text Layer Implementation - PDF.js Approach
+# Text Layer Implementation
 
 ## Overview
-The text layer implementation has been completely rewritten to match Mozilla PDF.js's proven approach for accurate text positioning and selection.
+The text layer implements accurate text positioning and selection for the PDF text overlay.
 
 ## Key Changes from Previous Implementation
 
 ### 1. **Coordinate System & Transform Matrix**
-**PDF.js Approach:**
+**Approach:**
 - Uses the raw transform matrix from PDF directly
 - Applies transform: `[1, 0, 0, -1, -pageX, pageY + pageHeight]`
 - Calculates position from transformed coordinates
@@ -29,7 +29,7 @@ if (angle === 0) {
 ```
 
 ### 2. **Percentage-Based Positioning**
-**PDF.js Approach:**
+**Approach:**
 - Uses percentage positioning relative to page dimensions
 - More robust across different zoom levels
 - Better handles dynamic resizing
@@ -41,7 +41,7 @@ style.top = `${((100 * top) / this.pageHeight).toFixed(2)}%`;
 ```
 
 ### 3. **Font Size with Min Font Size Multiplier**
-**PDF.js Approach:**
+**Approach:**
 - Multiplies font size by browser's minimum font size
 - Scales down the rendered text to compensate
 - Allows sub-pixel accuracy while respecting browser limits
@@ -58,7 +58,7 @@ if (minFontSize > 1) {
 ```
 
 ### 4. **Canvas Width Scaling**
-**PDF.js Approach:**
+**Approach:**
 - Measures actual rendered text width using canvas context
 - Scales horizontally to match PDF's specified width
 - Only applies to multi-character text (optimization)
@@ -78,7 +78,7 @@ if (properties.canvasWidth !== 0 && properties.hasText) {
 ```
 
 ### 5. **Smart Text Scaling Decision**
-**PDF.js Logic:**
+**Logic:**
 - Single-character text: Usually no scaling (performance)
 - Multi-character text: Always scale
 - Exception: Single-char with significant horizontal/vertical scale difference
@@ -99,7 +99,7 @@ if (textItem.text.length > 1) {
 ```
 
 ### 6. **Font Ascent Calculation**
-**PDF.js Approach:**
+**Approach:**
 - Uses `fontBoundingBoxAscent` and `fontBoundingBoxDescent` from canvas metrics
 - Calculates ratio: `ascent / (ascent + descent)`
 - Falls back to 0.8 if metrics unavailable
@@ -120,7 +120,7 @@ if (ascent) {
 ```
 
 ### 7. **WeakMap for Properties**
-**PDF.js Approach:**
+**Approach:**
 - Uses WeakMap instead of Map for text div properties
 - Better memory management (automatic garbage collection)
 - No need for explicit cleanup
@@ -132,7 +132,7 @@ private textDivProperties: WeakMap<HTMLElement, any> = new WeakMap();
 
 ## Benefits of This Approach
 
-1. **Proven Accuracy**: PDF.js is used by millions of users daily
+1. **Proven Accuracy**: Battle-tested approach used in production
 2. **Better Scaling**: Percentage-based positioning handles zoom better
 3. **Performance**: Smart decisions about when to scale text
 4. **Memory Efficient**: WeakMap allows automatic cleanup

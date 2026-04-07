@@ -25,7 +25,7 @@ To run the demos, simply open any HTML file in your web browser. All demos are s
 - **Sample File:** Uses `sample.pdf` for demonstration
 - **Key Innovations:** 
   - This viewer demonstrates the optimal configuration built into AgenticPDF
-  - Migrated from PDF.js to native AgenticPDF implementation (October 2025)
+  - Native AgenticPDF implementation
   - Showcases real AgenticPDF capabilities and API patterns
 
 ### 2. 🌐 Simple Demo (`simple-demo.html`)

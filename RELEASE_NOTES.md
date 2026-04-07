@@ -1,6 +1,6 @@
 # AgenticPDF v1.0.0 Release Notes
 
-**Release Date:** 2025  
+**Release Date:** March 2026  
 **License:** AGPL-3.0-or-later  
 
 The first stable release of AgenticPDF — a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems.
@@ -44,6 +44,13 @@ The first stable release of AgenticPDF — a comprehensive, production-ready PDF
 - **Configurable**: Standard `OTEL_*` environment variables
 - **Optional SDK Module**: Import `agenticpdf/otel` for full SDK bootstrap
 
+### PretextLayout Engine
+- **Native Multiline Text Layout**: Zero-dependency text measurement and line-breaking engine (inspired by [pretext](https://github.com/chenglou/pretext))
+- **Opt-In Design**: Convenience methods gated by `enablePretextLayout` flag; standalone `PretextLayout` class always importable directly
+- **Full API**: `prepare()`, `layout()`, `layoutWithLines()`, `walkLineRanges()`, `layoutNextLine()`, `clearCache()`, `setLocale()`
+- **CJK & Grapheme-Aware**: Correct line-breaking via `Intl.Segmenter`, per-character CJK breaks, overflow-wrap at grapheme boundaries
+- **Canvas + Server Fallback**: Canvas/OffscreenCanvas measurement with LRU cache; heuristic fallback for server-side environments
+
 ### Ontology & Agent Discovery
 - **Machine-Readable API**: `AgenticPDF.describe()` returns JSON-LD ontology
 - **Capability Map**: `AgenticPDF.getCapabilities()` organized by category
@@ -52,8 +59,9 @@ The first stable release of AgenticPDF — a comprehensive, production-ready PDF
 
 ## Security
 
-Two comprehensive security audit passes (25 total fixes):
+Three comprehensive security audit passes (25+ total fixes):
 
+**Pass 1 & 2:**
 - SSRF protection with private IP blocking and redirect validation
 - Path traversal prevention
 - Cryptographic `Math.random` replacement
@@ -61,10 +69,17 @@ Two comprehensive security audit passes (25 total fixes):
 - ReDoS-safe regex patterns
 - Prototype pollution protection
 - Bounded streaming and recursion depth limits
-- PKCS#7 padding oracle mitigation
+- PKCS#7 padding oracle mitigation (constant-time validation)
 - CSV formula injection prevention
 - Worker URL validation
 - Demo DOM XSS fixes
+
+**Pass 3 — 4-Framework Audit (CVE, MITRE ATT&CK, NIST FIPS 140-3, CMMC 2.0 Level 2):**
+- CLI path traversal hardening on all write operations
+- `crypto.getRandomValues()` for all ID generation
+- ReDoS guard with 64-char limit on user-supplied regex
+- Regex special character escaping for whole-word search
+- Security headers in server (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`)
 
 ## Technical Highlights
 
@@ -85,9 +100,9 @@ Two comprehensive security audit passes (25 total fixes):
 
 ## Testing
 
-- **871 tests** across 23 test suites — all passing
+- **924 tests** across 24 test suites — all passing
 - **TypeScript**: 0 compilation errors
-- Integration, unit, and visual regression tests
+- Integration, unit, visual regression, and PretextLayout tests
 
 ## Interactive Demos
 
@@ -98,8 +113,19 @@ Two comprehensive security audit passes (25 total fixes):
 - **Render Engine** (`demos/render-engine-demo.html`) — Canvas rendering demo
 - **API Explorer** (`demos/examples-demo.html`) — Interactive API demonstrations
 
-### CLI
-- `apdf` / `agenticpdf` commands for text extraction, metadata, search, and more
+### TypeScript CLI
+- `apdf` / `agenticpdf` npm bin commands for text extraction, metadata, search, and more
+
+### Rust CLI (`agenticpdf-rs/`)
+- Native `apdf` binary — 801 KB release build (opt-level "z", LTO, stripped)
+- 10 commands: `text`, `meta`, `annotations`, `outline`, `images`, `chunk`, `all`, `describe`, `info`, `generate`
+- `apdf describe` outputs full JSON-LD ontology (673 lines)
+- 10 Rust tests, zero warnings
+
+### Website
+- Next.js 15.3 + React 19.1 + Tailwind CSS 4.1
+- Shiki 4.0 syntax highlighting for all code examples
+- Dark/light theme support
 
 ## Quick Start
 

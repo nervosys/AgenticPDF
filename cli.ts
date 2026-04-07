@@ -21,6 +21,23 @@ const DEFAULT_CHUNK_SIZE = 1000;
 const DEFAULT_MEMORY_LIMIT = 200 * 1024 * 1024; // 200MB
 const ALLOWED_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff'];
 const VALID_OUTPUT_FORMATS = ['text', 'json', 'html', 'markdown', 'xml', 'csv', 'apdf'];
+const MAX_OUTPUT_PATH_LENGTH = 4096;
+
+/**
+ * Validate and resolve an output file path to prevent directory traversal (CWE-22).
+ * Ensures the resolved path is within the current working directory.
+ */
+function validateOutputPath(outputPath: string): string {
+    if (outputPath.length > MAX_OUTPUT_PATH_LENGTH) {
+        throw new Error('Output path exceeds maximum length');
+    }
+    const resolved = path.resolve(outputPath);
+    const cwd = path.resolve(process.cwd());
+    if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
+        throw new Error('Output path must be within current working directory');
+    }
+    return resolved;
+}
 
 /**
  * Sanitize user input for error messages to prevent XSS
@@ -85,6 +102,9 @@ interface CLIOptions {
     pageUrl?: string;
     encrypt?: boolean;
     password?: string;
+    ndjson?: boolean;
+    toolSchema?: string;
+    includeText?: boolean;
     help?: boolean;
     version?: boolean;
 }
@@ -216,6 +236,19 @@ function parseArgs(args: string[]): CLIOptions {
                 options.password = nextArg;
                 i++;
                 break;
+            case '--ndjson':
+                options.ndjson = true;
+                break;
+            case '--tool-schema':
+                if (!nextArg || nextArg.startsWith('-')) {
+                    throw new Error('--tool-schema requires a format: openai, anthropic, generic, or mcp');
+                }
+                options.toolSchema = nextArg.toLowerCase();
+                i++;
+                break;
+            case '--include-text':
+                options.includeText = true;
+                break;
             case '-h':
             case '--help':
                 options.help = true;
@@ -252,6 +285,7 @@ ${colors.bright}COMMANDS:${colors.reset}
   ${colors.green}convert${colors.reset}    Convert PDF to different formats
   ${colors.green}analyze${colors.reset}    AI-powered document analysis
   ${colors.green}chunk${colors.reset}      Generate semantic chunks for RAG
+  ${colors.green}ingest${colors.reset}     ${colors.bright}Unified AI ingestion${colors.reset} (metadata + chunks + stats in one call)
   ${colors.green}forms${colors.reset}      Extract or fill form fields
   ${colors.green}images${colors.reset}     Extract images from PDF
   ${colors.green}merge${colors.reset}      Merge multiple PDF files
@@ -259,6 +293,7 @@ ${colors.bright}COMMANDS:${colors.reset}
   ${colors.green}metadata${colors.reset}   Generate aPDF metadata envelope
   ${colors.green}generate${colors.reset}   Generate aPDF binary container from a PDF file
   ${colors.green}typeset${colors.reset}    Generate CSS, HTML, or meta tags from aPDF display hints
+  ${colors.green}tool-schema${colors.reset} Output tool/function schemas for AI agent integration
   ${colors.green}help${colors.reset}       Display this help message
   ${colors.green}version${colors.reset}    Show version information
 
@@ -285,6 +320,9 @@ ${colors.bright}OPTIONS:${colors.reset}
   ${colors.yellow}--page-url${colors.reset} <url>        Public URL for social meta tags
   ${colors.yellow}--encrypt${colors.reset}               Encrypt the aPDF binary container (generate command)
   ${colors.yellow}--password${colors.reset} <pass>       Password for encryption / decryption
+  ${colors.yellow}--ndjson${colors.reset}                Output as newline-delimited JSON (ingest command)
+  ${colors.yellow}--tool-schema${colors.reset} <fmt>     Output tool schemas (openai, anthropic, generic, mcp)
+  ${colors.yellow}--include-text${colors.reset}          Include per-page raw text (ingest command)
   ${colors.yellow}-h, --help${colors.reset}              Display help
   ${colors.yellow}--version${colors.reset}               Show version
 
@@ -339,6 +377,21 @@ ${colors.bright}EXAMPLES:${colors.reset}
 
   ${colors.dim}# Generate social sharing meta tags${colors.reset}
   apdf typeset -i paper.pdf --social-meta --page-url https://example.com/paper
+
+  ${colors.dim}# Unified AI ingestion (single JSON output)${colors.reset}
+  apdf ingest -i document.pdf -o ingested.json
+
+  ${colors.dim}# Streaming AI ingestion (NDJSON to stdout)${colors.reset}
+  apdf ingest -i document.pdf --ndjson
+
+  ${colors.dim}# Ingest with custom chunk size and per-page text${colors.reset}
+  apdf ingest -i document.pdf --chunk-size 500 --include-text -o result.json
+
+  ${colors.dim}# Output OpenAI function-calling schemas${colors.reset}
+  apdf tool-schema --tool-schema openai
+
+  ${colors.dim}# Output MCP manifest${colors.reset}
+  apdf tool-schema --tool-schema mcp
 
 ${colors.bright}INSTALLATION:${colors.reset}
   ${colors.dim}# Install globally to use 'apdf' command anywhere${colors.reset}
@@ -528,7 +581,8 @@ async function commandExtract(options: CLIOptions): Promise<void> {
         }
 
         if (options.output) {
-            fs.writeFileSync(options.output, text, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, text, 'utf-8');
             log.success(`Text saved to: ${options.output}`);
         } else {
             console.log('\n' + text);
@@ -578,7 +632,8 @@ async function commandConvert(options: CLIOptions): Promise<void> {
         }
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`Converted file saved to: ${options.output}`);
         } else {
             console.log('\n' + output);
@@ -621,7 +676,8 @@ async function commandApdf(options: CLIOptions): Promise<void> {
             : JSON.stringify(apdf);
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`aPDF metadata saved to: ${options.output}`);
         } else {
             console.log('\n' + output);
@@ -677,7 +733,7 @@ async function commandGenerate(options: CLIOptions): Promise<void> {
         log.info(`Format:     aPDF v1.1 (streaming-optimized)`);
         if (options.encrypt) log.info(`Encrypted:  PDF data (AES-256-GCM)`);
 
-        const outputPath = options.output || options.input!.replace(/\.pdf$/i, '.apdf');
+        const outputPath = validateOutputPath(options.output || options.input!.replace(/\.pdf$/i, '.apdf'));
         fs.writeFileSync(outputPath, binary);
         log.success(`aPDF binary saved to: ${outputPath}`);
     } finally {
@@ -745,7 +801,8 @@ async function commandTypeset(options: CLIOptions): Promise<void> {
         }
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`Output saved to: ${options.output}`);
         } else {
             console.log('\n' + output);
@@ -1171,7 +1228,8 @@ async function commandAnalyze(options: CLIOptions): Promise<void> {
             : JSON.stringify(analysis);
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`Analysis saved to: ${options.output}`);
         } else {
             console.log('\n' + output);
@@ -1233,7 +1291,8 @@ async function commandChunk(options: CLIOptions): Promise<void> {
             : JSON.stringify(chunks);
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`Chunks saved to: ${options.output}`);
             log.data('Total Chunks', chunks.length);
         } else {
@@ -1288,9 +1347,10 @@ async function commandImages(options: CLIOptions): Promise<void> {
                 const filename = `image_${index + 1}.${ext}`;
                 const filepath = path.join(outputDir, filename);
 
-                // Security: Ensure output path is within intended directory
+                // Security: Ensure output path is within intended directory (CWE-22)
+                const resolvedDir = path.resolve(outputDir) + path.sep;
                 const resolvedPath = path.resolve(filepath);
-                if (!resolvedPath.startsWith(outputDir)) {
+                if (!resolvedPath.startsWith(resolvedDir)) {
                     throw new Error(`Invalid output path detected: ${filepath}`);
                 }
 
@@ -1343,13 +1403,98 @@ async function commandForms(options: CLIOptions): Promise<void> {
             : JSON.stringify(formData);
 
         if (options.output) {
-            fs.writeFileSync(options.output, output, 'utf-8');
+            const safePath = validateOutputPath(options.output);
+            fs.writeFileSync(safePath, output, 'utf-8');
             log.success(`Form data saved to: ${options.output}`);
         } else {
             console.log('\n' + output);
         }
     } finally {
         pdf.close();
+    }
+}
+
+/**
+ * Unified AI ingestion command.
+ *
+ * Default mode: output a single IngestResult JSON object.
+ * --ndjson mode: stream one JSON object per line (header, chunks, footer).
+ */
+async function commandIngest(options: CLIOptions): Promise<void> {
+    const pdf = await loadPDF(options.input!, options);
+
+    try {
+        log.header('Unified AI Ingestion');
+
+        const ingestOpts: any = {
+            strategy: 'semantic',
+            maxChunkSize: options.chunkSize ?? DEFAULT_CHUNK_SIZE,
+            overlapSize: Math.min(Math.round((options.chunkSize ?? DEFAULT_CHUNK_SIZE) / 10), 200),
+            includeStructure: true,
+            includePageText: options.includeText ?? false,
+        };
+
+        if (options.pages) {
+            const range = parsePageRange(options.pages);
+            if (!Array.isArray(range)) {
+                ingestOpts.pageRange = range;
+            }
+        }
+
+        if (options.ndjson) {
+            // NDJSON streaming mode — one JSON object per line to stdout
+            for await (const record of pdf.streamIngest(ingestOpts)) {
+                process.stdout.write(JSON.stringify(record) + '\n');
+            }
+        } else {
+            // Single JSON result
+            const result = await pdf.ingest(ingestOpts);
+            const output = options.pretty
+                ? JSON.stringify(result, null, 2)
+                : JSON.stringify(result);
+
+            if (options.output) {
+                const safePath = validateOutputPath(options.output);
+                fs.writeFileSync(safePath, output, 'utf-8');
+                log.success(`Ingest result saved to: ${options.output}`);
+                log.data('Chunks', result.chunks.length.toString());
+                log.data('Total tokens', result.stats.totalTokens.toString());
+                log.data('Processing time', `${result.stats.processingTimeMs}ms`);
+            } else {
+                console.log(output);
+            }
+        }
+    } finally {
+        pdf.close();
+    }
+}
+
+/**
+ * Output tool/function-calling schemas for AI agent integration.
+ * Supports openai, anthropic, generic, and mcp formats.
+ */
+async function commandToolSchema(options: CLIOptions): Promise<void> {
+    const format = options.toolSchema ?? 'openai';
+    const validFormats = ['openai', 'anthropic', 'generic', 'mcp'];
+    if (!validFormats.includes(format)) {
+        throw new Error(`Invalid tool-schema format: ${sanitizeInput(format)}. Must be one of: ${validFormats.join(', ')}`);
+    }
+
+    let output: string;
+    if (format === 'mcp') {
+        const manifest = AgenticPDF.getMCPManifest();
+        output = options.pretty ? JSON.stringify(manifest, null, 2) : JSON.stringify(manifest);
+    } else {
+        const schemas = AgenticPDF.getToolSchemas(format as any);
+        output = options.pretty ? JSON.stringify(schemas, null, 2) : JSON.stringify(schemas);
+    }
+
+    if (options.output) {
+        const safePath = validateOutputPath(options.output);
+        fs.writeFileSync(safePath, output, 'utf-8');
+        log.success(`Tool schemas (${format}) saved to: ${options.output}`);
+    } else {
+        console.log(output);
     }
 }
 
@@ -1372,6 +1517,13 @@ async function main(): Promise<void> {
 
     if (args[0] === '--version') {
         displayVersion();
+        return;
+    }
+
+    // Standalone --tool-schema flag (no file needed)
+    if (args.includes('--tool-schema')) {
+        const opts = parseArgs(['tool-schema', ...args]);
+        await commandToolSchema(opts);
         return;
     }
 
@@ -1420,6 +1572,12 @@ async function main(): Promise<void> {
                 break;
             case 'generate':
                 await commandGenerate(options);
+                break;
+            case 'ingest':
+                await commandIngest(options);
+                break;
+            case 'tool-schema':
+                await commandToolSchema(options);
                 break;
             case 'help':
                 displayHelp();

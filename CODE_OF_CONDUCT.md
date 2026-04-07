@@ -206,7 +206,7 @@ Our community strives to:
 - **Technical Questions**: [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
 - **Bug Reports**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
 - **Feature Requests**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues/new?template=feature_request.yml)
-- **General Contact**: [hello@nervosys.com](mailto:hello@nervosys.com)
+- **General Contact**: [hello@nervosys.ai](mailto:hello@nervosys.ai)
 
 ## Attribution
 

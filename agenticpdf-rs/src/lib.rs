@@ -1,7 +1,10 @@
 //! AgenticPDF — High-performance PDF processing library in Rust.
 //!
 //! Core PDF parsing, text extraction, and WASM-exportable operations
-//! optimized for agentic AI workflows.
+//! optimized for agentic AI workflows. Includes a machine-readable ontology
+//! for autonomous discovery by agentic LLMs (ChatGPT, Claude, etc.).
+
+#![recursion_limit = "512"]
 
 pub mod parser;
 
@@ -20,7 +23,11 @@ pub struct PdfDocument {
     pub version: String,
     pub pages: Vec<PdfPage>,
     pub metadata: PdfMetadata,
+    pub annotations: Vec<PdfAnnotation>,
+    pub outline: Vec<OutlineItem>,
+    #[allow(dead_code)]
     xref: Vec<XRefEntry>,
+    #[allow(dead_code)]
     data: Vec<u8>,
 }
 
@@ -55,10 +62,14 @@ pub struct PdfMetadata {
     pub creator: Option<String>,
     pub producer: Option<String>,
     pub creation_date: Option<String>,
+    pub modification_date: Option<String>,
     pub page_count: usize,
     pub file_size: usize,
     pub pdf_version: String,
     pub encrypted: bool,
+    pub has_forms: bool,
+    pub has_annotations: bool,
+    pub has_outlines: bool,
 }
 
 /// A semantic chunk for RAG pipelines.
@@ -85,6 +96,28 @@ pub struct ImageInfo {
     pub data_length: usize,
 }
 
+/// A PDF annotation (link, highlight, note, widget, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfAnnotation {
+    pub subtype: String,
+    pub page_number: usize,
+    pub rect: [f64; 4],
+    pub contents: Option<String>,
+    pub uri: Option<String>,
+    pub dest: Option<String>,
+    pub title: Option<String>,
+    pub color: Option<[f64; 3]>,
+}
+
+/// A bookmark / outline entry in the document's table of contents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutlineItem {
+    pub title: String,
+    pub page_number: Option<usize>,
+    pub dest: Option<String>,
+    pub children: Vec<OutlineItem>,
+}
+
 /// Cross-reference table entry.
 #[derive(Debug, Clone)]
 pub struct XRefEntry {
@@ -92,6 +125,16 @@ pub struct XRefEntry {
     pub offset: usize,
     pub generation: u16,
     pub in_use: bool,
+}
+
+/// Comprehensive extraction result for the `all` command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FullExtraction {
+    pub metadata: PdfMetadata,
+    pub pages: Vec<PdfPage>,
+    pub annotations: Vec<PdfAnnotation>,
+    pub outline: Vec<OutlineItem>,
+    pub chunks: Vec<SemanticChunk>,
 }
 
 // ============================================================================
@@ -193,6 +236,27 @@ impl PdfDocument {
         &self.metadata
     }
 
+    /// Get all annotations.
+    pub fn get_annotations(&self) -> &[PdfAnnotation] {
+        &self.annotations
+    }
+
+    /// Get the document outline (bookmarks / table of contents).
+    pub fn get_outline(&self) -> &[OutlineItem] {
+        &self.outline
+    }
+
+    /// Extract everything: metadata, pages, annotations, outline, and chunks.
+    pub fn extract_all(&self, chunk_size: usize, chunk_overlap: usize) -> FullExtraction {
+        FullExtraction {
+            metadata: self.metadata.clone(),
+            pages: self.pages.clone(),
+            annotations: self.annotations.clone(),
+            outline: self.outline.clone(),
+            chunks: self.generate_chunks(chunk_size, chunk_overlap),
+        }
+    }
+
     /// Export all text as JSON.
     pub fn export_json(&self) -> Result<String, PdfError> {
         serde_json::to_string_pretty(&self.pages).map_err(|e| PdfError::ExportError(e.to_string()))
@@ -208,6 +272,374 @@ impl PdfDocument {
         }
         score.min(1.0)
     }
+}
+
+// ============================================================================
+// Ontology — Machine-readable self-description for agentic LLM discovery
+// ============================================================================
+
+/// Returns the full CLI ontology as a JSON string.
+/// This allows agentic LLMs (ChatGPT, Claude, Gemini, etc.) to programmatically
+/// discover the CLI's commands, parameters, output schemas, and workflows.
+pub fn describe_ontology() -> String {
+    serde_json::to_string_pretty(&build_ontology()).unwrap_or_default()
+}
+
+/// Build the structured ontology object.
+pub fn build_ontology() -> serde_json::Value {
+    serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "apdf",
+        "version": "1.0.0",
+        "license": "AGPL-3.0-or-later",
+        "description": "High-performance Rust CLI for PDF text extraction, metadata parsing, semantic chunking, annotation reading, and outline extraction. Designed for agentic AI workflows with structured JSON output.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Windows, macOS, Linux",
+        "programmingLanguage": "Rust",
+        "url": "https://github.com/nervosys/AgenticPDF",
+        "installInstructions": "cargo install agenticpdf  OR  download pre-built binary from GitHub Releases",
+        "invocation": {
+            "binary": "apdf",
+            "shell": "apdf <COMMAND> [OPTIONS]",
+            "help": "apdf --help",
+            "version": "apdf --version"
+        },
+        "commands": [
+            {
+                "name": "text",
+                "description": "Extract text content from a PDF with positioning, font metadata, and page structure.",
+                "usage": "apdf text <FILE> [--pages 1-5] [--format text|json] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range (e.g. '1-5' or '3'). Defaults to all pages." },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format. Use 'json' for structured output with positioning." },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file instead of stdout" }
+                ],
+                "outputSchema": {
+                    "text": "Concatenated text strings separated by newlines",
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "PdfPage",
+                            "properties": {
+                                "index": { "type": "integer", "description": "0-based page index" },
+                                "width": { "type": "number", "description": "Page width in points" },
+                                "height": { "type": "number", "description": "Page height in points" },
+                                "text_content": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "TextBlock",
+                                        "properties": {
+                                            "text": { "type": "string" },
+                                            "x": { "type": "number", "description": "Horizontal position in points" },
+                                            "y": { "type": "number", "description": "Vertical position in points" },
+                                            "width": { "type": "number" },
+                                            "height": { "type": "number" },
+                                            "font_size": { "type": "number" },
+                                            "font_name": { "type": "string" },
+                                            "page_number": { "type": "integer", "description": "1-based page number" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf text document.pdf",
+                    "apdf text document.pdf --format json",
+                    "apdf text document.pdf --pages 1-3 --format json --output extracted.json"
+                ]
+            },
+            {
+                "name": "meta",
+                "description": "Show PDF metadata: title, author, subject, creator, producer, dates, page count, encryption status, and feature flags.",
+                "usage": "apdf meta <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "PdfMetadata",
+                        "properties": {
+                            "title": { "type": "string|null" },
+                            "author": { "type": "string|null" },
+                            "subject": { "type": "string|null" },
+                            "creator": { "type": "string|null" },
+                            "producer": { "type": "string|null" },
+                            "creation_date": { "type": "string|null" },
+                            "modification_date": { "type": "string|null" },
+                            "page_count": { "type": "integer" },
+                            "file_size": { "type": "integer", "description": "File size in bytes" },
+                            "pdf_version": { "type": "string" },
+                            "encrypted": { "type": "boolean" },
+                            "has_forms": { "type": "boolean" },
+                            "has_annotations": { "type": "boolean" },
+                            "has_outlines": { "type": "boolean" }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf meta document.pdf",
+                    "apdf meta document.pdf --format json"
+                ]
+            },
+            {
+                "name": "annotations",
+                "description": "Extract all annotations (links, highlights, notes, widgets, file attachments, etc.) from a PDF.",
+                "usage": "apdf annotations <FILE> [--pages 1-5] [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "PdfAnnotation",
+                            "properties": {
+                                "subtype": { "type": "string", "description": "Annotation type: Link, Text, Highlight, Widget, FileAttachment, etc." },
+                                "page_number": { "type": "integer", "description": "1-based page number" },
+                                "rect": { "type": "array", "items": { "type": "number" }, "description": "[x1, y1, x2, y2] bounding box" },
+                                "contents": { "type": "string|null", "description": "Text content of the annotation" },
+                                "uri": { "type": "string|null", "description": "URL for Link annotations" },
+                                "dest": { "type": "string|null", "description": "Internal destination reference" },
+                                "title": { "type": "string|null", "description": "Author or title of the annotation" },
+                                "color": { "type": "array|null", "description": "[r, g, b] color values 0-1" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf annotations document.pdf",
+                    "apdf annotations document.pdf --pages 1-5 --format json"
+                ]
+            },
+            {
+                "name": "outline",
+                "description": "Extract the document outline (bookmarks / table of contents) as a hierarchical tree.",
+                "usage": "apdf outline <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "OutlineItem",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "page_number": { "type": "integer|null", "description": "1-based destination page" },
+                                "dest": { "type": "string|null" },
+                                "children": { "type": "array", "items": { "$ref": "OutlineItem" } }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf outline document.pdf",
+                    "apdf outline document.pdf --format text"
+                ]
+            },
+            {
+                "name": "images",
+                "description": "List images embedded in a PDF with dimensions, color space, compression filter, and byte offsets.",
+                "usage": "apdf images <FILE> [--pages 1-5] [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "ImageInfo",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "width": { "type": "integer" },
+                                "height": { "type": "integer" },
+                                "color_space": { "type": "string" },
+                                "bits_per_component": { "type": "integer" },
+                                "filter": { "type": "string" },
+                                "page_number": { "type": "integer" },
+                                "data_offset": { "type": "integer" },
+                                "data_length": { "type": "integer" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf images document.pdf",
+                    "apdf images document.pdf --pages 1-3"
+                ]
+            },
+            {
+                "name": "chunk",
+                "description": "Generate semantic chunks for RAG pipelines with configurable size and overlap. Chunks include importance scoring and page provenance.",
+                "usage": "apdf chunk <FILE> [--size 500] [--overlap 50] [--format text|json] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--size", "type": "integer", "default": 500, "description": "Maximum chunk size in words (clamped to 50-10000)" },
+                    { "name": "--overlap", "type": "integer", "default": 50, "description": "Word overlap between chunks (clamped to 0-size/2)" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "SemanticChunk",
+                            "properties": {
+                                "id": { "type": "string", "description": "Unique chunk identifier (chunk_0, chunk_1, ...)" },
+                                "content": { "type": "string" },
+                                "page_numbers": { "type": "array", "items": { "type": "integer" } },
+                                "token_count": { "type": "integer" },
+                                "importance": { "type": "number", "description": "0.0 to 1.0 importance score" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf chunk document.pdf",
+                    "apdf chunk document.pdf --size 1000 --overlap 100 --format json --output chunks.json"
+                ]
+            },
+            {
+                "name": "all",
+                "description": "Extract everything from a PDF in a single pass: metadata, all pages with text, annotations, outline, and semantic chunks. Ideal for agentic workflows that need comprehensive document understanding.",
+                "usage": "apdf all <FILE> [--chunk-size 500] [--chunk-overlap 50] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--chunk-size", "type": "integer", "default": 500, "description": "Chunk size for semantic chunking" },
+                    { "name": "--chunk-overlap", "type": "integer", "default": 50, "description": "Overlap for semantic chunking" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "FullExtraction",
+                        "properties": {
+                            "metadata": { "$ref": "PdfMetadata" },
+                            "pages": { "type": "array", "items": { "$ref": "PdfPage" } },
+                            "annotations": { "type": "array", "items": { "$ref": "PdfAnnotation" } },
+                            "outline": { "type": "array", "items": { "$ref": "OutlineItem" } },
+                            "chunks": { "type": "array", "items": { "$ref": "SemanticChunk" } }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf all document.pdf",
+                    "apdf all document.pdf --chunk-size 1000 --output full.json"
+                ]
+            },
+            {
+                "name": "describe",
+                "description": "Output this machine-readable JSON-LD ontology describing all commands, parameters, output schemas, and workflows. Used by agentic LLMs for capability discovery.",
+                "usage": "apdf describe",
+                "parameters": [],
+                "outputSchema": { "type": "LibraryOntology", "format": "JSON-LD" },
+                "examples": ["apdf describe"]
+            },
+            {
+                "name": "info",
+                "description": "Show library version, capabilities summary, and supported formats.",
+                "usage": "apdf info [--format text|json]",
+                "parameters": [
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "examples": ["apdf info", "apdf info --format json"]
+            }
+        ],
+        "workflows": [
+            {
+                "id": "basic-text-extraction",
+                "name": "Basic Text Extraction",
+                "description": "Extract readable text from a PDF",
+                "steps": [
+                    "apdf text document.pdf"
+                ]
+            },
+            {
+                "id": "structured-extraction",
+                "name": "Structured JSON Extraction",
+                "description": "Extract text with full positional and font metadata as JSON",
+                "steps": [
+                    "apdf text document.pdf --format json"
+                ]
+            },
+            {
+                "id": "rag-pipeline",
+                "name": "RAG Pipeline Preparation",
+                "description": "Generate semantic chunks for vector store ingestion",
+                "steps": [
+                    "apdf chunk document.pdf --size 1000 --overlap 100 --format json --output chunks.json"
+                ]
+            },
+            {
+                "id": "comprehensive-analysis",
+                "name": "Comprehensive Document Analysis",
+                "description": "Extract all data from a PDF in one pass for full document understanding",
+                "steps": [
+                    "apdf all document.pdf --output full.json"
+                ]
+            },
+            {
+                "id": "metadata-triage",
+                "name": "Document Triage via Metadata",
+                "description": "Quickly inspect document properties before full processing",
+                "steps": [
+                    "apdf meta document.pdf --format json"
+                ]
+            },
+            {
+                "id": "navigation-extraction",
+                "name": "Table of Contents Extraction",
+                "description": "Extract the document outline/bookmarks for navigation",
+                "steps": [
+                    "apdf outline document.pdf --format json"
+                ]
+            },
+            {
+                "id": "link-annotation-audit",
+                "name": "Link & Annotation Audit",
+                "description": "List all links, highlights, notes, and other annotations",
+                "steps": [
+                    "apdf annotations document.pdf --format json"
+                ]
+            }
+        ],
+        "capabilities": [
+            "text_extraction",
+            "text_positioning",
+            "font_metadata",
+            "metadata_parsing",
+            "semantic_chunking",
+            "annotation_extraction",
+            "outline_extraction",
+            "image_enumeration",
+            "flatedecode_decompression",
+            "png_predictor_unfiltering",
+            "xref_table_parsing",
+            "encryption_detection",
+            "structured_json_output",
+            "page_range_filtering",
+            "file_output",
+            "wasm_compilation"
+        ],
+        "outputFormats": ["text", "json"],
+        "supportedPdfVersions": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "2.0"],
+        "limits": {
+            "maxXRefEntries": 1000000,
+            "maxStreamSize": "256MB",
+            "maxObjects": 500000,
+            "maxRecursionDepth": 64,
+            "chunkSizeRange": "50-10000 words"
+        }
+    })
 }
 
 // ============================================================================
@@ -293,6 +725,8 @@ mod tests {
                 ],
             }],
             metadata: PdfMetadata::default(),
+            annotations: vec![],
+            outline: vec![],
             xref: vec![],
             data: vec![],
         };
@@ -322,6 +756,8 @@ mod tests {
                 }],
             }],
             metadata: PdfMetadata::default(),
+            annotations: vec![],
+            outline: vec![],
             xref: vec![],
             data: vec![],
         };

@@ -10,7 +10,9 @@
 ## Features
 
 - **Streaming-First** — Process large PDFs without memory bloat via `streamText()` and `streamSemanticChunks()`
+- **Agentic Ingestion** — Single-call `ingest()` returns metadata, structure, chunks, and stats; `streamIngest()` yields NDJSON
 - **AI-Native** — Built-in semantic chunking, structural analysis, and embedding provider interface for RAG pipelines
+- **Tool Schemas** — Export OpenAI, Anthropic, and MCP function-calling schemas via `getToolSchemas()` and `getMCPManifest()`
 - **Canvas Rendering** — Full PDF-to-canvas rendering with text, images, vector graphics, and form XObjects
 - **Complete Extraction** — Text, images, forms, annotations, and metadata
 - **Zero Dependencies** — Single TypeScript file (`agenticpdf.ts`), no runtime deps
@@ -117,6 +119,55 @@ class MyEmbeddings implements EmbeddingProvider {
 const ai = await pdf.getAIFeatures({
   embeddingProvider: new MyEmbeddings(),
 });
+```
+
+### Agentic Ingestion
+
+One call gets everything an AI agent needs — metadata, structure, semantic chunks, and stats:
+
+```typescript
+const result = await pdf.ingest({ maxChunkSize: 1000 });
+
+console.log(result.documentType);          // "AcademicPaper"
+console.log(result.summary);               // Extractive summary
+console.log(result.stats.totalChunks);     // Number of semantic chunks
+console.log(result.stats.processingTimeMs); // End-to-end time
+
+for (const chunk of result.chunks) {
+  await vectorStore.add(chunk.content, {
+    pages: chunk.pages,
+    importance: chunk.importance,
+    keywords: chunk.keywords,
+  });
+}
+```
+
+Stream as NDJSON for pipelines and large documents:
+
+```typescript
+for await (const record of pdf.streamIngest()) {
+  process.stdout.write(JSON.stringify(record) + '\n');
+  // Yields: header → chunk → chunk → ... → footer
+}
+```
+
+### Tool Schemas & Agent Discovery
+
+Export function-calling schemas for LLM integrations:
+
+```typescript
+// Full introspection payload (ontology + tools + schemas + guidance)
+const info = AgenticPDF.describeForAgent('openai');
+
+// Tool schemas for specific platforms
+const openaiTools = AgenticPDF.getToolSchemas('openai');
+const anthropicTools = AgenticPDF.getToolSchemas('anthropic');
+
+// MCP server manifest
+const manifest = AgenticPDF.getMCPManifest();
+
+// JSON schemas for all types
+const schemas = AgenticPDF.getJSONSchemas();
 ```
 
 ### Form Processing
@@ -229,6 +280,9 @@ TypeScript examples in `examples/`:
 3. **Streaming to LLM** — Stream chunks to language models (`03-streaming-to-llm.ts`)
 4. **Batch Processing** — Process multiple PDFs efficiently (`04-batch-processing.ts`)
 5. **Real-time WebSocket** — Live PDF processing over WebSocket (`05-realtime-websocket.ts`)
+6. **aPDF Metadata** — Generate and inspect aPDF metadata envelopes (`06-apdf-metadata.ts`)
+7. **aPDF Use Cases** — Real-world aPDF scenarios (`07-apdf-use-cases.ts`)
+8. **Typesetting & Web Display** — PretextLayout for rich text rendering (`08-typesetting-web-display.ts`)
 
 ```bash
 npm run examples
@@ -240,7 +294,7 @@ AgenticPDF is a single-file library (`agenticpdf.ts`) with these core components
 
 | Component             | Purpose                                                           |
 | --------------------- | ----------------------------------------------------------------- |
-| `AgenticPDF`          | Primary API — factory methods, extraction, rendering              |
+| `AgenticPDF`          | Primary API — factory methods, extraction, rendering, ingestion   |
 | `PDFParser`           | Binary PDF parsing — xref tables, object streams, page tree       |
 | `StreamingPDFParser`  | Incremental parsing for streaming sources                         |
 | `ContentStreamParser` | PDF content stream operator parsing                               |
@@ -250,6 +304,9 @@ AgenticPDF is a single-file library (`agenticpdf.ts`) with these core components
 | `TextExtractor`       | Text extraction with formatting preservation                      |
 | `ImageExtractor`      | Image extraction and decoding (JPEG, PNG, CCITT)                  |
 | `FormExtractor`       | AcroForm field extraction and filling                             |
+| `AIAnalyzer`          | Structural analysis, NER, summarization, document typing          |
+| `SemanticChunker`     | Configurable chunking strategies for RAG pipelines                |
+| `PretextLayout`       | Native multiline text layout with CJK and grapheme support        |
 
 ## Advanced Features
 
@@ -380,32 +437,79 @@ await loader.ensureLoaded(currentPage);
 AI agents can programmatically discover capabilities:
 
 ```typescript
-const ontology = AgenticPDF.describe();         // Full JSON-LD ontology
-const capabilities = AgenticPDF.getCapabilities(); // Capability map
-const methods = AgenticPDF.getMethodSignatures();  // All method signatures
-const workflows = AgenticPDF.getWorkflows();       // Pre-built workflow templates
+// Full introspection in one call (ontology + tools + schemas + guidance)
+const info = AgenticPDF.describeForAgent('openai');
+
+// Individual discovery endpoints
+const ontology = AgenticPDF.describe();              // Full JSON-LD ontology
+const capabilities = AgenticPDF.getCapabilities();   // Capability map
+const methods = AgenticPDF.getMethodSignatures();     // All method signatures
+const workflows = AgenticPDF.getWorkflows();          // 16 pre-built workflow templates
+
+// Tool schemas for LLM function-calling
+const tools = AgenticPDF.getToolSchemas('openai');    // OpenAI, Anthropic, or generic
+const manifest = AgenticPDF.getMCPManifest();         // MCP server manifest
+const schemas = AgenticPDF.getJSONSchemas();          // JSON schemas for all types
 
 // Instance-level: what's possible with this specific document
 const report = pdf.describeDocument();
 console.log(`Recommended workflows: ${report.recommendedWorkflows}`);
 ```
 
-## License
+## CLI
 
-[AGPL-3.0-or-later](LICENSE)
-| `AnnotationExtractor` | Annotation parsing                                                |
-| `AIAnalyzer`          | Document structure analysis and NLP preparation                   |
-| `SemanticChunker`     | Intelligent text chunking for RAG systems                         |
-| `PDFRenderer`         | Page rendering coordinator                                        |
-| `PDFExporter`         | Multi-format export (text, HTML, Markdown, JSON)                  |
-| `PDFWriter`           | PDF modification and writing                                      |
+AgenticPDF ships a full-featured CLI (`apdf` / `agenticpdf`):
+
+```bash
+# Text extraction
+apdf text -i document.pdf -o output.txt
+
+# Unified AI ingestion (single JSON)
+apdf ingest -i document.pdf -o ingested.json
+
+# Streaming AI ingestion (NDJSON to stdout)
+apdf ingest -i document.pdf --ndjson
+
+# Ingest with custom chunk size and per-page text
+apdf ingest -i document.pdf --chunk-size 500 --include-text -o result.json
+
+# Export tool schemas for AI agent integration
+apdf tool-schema --tool-schema openai
+apdf tool-schema --tool-schema mcp
+
+# Other commands
+apdf meta -i document.pdf          # Metadata
+apdf chunk -i document.pdf         # Semantic chunks
+apdf describe                      # JSON-LD ontology
+apdf generate -i paper.pdf -o paper.apdf  # aPDF format
+```
+
+## Rust CLI
+
+A native Rust CLI (`apdf`) is available in `agenticpdf-rs/` for fast PDF extraction without a Node.js runtime:
+
+```bash
+# Build the Rust CLI
+cd agenticpdf-rs && cargo build --release
+
+# Extract text
+apdf text document.pdf
+
+# Get metadata
+apdf meta document.pdf
+
+# Full JSON-LD ontology
+apdf describe
+```
+
+See [agenticpdf-rs/README.md](agenticpdf-rs/README.md) for details.
 
 ## Scripts
 
 ```bash
 npm run build            # Generate TypeScript declarations
 npm run build:browser    # Build browser IIFE bundle
-npm test                 # Run all tests (Jest, 560 tests)
+npm test                 # Run all tests (Jest, 950 tests across 25 suites)
 npm run test:coverage    # Tests with coverage report
 npm run typecheck        # TypeScript type checking
 npm run lint             # ESLint
@@ -453,6 +557,6 @@ try {
 AgenticPDF is dual-licensed:
 
 - **[AGPLv3](https://www.gnu.org/licenses/agpl-3.0.html)** for open-source use
-- **[Commercial License](https://nervosys.com/licensing)** for proprietary use
+- **[Commercial License](https://nervosys.ai/licensing)** for proprietary use
 
 See [LICENSE](LICENSE) for details.

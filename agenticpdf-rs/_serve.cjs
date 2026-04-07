@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const root = 'c:/Users/adamm/dev/nervosys/utilities/ModernPDF';
+const root = path.resolve(__dirname, '..');
 const mimes = {
   '.html': 'text/html',
   '.js': 'application/javascript',

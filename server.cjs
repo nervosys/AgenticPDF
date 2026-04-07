@@ -46,7 +46,12 @@ const server = http.createServer((req, res) => {
                 res.end('Internal Server Error', 'utf-8');
             }
         } else {
-            res.writeHead(200, { 'Content-Type': contentType });
+            res.writeHead(200, {
+                'Content-Type': contentType,
+                'X-Content-Type-Options': 'nosniff',
+                'X-Frame-Options': 'SAMEORIGIN',
+                'Referrer-Policy': 'strict-origin-when-cross-origin'
+            });
             res.end(content, 'utf-8');
         }
     });

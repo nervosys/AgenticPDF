@@ -1,14 +1,13 @@
-# AgenticPDF Core - PDF.js Architecture Reimplementation
+# AgenticPDF Core Architecture
 
 ## Overview
 
-This is a **complete reimplementation** of PDF.js's architecture in TypeScript, written entirely from scratch. It follows the exact same design patterns and component structure that Mozilla uses in PDF.js, but with zero dependencies.
+This is a **complete, native TypeScript implementation** of a PDF processing pipeline, written entirely from scratch with zero dependencies. It follows a modular component architecture optimized for streaming, AI integration, and browser-based rendering.
 
 ## Architecture Components
 
 ### 1. **Stream** (`Stream` class)
 - **Purpose**: Low-level byte stream abstraction
-- **PDF.js Equivalent**: `src/core/stream.js`
 - **Responsibilities**:
   - Byte-by-byte reading
   - Position tracking
@@ -23,7 +22,6 @@ const nextByte = stream.peekByte();
 
 ### 2. **Lexer** (`Lexer` class)
 - **Purpose**: Tokenization layer
-- **PDF.js Equivalent**: `src/core/lexer.js`
 - **Responsibilities**:
   - Convert byte stream into tokens
   - Handle PDF primitives (numbers, strings, names, keywords)
@@ -45,7 +43,6 @@ const token = lexer.getToken(); // { type: TokenType.Integer, value: 42 }
 
 ### 3. **Parser** (`Parser` class)
 - **Purpose**: Object construction from tokens
-- **PDF.js Equivalent**: `src/core/parser.js`
 - **Responsibilities**:
   - Build PDF objects from token stream
   - Handle all 9 PDF object types
@@ -70,7 +67,6 @@ const obj = parser.getObj(); // Returns Obj instance
 
 ### 4. **XRef** (Cross-Reference Table)
 - **Purpose**: Object location and resolution
-- **PDF.js Equivalent**: `src/core/xref.js`
 - **Responsibilities**:
   - Parse xref table
   - Store object offsets
@@ -95,7 +91,6 @@ interface XRefEntry {
 
 ### 5. **Catalog** (Document Catalog)
 - **Purpose**: Document structure navigation
-- **PDF.js Equivalent**: `src/core/catalog.js`
 - **Responsibilities**:
   - Access page tree
   - Count pages
@@ -116,7 +111,6 @@ const page = await catalog.getPage(1);
 
 ### 6. **Page** (Individual Page)
 - **Purpose**: Page content and metadata
-- **PDF.js Equivalent**: `src/core/page.js`
 - **Responsibilities**:
   - Store page dictionary
   - Calculate viewport (dimensions)
@@ -140,7 +134,6 @@ interface PageViewport {
 
 ### 7. **CanvasGraphics** (Rendering Engine)
 - **Purpose**: Execute PDF operators on canvas
-- **PDF.js Equivalent**: `src/display/canvas.js`
 - **Responsibilities**:
   - Maintain graphics state stack
   - Execute PDF operators
@@ -266,7 +259,7 @@ const graphics = new CanvasGraphics(ctx);
 await graphics.executeOperatorList(operations);
 ```
 
-## Key Design Patterns from PDF.js
+## Key Design Patterns
 
 ### 1. **Separation of Concerns**
 Each component has a single, well-defined responsibility:
@@ -322,19 +315,19 @@ private async executeOp(op: string, args: Obj[]): Promise<void> {
 }
 ```
 
-## Comparison with PDF.js
+## Component Summary
 
-| Component | PDF.js File  | AgenticPDF Core         | Lines | Status           |
-| --------- | ------------ | ---------------------- | ----- | ---------------- |
-| Stream    | `stream.js`  | `Stream` class         | ~100  | ✅ Complete       |
-| Lexer     | `lexer.js`   | `Lexer` class          | ~250  | ✅ Complete       |
-| Parser    | `parser.js`  | `Parser` class         | ~150  | ✅ Complete       |
-| XRef      | `xref.js`    | `XRef` class           | ~200  | ✅ Complete       |
-| Catalog   | `catalog.js` | `Catalog` class        | ~150  | ✅ Complete       |
-| Page      | `page.js`    | `Page` class           | ~150  | ✅ Complete       |
-| Canvas    | `canvas.js`  | `CanvasGraphics` class | ~250  | 🚧 Core operators |
+| Component | Class                | Lines | Status           |
+| --------- | -------------------- | ----- | ---------------- |
+| Stream    | `Stream`             | ~100  | ✅ Complete       |
+| Lexer     | `Lexer`              | ~250  | ✅ Complete       |
+| Parser    | `Parser`             | ~150  | ✅ Complete       |
+| XRef      | `XRef`               | ~200  | ✅ Complete       |
+| Catalog   | `Catalog`            | ~150  | ✅ Complete       |
+| Page      | `Page`               | ~150  | ✅ Complete       |
+| Canvas    | `CanvasGraphics`     | ~250  | 🚧 Core operators |
 
-**Total:** ~1,250 lines of TypeScript implementing PDF.js's core architecture
+**Total:** ~1,250 lines of TypeScript implementing a complete PDF processing pipeline
 
 ## What's Implemented
 
@@ -478,7 +471,7 @@ describe('PDF Rendering', () => {
 
 ## Contributing
 
-When adding features, follow PDF.js's architecture:
+When adding features, follow the established architecture:
 
 1. **Keep components focused** - One responsibility per class
 2. **Use lazy evaluation** - Only resolve when needed
@@ -488,10 +481,9 @@ When adding features, follow PDF.js's architecture:
 
 ## References
 
-- **PDF.js Source**: https://github.com/mozilla/pdf.js
 - **PDF Specification**: ISO 32000-2:2020
 - **PDF Reference (1.7)**: https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf
 
 ## License
 
-This implementation follows the same architectural patterns as PDF.js but is written entirely from scratch for educational and practical purposes.
+This is an original implementation written from scratch as part of the AgenticPDF project.
