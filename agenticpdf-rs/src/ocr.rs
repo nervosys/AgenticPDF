@@ -73,6 +73,24 @@ pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
     let gray = matches!(cs, "DeviceGray" | "CalGray" | "G");
     let bpc = blob.bits_per_component;
 
+    // Indexed / palette: each sample is an index into a color lookup table.
+    if cs == "Indexed"
+        && let Some(pal) = &blob.palette
+        && let Some(indices) = unpack_samples(&blob.bytes, w as usize, h as usize, bpc)
+    {
+        let bc = pal.base_components as usize;
+        let mut pixels = Vec::with_capacity(indices.len());
+        for &idx in &indices {
+            let off = idx as usize * bc;
+            pixels.push(palette_luma(&pal.data, off, bc));
+        }
+        return Some(GrayImage {
+            width: w,
+            height: h,
+            pixels,
+        });
+    }
+
     if gray {
         // Rows are padded to a byte boundary; unpack 1/2/4/8-bit samples,
         // scaling sub-byte depths up to the full 0–255 range. This covers
@@ -103,9 +121,9 @@ pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
     None
 }
 
-/// Unpack a row-padded grayscale sample stream (1/2/4/8 bpc) to 8-bit luma.
+/// Unpack a row-padded sample stream (1/2/4/8 bpc) to raw integer values.
 #[cfg(feature = "ocr")]
-fn unpack_gray(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u8>> {
+fn unpack_samples(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u32>> {
     let bits = bpc as usize;
     if !matches!(bits, 1 | 2 | 4 | 8) {
         return None;
@@ -114,20 +132,48 @@ fn unpack_gray(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u8>> {
     if bytes.len() < stride.checked_mul(h)? {
         return None;
     }
-    let max = (1u32 << bits) - 1; // 1, 3, 15, 255
-    let mut pixels = Vec::with_capacity(w * h);
+    let max = (1u32 << bits) - 1;
+    let mut out = Vec::with_capacity(w * h);
     for row in 0..h {
         let base = row * stride;
         for col in 0..w {
             let bit_pos = col * bits;
             let byte = bytes[base + bit_pos / 8];
             let shift = 8 - bits - (bit_pos % 8);
-            let raw = (byte >> shift) as u32 & max;
-            // Scale to the full 0–255 range (1-bit: 0→0, 1→255).
-            pixels.push(((raw * 255) / max) as u8);
+            out.push((byte >> shift) as u32 & max);
         }
     }
-    Some(pixels)
+    Some(out)
+}
+
+/// Unpack a row-padded grayscale sample stream (1/2/4/8 bpc) to 8-bit luma.
+#[cfg(feature = "ocr")]
+fn unpack_gray(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u8>> {
+    let max = (1u32 << bpc as usize) - 1;
+    let samples = unpack_samples(bytes, w, h, bpc)?;
+    // Scale each sample to the full 0–255 range (1-bit: 0→0, 1→255).
+    Some(samples.iter().map(|&v| ((v * 255) / max) as u8).collect())
+}
+
+/// Luminance of a palette entry at byte offset `off` with `bc` components.
+#[cfg(feature = "ocr")]
+fn palette_luma(data: &[u8], off: usize, bc: usize) -> u8 {
+    let get = |i: usize| data.get(off + i).copied().unwrap_or(0) as u32;
+    match bc {
+        1 => get(0) as u8,
+        4 => {
+            // CMYK → RGB → luma.
+            let (c, m, y, k) = (get(0), get(1), get(2), get(3));
+            let r = ((255 - c) * (255 - k)) / 255;
+            let g = ((255 - m) * (255 - k)) / 255;
+            let b = ((255 - y) * (255 - k)) / 255;
+            ((r * 299 + g * 587 + b * 114) / 1000) as u8
+        }
+        _ => {
+            // RGB (or first three components).
+            ((get(0) * 299 + get(1) * 587 + get(2) * 114) / 1000) as u8
+        }
+    }
 }
 
 /// An OCR engine that recognizes decoded raster images. Implement this and call
@@ -351,6 +397,7 @@ mod tests {
             color_space: "DeviceGray".into(),
             filter: "FlateDecode".into(),
             bytes: vec![10, 20, 30, 40],
+            palette: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!((img.width, img.height), (2, 2));
@@ -384,6 +431,7 @@ mod tests {
             color_space: "DeviceGray".into(),
             filter: "FlateDecode".into(),
             bytes: vec![0b1111_0000],
+            palette: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels, vec![255, 255, 255, 255, 0, 0, 0, 0]);
@@ -400,10 +448,32 @@ mod tests {
             color_space: "DeviceRGB".into(),
             filter: "FlateDecode".into(),
             bytes: vec![255, 0, 0], // pure red → luma ~76
+            palette: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels.len(), 1);
         assert!((img.pixels[0] as i32 - 76).abs() <= 1);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn decodes_indexed_palette() {
+        // 2-entry RGB palette: index 0 = black, index 1 = white. 4 pixels @ 1bpc.
+        let blob = engine::ImageBlob {
+            page_number: 1,
+            width: 4,
+            height: 1,
+            bits_per_component: 1,
+            color_space: "Indexed".into(),
+            filter: "FlateDecode".into(),
+            bytes: vec![0b1010_0000], // indices 1,0,1,0
+            palette: Some(engine::Palette {
+                base_components: 3,
+                data: vec![0, 0, 0, 255, 255, 255], // entry0 black, entry1 white
+            }),
+        };
+        let img = decode_blob(&blob).expect("decoded");
+        assert_eq!(img.pixels, vec![255, 0, 255, 0]);
     }
 
     #[test]

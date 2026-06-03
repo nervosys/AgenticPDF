@@ -1231,6 +1231,18 @@ pub struct ImageBlob {
     pub color_space: String,
     pub filter: String,
     pub bytes: Vec<u8>,
+    /// Color lookup table for an Indexed color space, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Palette>,
+}
+
+/// An Indexed color-space palette: each entry is `base_components` bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Palette {
+    /// Components per entry in the base color space (3=RGB, 1=Gray, 4=CMYK).
+    pub base_components: u8,
+    /// Flattened lookup table: `(hival + 1) * base_components` bytes.
+    pub data: Vec<u8>,
 }
 
 /// Extract image XObjects with their (partially) decoded byte payloads.
@@ -1287,11 +1299,67 @@ pub fn extract_image_blobs(data: &[u8]) -> Result<Vec<ImageBlob>, PdfError> {
                     color_space: color_space_name(&doc, d),
                     filter: filter_names(d),
                     bytes,
+                    palette: extract_palette(&doc, d),
                 });
             }
         }
     }
     Ok(out)
+}
+
+/// Parse an Indexed color-space palette from an image dict, if present.
+fn extract_palette(doc: &Document, d: &Dict) -> Option<Palette> {
+    let cs = doc.get(d, "ColorSpace").or_else(|| doc.get(d, "CS"))?;
+    let arr = cs.as_array()?;
+    let head = arr.first().and_then(|o| o.as_name())?;
+    if head != "Indexed" && head != "I" {
+        return None;
+    }
+    if arr.len() < 4 {
+        return None;
+    }
+    let base_components = color_space_components(doc, &doc.resolve(&arr[1]));
+    let lookup = doc.resolve(&arr[3]);
+    let data = match lookup {
+        Object::Str(b) => b,
+        Object::Stream(sd, raw) => decode_stream(&sd, &raw).ok()?,
+        _ => return None,
+    };
+    Some(Palette {
+        base_components,
+        data,
+    })
+}
+
+/// Number of color components for a base color space object.
+fn color_space_components(doc: &Document, cs: &Object) -> u8 {
+    match cs {
+        Object::Name(n) => match n.as_str() {
+            "DeviceGray" | "CalGray" | "G" => 1,
+            "DeviceCMYK" => 4,
+            _ => 3, // DeviceRGB / CalRGB / Lab / default
+        },
+        Object::Array(a) => match a.first().and_then(|o| o.as_name()) {
+            Some("ICCBased") => a
+                .get(1)
+                .map(|o| doc.resolve(o))
+                .and_then(|s| {
+                    s.as_dict()
+                        .and_then(|sd| doc.get(sd, "N"))
+                        .and_then(|o| o.as_int())
+                })
+                .unwrap_or(3) as u8,
+            Some("CalGray") => 1,
+            Some("DeviceN") => a
+                .get(1)
+                .and_then(|o| o.as_array())
+                .map(|names| names.len() as u8)
+                .unwrap_or(1),
+            Some("Separation") => 1,
+            _ => 3,
+        },
+        _ => 3,
+    }
 }
 
 fn color_space_name(doc: &Document, d: &Dict) -> String {

@@ -209,12 +209,15 @@ CID fonts: ToUnicode CMaps, WinAnsi + `/Differences`, Identity-H, embedded-CMap
 **codespace ranges** (mixed-byte-width tokenization), and **Unicode predefined
 CMaps** (`UniGB-UCS2-H` etc.) so CJK text decodes without a ToUnicode map.
 
-OCR image decode (`--features ocr`): JPEG (DCTDecode), 8-bit Gray/RGB, and
-**1/2/4-bit bilevel/low-depth** grayscale scans.
+OCR image decode (`--features ocr`): JPEG (DCTDecode), 8-bit Gray/RGB,
+**1/2/4-bit bilevel/low-depth** grayscale, and **indexed/palette** images
+(RGB/Gray/CMYK lookup → luma).
 
-Planned (genuinely ML/research-grade): a model-weighted OCR engine bundled with
-weights, CCITT/JBIG2 image codecs, and CID→Unicode fallback tables for the
-character-collection CMaps (Adobe-Japan1, GB1, …) of CJK fonts that ship no
+Planned (require external assets / large vectors, so deferred rather than
+shipped unverified): a model-weighted OCR engine bundled with weights;
+CCITT-G4 / JBIG2 codecs (large Huffman/arithmetic tables that can't be validated
+from memory without conformance vectors); and CID→Unicode fallback tables for
+the character-collection CMaps (Adobe-Japan1, GB1, …) of CJK fonts that ship no
 ToUnicode.
 
 ## License

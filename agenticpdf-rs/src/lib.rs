@@ -993,6 +993,7 @@ pub fn build_ontology() -> serde_json::Value {
             "ocr_backend_interface",
             "tesseract_cli_backend",
             "bilevel_image_decode",
+            "indexed_palette_decode",
             "mcp_server",
             "prompt_injection_scan",
             "hidden_text_detection",
