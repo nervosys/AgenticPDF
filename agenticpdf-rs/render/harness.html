@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>AgenticPDF renderer harness</title></head>
+<body>
+  <canvas id="gl"></canvas>
+  <canvas id="text" style="position:absolute;left:0;top:0;pointer-events:none"></canvas>
+  <script type="module">
+    import init, { displayList, pageImages } from "/agenticpdf-rs/pkg/agenticpdf.js";
+    import { renderPage } from "/agenticpdf-rs/render/dist/webgl-renderer.js";
+
+    window.runDemo = async (page = 1, scale = 1.5) => {
+      await init();
+      const bytes = new Uint8Array(await (await fetch("/demos/sample.pdf")).arrayBuffer());
+      const gl = document.getElementById("gl");
+      // Pre-create the context with preserveDrawingBuffer so readPixels works
+      // after rendering (renderPage reuses this same context).
+      const ctx = gl.getContext("webgl2", {
+        stencil: true, antialias: true, preserveDrawingBuffer: true,
+      });
+      if (!ctx) throw new Error("WebGL2 not available");
+      const dl = await renderPage(gl, document.getElementById("text"), bytes, page, { displayList, pageImages }, scale);
+      const w = gl.width, h = gl.height;
+      const px = new Uint8Array(w * h * 4);
+      ctx.readPixels(0, 0, w, h, ctx.RGBA, ctx.UNSIGNED_BYTE, px);
+      let nonwhite = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] < 250 || px[i + 1] < 250 || px[i + 2] < 250) nonwhite++;
+      }
+      return { ops: dl.ops.length, width: w, height: h, nonwhite };
+    };
+    window.__ready = true;
+  </script>
+</body>
+</html>

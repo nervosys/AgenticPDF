@@ -1034,6 +1034,8 @@ pub fn build_ontology() -> serde_json::Value {
             "form_field_extraction",
             "display_list_extraction",
             "webgl_hardware_renderer",
+            "stencil_clip_paths",
+            "image_soft_mask_alpha",
             "figure_detection",
             "caption_linking",
             "image_placement_bbox",

@@ -1620,8 +1620,13 @@ pub enum RenderOp {
     Save,
     /// Restore graphics state (pop the clip/scissor stack).
     Restore,
-    /// Intersect the clip region with a device-space rectangle [x0,y0,x1,y1].
-    Clip { rect: [f64; 4] },
+    /// Intersect the clip region with a path: `rect` is its bounding box (a
+    /// fast scissor pre-clip) and `subpaths` the polygon(s) for an exact
+    /// stencil clip.
+    Clip {
+        rect: [f64; 4],
+        subpaths: Vec<Vec<[f64; 2]>>,
+    },
 }
 
 /// A page's display list in device space (origin bottom-left, y up — PDF
@@ -1775,8 +1780,14 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             }
                         }
                         if minx.is_finite() && maxx > minx && maxy > miny {
+                            let mut clip_subpaths: Vec<Vec<[f64; 2]>> =
+                                subpaths.iter().filter(|s| s.len() >= 3).cloned().collect();
+                            if cur.len() >= 3 {
+                                clip_subpaths.push(cur.clone());
+                            }
                             ops.push(RenderOp::Clip {
                                 rect: [minx, miny, maxx, maxy],
+                                subpaths: clip_subpaths,
                             });
                         }
                     }
@@ -2278,6 +2289,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
         .unwrap_or(8) as u8;
     let cs = color_space_name(doc, d);
     let n = w * h;
+    let gray = matches!(cs.as_str(), "DeviceGray" | "CalGray" | "G");
     let mut rgba = Vec::with_capacity(n * 4);
 
     if cs == "Indexed"
@@ -2295,25 +2307,64 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
                 rgba.extend_from_slice(&[v, v, v, 255]);
             }
         }
-        return Some(("rgba".into(), w as u32, h as u32, rgba));
-    }
-
-    let gray = matches!(cs.as_str(), "DeviceGray" | "CalGray" | "G");
-    if gray && let Some(samples) = unpack_samples(&decoded, w, h, bpc) {
+    } else if gray && let Some(samples) = unpack_samples(&decoded, w, h, bpc) {
         let max = ((1u32 << bpc as usize) - 1).max(1);
         for s in samples {
             let v = ((s * 255) / max) as u8;
             rgba.extend_from_slice(&[v, v, v, 255]);
         }
-        return Some(("rgba".into(), w as u32, h as u32, rgba));
-    }
-    if bpc == 8 && decoded.len() >= n * 3 {
+    } else if bpc == 8 && decoded.len() >= n * 3 {
         for p in decoded.chunks_exact(3).take(n) {
             rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
         }
-        return Some(("rgba".into(), w as u32, h as u32, rgba));
     }
-    None
+
+    if rgba.len() != n * 4 {
+        return None;
+    }
+    apply_smask(doc, d, &mut rgba, w, h);
+    Some(("rgba".into(), w as u32, h as u32, rgba))
+}
+
+/// Apply an image's soft-mask (`/SMask`, a grayscale image) as the alpha
+/// channel of `rgba`, nearest-sampling if the mask resolution differs.
+fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
+    let smask = match doc.get(d, "SMask") {
+        Some(Object::Stream(sd, sraw)) => (sd, sraw),
+        _ => return,
+    };
+    let (sd, sraw) = smask;
+    // Soft masks are DeviceGray; skip JPEG-coded masks (no in-engine decoder).
+    let sfilter = filter_names(&sd);
+    if sfilter.contains("DCTDecode") || sfilter.contains("JPXDecode") {
+        return;
+    }
+    let sw = doc.get(&sd, "Width").and_then(|o| o.as_int()).unwrap_or(0) as usize;
+    let sh = doc.get(&sd, "Height").and_then(|o| o.as_int()).unwrap_or(0) as usize;
+    let sbpc = doc
+        .get(&sd, "BitsPerComponent")
+        .and_then(|o| o.as_int())
+        .unwrap_or(8) as u8;
+    if sw == 0 || sh == 0 {
+        return;
+    }
+    let decoded = match decode_stream(&sd, &sraw) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let samples = match unpack_samples(&decoded, sw, sh, sbpc) {
+        Some(s) => s,
+        None => return,
+    };
+    let max = ((1u32 << sbpc as usize) - 1).max(1);
+    for y in 0..h {
+        let sy = y * sh / h;
+        for x in 0..w {
+            let sx = x * sw / w;
+            let a = (samples[sy * sw + sx] * 255 / max) as u8;
+            rgba[(y * w + x) * 4 + 3] = a;
+        }
+    }
 }
 
 /// Unpack a row-padded sample stream (1/2/4/8 bpc) to raw integer values.
@@ -4046,6 +4097,25 @@ mod tests {
     }
 
     #[test]
+    fn page_image_smask_alpha() {
+        // 2x1 RGB image with a 2x1 grayscale SMask [255,0] -> alpha [255,0].
+        let pdf: &[u8] = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</XObject<</Im0 6 0 R>>>>>>endobj\n\
+            4 0 obj<<>>stream\nq 20 0 0 10 50 60 cm /Im0 Do Q\nendstream\nendobj\n\
+            6 0 obj<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace/DeviceRGB/BitsPerComponent 8/SMask 7 0 R/Length 6>>stream\n\
+\xff\x00\x00\x00\xff\x00\nendstream\nendobj\n\
+            7 0 obj<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace/DeviceGray/BitsPerComponent 8/Length 2>>stream\n\
+\xff\x00\nendstream\nendobj\n\
+            startxref\n0\n%%EOF";
+        let imgs = extract_page_images(pdf, 1).unwrap();
+        assert_eq!(imgs.len(), 1);
+        // red pixel opaque, green pixel transparent (alpha from SMask).
+        assert_eq!(b64e(&[255, 0, 0, 255, 0, 255, 0, 0]), imgs[0].data);
+    }
+
+    #[test]
     fn display_list_clip_emits_save_restore() {
         let pdf: &[u8] = b"%PDF-1.5\n\
             1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
@@ -4057,7 +4127,7 @@ mod tests {
         assert!(matches!(dl.ops.first(), Some(RenderOp::Save)));
         assert!(matches!(dl.ops.last(), Some(RenderOp::Restore)));
         let clip = dl.ops.iter().find_map(|o| match o {
-            RenderOp::Clip { rect } => Some(*rect),
+            RenderOp::Clip { rect, .. } => Some(*rect),
             _ => None,
         });
         assert_eq!(clip, Some([10.0, 10.0, 110.0, 60.0]));

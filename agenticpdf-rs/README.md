@@ -225,9 +225,15 @@ displaylist <file> --page N`; WASM: `displayList(bytes, page)`).
 `render/webgl-renderer.ts` rasterizes that list on the **GPU with WebGL2**:
 vector fills via the stencil even-odd technique (concave paths + holes, no CPU
 triangulation), strokes as expanded segment quads, **images as textured quads**
-(JPEG decoded by the browser, raw/indexed/bilevel decoded to RGBA in Rust via
-`pageImages`), **clip paths as a GPU scissor stack** (Save/Restore/Clip ops),
-and crisp text on a 2D overlay layer.
+(JPEG decoded by the browser; raw/indexed/bilevel decoded to RGBA — with
+**`/SMask` soft-mask alpha** — in Rust via `pageImages`), **non-rectangular
+clip paths** (a two-bit stencil: bit 0 = clip mask, bit 1 = fill even-odd, so
+arbitrary clip shapes and fills coexist; a scissor box pre-clips), and crisp
+text on a 2D overlay layer.
+
+Validated in a real browser: a headless Playwright (Firefox, WebGL2) harness
+(`render/test-render.mjs`) renders `demos/sample.pdf`, reads back GL pixels, and
+confirms vector content (page 1) and a decoded image texture (page 6) draw.
 
 ```bash
 # Build the WASM engine and the renderer, then serve the demo:

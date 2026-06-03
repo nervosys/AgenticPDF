@@ -25,7 +25,7 @@ export type RenderOp =
   | { op: "image"; x: number; y: number; w: number; h: number; name: string }
   | { op: "save" }
   | { op: "restore" }
-  | { op: "clip"; rect: [number, number, number, number] };
+  | { op: "clip"; rect: [number, number, number, number]; subpaths: [number, number][][] };
 
 export interface DisplayList {
   page_number: number;
@@ -142,8 +142,15 @@ function strokeQuads(pts: [number, number][], width: number): number[] {
 }
 
 type Box = [number, number, number, number]; // x, y, w, h in pixels (y up)
+interface ClipState { box: Box | null; path: [number, number][][] | null }
 
-/** Render a display list with images and clip support. */
+// Stencil bit allocation: 0x1 = "inside the active clip path"; 0x2 = transient
+// even-odd coverage used while filling. Keeping them in separate bits lets a
+// non-rectangular clip and a fill's own even-odd test coexist.
+const CLIP_BIT = 0x1;
+const FILL_BIT = 0x2;
+
+/** Render a display list with image textures and non-rectangular clipping. */
 export function renderDisplayList(
   gl: WebGL2RenderingContext,
   overlay: CanvasRenderingContext2D | null,
@@ -160,21 +167,11 @@ export function renderDisplayList(
   gl.viewport(0, 0, W, H);
   gl.clearColor(1, 1, 1, 1);
   gl.clearStencil(0);
+  gl.stencilMask(0xff);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-  // Clip/scissor stack (boxes in pixel space, y up).
-  let clip: Box | null = null;
-  const stack: (Box | null)[] = [];
-  const applyClip = () => {
-    if (clip) {
-      gl.enable(gl.SCISSOR_TEST);
-      gl.scissor(Math.round(clip[0]), Math.round(clip[1]), Math.round(clip[2]), Math.round(clip[3]));
-    } else {
-      gl.disable(gl.SCISSOR_TEST);
-    }
-  };
+  gl.enable(gl.STENCIL_TEST);
 
   const bindPos = (verts: number[]) => {
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
@@ -182,50 +179,87 @@ export function renderDisplayList(
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   };
+  const setPage = (p: WebGLProgram) => gl.uniform2f(gl.getUniformLocation(p, "u_page"), dl.width, dl.height);
+  // Triangle-fan a subpath (toggles stencil for even-odd coverage).
+  const drawFan = (sp: [number, number][]) => {
+    if (sp.length < 3) return;
+    const fan: number[] = [];
+    for (let i = 1; i + 1 < sp.length; i++)
+      fan.push(sp[0][0], sp[0][1], sp[i][0], sp[i][1], sp[i + 1][0], sp[i + 1][1]);
+    bindPos(fan);
+    gl.drawArrays(gl.TRIANGLES, 0, fan.length / 2);
+  };
+
+  let clip: ClipState = { box: null, path: null };
+  const stack: ClipState[] = [];
+  // Rebuild the GPU clip state (scissor box + stencil CLIP_BIT mask).
+  const applyClip = () => {
+    if (clip.box) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(Math.round(clip.box[0]), Math.round(clip.box[1]), Math.round(clip.box[2]), Math.round(clip.box[3]));
+    } else {
+      gl.disable(gl.SCISSOR_TEST);
+    }
+    // Reset CLIP_BIT, then stencil the clip path into it (even-odd).
+    gl.stencilMask(CLIP_BIT);
+    gl.clearStencil(0);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    if (clip.path) {
+      gl.useProgram(solid);
+      setPage(solid);
+      gl.colorMask(false, false, false, false);
+      gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
+      for (const sp of clip.path) drawFan(sp);
+      gl.colorMask(true, true, true, true);
+    }
+  };
 
   for (const op of dl.ops) {
     if (op.op === "save") {
-      stack.push(clip);
+      stack.push({ box: clip.box, path: clip.path });
     } else if (op.op === "restore") {
-      clip = stack.pop() ?? null;
+      clip = stack.pop() ?? { box: null, path: null };
       applyClip();
     } else if (op.op === "clip") {
       const [x0, y0, x1, y1] = op.rect;
       const box: Box = [x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale];
-      clip = clip ? intersect(clip, box) : box;
+      clip = { box: clip.box ? intersect(clip.box, box) : box, path: op.subpaths.length ? op.subpaths : clip.path };
       applyClip();
     } else if (op.op === "fill") {
       gl.useProgram(solid);
-      gl.uniform2f(gl.getUniformLocation(solid, "u_page"), dl.width, dl.height);
-      gl.enable(gl.STENCIL_TEST);
+      setPage(solid);
+      // Even-odd coverage into FILL_BIT (clears only that bit, keeping CLIP_BIT).
+      gl.stencilMask(FILL_BIT);
+      gl.clearStencil(0);
       gl.clear(gl.STENCIL_BUFFER_BIT);
       gl.colorMask(false, false, false, false);
       gl.stencilFunc(gl.ALWAYS, 0, 0xff);
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const sp of op.subpaths) {
-        if (sp.length < 3) continue;
-        const fan: number[] = [];
-        for (let i = 1; i + 1 < sp.length; i++)
-          fan.push(sp[0][0], sp[0][1], sp[i][0], sp[i][1], sp[i + 1][0], sp[i + 1][1]);
-        bindPos(fan);
-        gl.drawArrays(gl.TRIANGLES, 0, fan.length / 2);
+        drawFan(sp);
         for (const [x, y] of sp) {
           minX = Math.min(minX, x); minY = Math.min(minY, y);
           maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
         }
       }
-      if (!isFinite(minX)) { gl.disable(gl.STENCIL_TEST); continue; }
+      if (!isFinite(minX)) continue;
+      // Cover: paint where FILL_BIT set, and (if clipping) also CLIP_BIT set.
       gl.colorMask(true, true, true, true);
-      gl.stencilFunc(gl.NOTEQUAL, 0, 0x1);
+      gl.stencilMask(0x0);
+      if (clip.path) gl.stencilFunc(gl.EQUAL, FILL_BIT | CLIP_BIT, FILL_BIT | CLIP_BIT);
+      else gl.stencilFunc(gl.EQUAL, FILL_BIT, FILL_BIT);
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
       gl.uniform4fv(gl.getUniformLocation(solid, "u_color"), op.color);
       bindPos([minX, minY, maxX, minY, maxX, maxY, minX, minY, maxX, maxY, minX, maxY]);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.disable(gl.STENCIL_TEST);
     } else if (op.op === "stroke") {
       gl.useProgram(solid);
-      gl.uniform2f(gl.getUniformLocation(solid, "u_page"), dl.width, dl.height);
+      setPage(solid);
+      gl.stencilMask(0x0);
+      if (clip.path) gl.stencilFunc(gl.EQUAL, CLIP_BIT, CLIP_BIT);
+      else gl.stencilFunc(gl.ALWAYS, 0, 0xff);
       gl.uniform4fv(gl.getUniformLocation(solid, "u_color"), op.color);
       for (const sp of op.subpaths) {
         const v = strokeQuads(sp, op.width);
@@ -235,19 +269,20 @@ export function renderDisplayList(
       }
     } else if (op.op === "image") {
       const t = textures.get(op.name);
+      if (!t) continue;
       gl.useProgram(tex);
-      gl.uniform2f(gl.getUniformLocation(tex, "u_page"), dl.width, dl.height);
+      setPage(tex);
+      gl.stencilMask(0x0);
+      if (clip.path) gl.stencilFunc(gl.EQUAL, CLIP_BIT, CLIP_BIT);
+      else gl.stencilFunc(gl.ALWAYS, 0, 0xff);
       const { x, y, w, h } = op;
-      // Two triangles; v flipped so image row 0 is at the top of the placement.
       bindPos([x, y, x + w, y, x + w, y + h, x, y, x + w, y + h, x, y + h]);
       gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), gl.STREAM_DRAW);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
-      if (t) {
-        gl.bindTexture(gl.TEXTURE_2D, t);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-      }
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disableVertexAttribArray(1);
     }
     // text handled on the overlay below
