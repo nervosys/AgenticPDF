@@ -6,7 +6,17 @@
 
 #![recursion_limit = "512"]
 
+pub mod engine;
+pub mod figures;
+pub mod formula;
+pub mod layout;
+#[cfg(feature = "cli")]
+pub mod mcp;
+pub mod ocr;
 pub mod parser;
+pub mod sanitize;
+pub mod tables;
+pub mod text_norm;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -135,6 +145,21 @@ pub struct FullExtraction {
     pub annotations: Vec<PdfAnnotation>,
     pub outline: Vec<OutlineItem>,
     pub chunks: Vec<SemanticChunk>,
+    /// Reading-order Markdown of the whole document.
+    #[serde(default)]
+    pub markdown: String,
+    /// Reconstructed tables.
+    #[serde(default)]
+    pub tables: Vec<tables::Table>,
+    /// Detected figures linked to captions.
+    #[serde(default)]
+    pub figures: Vec<figures::Figure>,
+    /// Best-effort LaTeX formulas.
+    #[serde(default)]
+    pub formulas: Vec<formula::Formula>,
+    /// Prompt-injection / hidden-text scan report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<sanitize::ScanReport>,
 }
 
 // ============================================================================
@@ -144,8 +169,36 @@ pub struct FullExtraction {
 impl PdfDocument {
     /// Parse a PDF document from raw bytes.
     pub fn from_bytes(data: &[u8]) -> Result<Self, PdfError> {
-        let mut parser = parser::PdfParser::new(data);
-        parser.parse()
+        engine::parse_document(data)
+    }
+
+    /// Construct a document from already-extracted parts (used by the engine).
+    pub fn from_parts(
+        version: String,
+        pages: Vec<PdfPage>,
+        metadata: PdfMetadata,
+        annotations: Vec<PdfAnnotation>,
+        outline: Vec<OutlineItem>,
+    ) -> Self {
+        PdfDocument {
+            version,
+            pages,
+            metadata,
+            annotations,
+            outline,
+            xref: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    /// Render the document as Markdown with reading-order, headings, and lists.
+    pub fn to_markdown(&self) -> String {
+        layout::to_markdown(self)
+    }
+
+    /// Produce a structured, reading-order layout (blocks with type/bbox/page).
+    pub fn to_structured(&self) -> layout::StructuredDoc {
+        layout::analyze(self)
     }
 
     /// Get all text content as a single string.
@@ -254,6 +307,36 @@ impl PdfDocument {
             annotations: self.annotations.clone(),
             outline: self.outline.clone(),
             chunks: self.generate_chunks(chunk_size, chunk_overlap),
+            markdown: self.to_markdown(),
+            tables: Vec::new(),
+            figures: Vec::new(),
+            formulas: formula::extract_formulas(self, &[]),
+            scan: Some(sanitize::scan(self)),
+        }
+    }
+
+    /// Comprehensive single-pass extraction for agentic workflows: metadata,
+    /// pages, annotations, outline, chunks, reading-order Markdown, tables,
+    /// figures, formulas, and a prompt-injection scan. Needs the raw bytes to
+    /// recover ruling geometry and image placements.
+    pub fn extract_all_with_data(
+        &self,
+        data: &[u8],
+        chunk_size: usize,
+        chunk_overlap: usize,
+    ) -> FullExtraction {
+        let graphics = engine::extract_graphics(data).unwrap_or_default();
+        FullExtraction {
+            metadata: self.metadata.clone(),
+            pages: self.pages.clone(),
+            annotations: self.annotations.clone(),
+            outline: self.outline.clone(),
+            chunks: self.generate_chunks(chunk_size, chunk_overlap),
+            markdown: self.to_markdown(),
+            tables: tables::detect_tables(&graphics, &self.pages),
+            figures: figures::extract_figures(data, self).unwrap_or_default(),
+            formulas: formula::extract_formulas(self, &graphics),
+            scan: Some(sanitize::scan(self)),
         }
     }
 
@@ -387,6 +470,195 @@ pub fn build_ontology() -> serde_json::Value {
                 ]
             },
             {
+                "name": "markdown",
+                "description": "Render the PDF as clean Markdown in correct reading order, with detected headings, paragraphs, and lists. Multi-column layouts are read column-by-column via XY-cut analysis. Ideal for feeding documents to an LLM context window.",
+                "usage": "apdf markdown <FILE> [--pages 1-5] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range (e.g. '1-5' or '3'). Defaults to all pages." },
+                    { "name": "--sanitize", "type": "boolean", "required": false, "description": "Drop hidden / off-page text (prompt-injection defense)" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file instead of stdout" }
+                ],
+                "outputSchema": { "type": "string", "format": "Markdown" },
+                "examples": [
+                    "apdf markdown document.pdf",
+                    "apdf markdown paper.pdf --pages 1-3 --output paper.md",
+                    "apdf markdown untrusted.pdf --sanitize"
+                ]
+            },
+            {
+                "name": "layout",
+                "description": "Produce a reading-order structured layout: an array of typed blocks (heading/paragraph/list_item) with heading level, font size, and [left, bottom, right, top] bounding boxes in PDF points for precise source citations.",
+                "usage": "apdf layout <FILE> [--pages 1-5] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "StructuredDoc",
+                        "properties": {
+                            "pages": {
+                                "type": "array",
+                                "items": {
+                                    "type": "StructuredPage",
+                                    "properties": {
+                                        "page_number": { "type": "integer" },
+                                        "width": { "type": "number" },
+                                        "height": { "type": "number" },
+                                        "blocks": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "Block",
+                                                "properties": {
+                                                    "kind": { "type": "enum", "values": ["heading", "paragraph", "list_item"] },
+                                                    "text": { "type": "string" },
+                                                    "level": { "type": "integer", "description": "Heading level 1-6; 0 for non-headings" },
+                                                    "page_number": { "type": "integer" },
+                                                    "bbox": { "type": "array", "items": { "type": "number" }, "description": "[left, bottom, right, top] in PDF points" },
+                                                    "font_size": { "type": "number" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf layout document.pdf --format json",
+                    "apdf layout paper.pdf --pages 1 --output layout.json"
+                ]
+            },
+            {
+                "name": "table",
+                "description": "Reconstruct tables (bordered, booktabs-style, and borderless) from ruling lines and text alignment. Rows come from baseline clustering; columns from vertical rules or text-coverage gaps. Output as GitHub-flavored Markdown or structured JSON with per-table bounding boxes.",
+                "usage": "apdf table <FILE> [--pages 1-5] [--format markdown|json] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--format", "type": "enum", "values": ["markdown", "json"], "default": "markdown", "description": "Output format" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write output to file" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "Table",
+                            "properties": {
+                                "page_number": { "type": "integer" },
+                                "rows": { "type": "integer" },
+                                "cols": { "type": "integer" },
+                                "bbox": { "type": "array", "items": { "type": "number" }, "description": "[left, bottom, right, top] in PDF points" },
+                                "cells": { "type": "array", "description": "Row-major array of cell-text rows" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf table report.pdf",
+                    "apdf table report.pdf --format json --output tables.json"
+                ]
+            },
+            {
+                "name": "scan",
+                "description": "Scan for hidden / off-page text used in prompt-injection attacks: fragments positioned outside the visible page or rendered at a sub-perceptible font size. Use before feeding a PDF to an LLM; combine with `markdown --sanitize` to strip the hidden content.",
+                "usage": "apdf scan <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "ScanReport",
+                        "properties": {
+                            "clean": { "type": "boolean" },
+                            "suspicious_fragments": { "type": "integer" },
+                            "findings": {
+                                "type": "array",
+                                "items": {
+                                    "type": "Finding",
+                                    "properties": {
+                                        "reason": { "type": "enum", "values": ["off_page", "tiny_text"] },
+                                        "page_number": { "type": "integer" },
+                                        "text": { "type": "string" },
+                                        "x": { "type": "number" },
+                                        "y": { "type": "number" },
+                                        "font_size": { "type": "number" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf scan suspicious.pdf",
+                    "apdf scan suspicious.pdf --format json"
+                ]
+            },
+            {
+                "name": "figures",
+                "description": "Detect figures (placed image XObjects) and link them to their captions ('Figure N', 'Chart N') by spatial proximity. Caption-only vector figures are also surfaced. Each record carries page, bounding box, label, caption, and pixel dimensions.",
+                "usage": "apdf figures <FILE> [--pages 1-5] [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "Figure",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "kind": { "type": "enum", "values": ["image", "figure", "chart", "table"] },
+                                "page_number": { "type": "integer" },
+                                "bbox": { "type": "array", "items": { "type": "number" }, "description": "[left, bottom, right, top] in PDF points" },
+                                "label": { "type": "string|null", "description": "e.g. 'Figure 3'" },
+                                "caption": { "type": "string|null" },
+                                "width": { "type": "integer", "description": "Image pixel width (0 for caption-only)" },
+                                "height": { "type": "integer" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf figures paper.pdf",
+                    "apdf figures paper.pdf --pages 1-5 --format json"
+                ]
+            },
+            {
+                "name": "formula",
+                "description": "Detect mathematical formulas (by math fonts and Unicode math characters) and reconstruct best-effort LaTeX, mapping symbols to commands and rebuilding super/subscripts from baseline shifts. Symbol-level reconstruction — not full 2-D math layout.",
+                "usage": "apdf formula <FILE> [--pages 1-5] [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--pages", "type": "string", "required": false, "description": "Page range" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "Formula",
+                            "properties": {
+                                "page_number": { "type": "integer" },
+                                "bbox": { "type": "array", "items": { "type": "number" }, "description": "[left, bottom, right, top] in PDF points" },
+                                "latex": { "type": "string", "description": "Best-effort LaTeX reconstruction" },
+                                "text": { "type": "string", "description": "Raw extracted text of the span" }
+                            }
+                        }
+                    }
+                },
+                "examples": [
+                    "apdf formula paper.pdf",
+                    "apdf formula paper.pdf --pages 2 --format json"
+                ]
+            },
+            {
                 "name": "annotations",
                 "description": "Extract all annotations (links, highlights, notes, widgets, file attachments, etc.) from a PDF.",
                 "usage": "apdf annotations <FILE> [--pages 1-5] [--format text|json]",
@@ -511,7 +783,7 @@ pub fn build_ontology() -> serde_json::Value {
             },
             {
                 "name": "all",
-                "description": "Extract everything from a PDF in a single pass: metadata, all pages with text, annotations, outline, and semantic chunks. Ideal for agentic workflows that need comprehensive document understanding.",
+                "description": "Extract everything from a PDF in a single pass: metadata, all pages with text, annotations, outline, semantic chunks, reading-order Markdown, reconstructed tables, figures linked to captions, best-effort LaTeX formulas, and a prompt-injection scan. The one call an agent needs for comprehensive document understanding.",
                 "usage": "apdf all <FILE> [--chunk-size 500] [--chunk-overlap 50] [--output path]",
                 "parameters": [
                     { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
@@ -527,7 +799,12 @@ pub fn build_ontology() -> serde_json::Value {
                             "pages": { "type": "array", "items": { "$ref": "PdfPage" } },
                             "annotations": { "type": "array", "items": { "$ref": "PdfAnnotation" } },
                             "outline": { "type": "array", "items": { "$ref": "OutlineItem" } },
-                            "chunks": { "type": "array", "items": { "$ref": "SemanticChunk" } }
+                            "chunks": { "type": "array", "items": { "$ref": "SemanticChunk" } },
+                            "markdown": { "type": "string", "description": "Reading-order Markdown of the whole document" },
+                            "tables": { "type": "array", "items": { "$ref": "Table" } },
+                            "figures": { "type": "array", "items": { "$ref": "Figure" } },
+                            "formulas": { "type": "array", "items": { "$ref": "Formula" } },
+                            "scan": { "$ref": "ScanReport", "description": "Prompt-injection / hidden-text report" }
                         }
                     }
                 },
@@ -535,6 +812,38 @@ pub fn build_ontology() -> serde_json::Value {
                     "apdf all document.pdf",
                     "apdf all document.pdf --chunk-size 1000 --output full.json"
                 ]
+            },
+            {
+                "name": "scanned",
+                "description": "Detect likely-scanned pages (image-dominated with little extractable text) that need OCR. Deterministic detection is built in; recognition is delegated to a pluggable OcrBackend (or a bundled engine via the 'ocr' build feature).",
+                "usage": "apdf scanned <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "ScannedPage",
+                            "properties": {
+                                "page_number": { "type": "integer" },
+                                "image_coverage": { "type": "number", "description": "Fraction of page covered by raster images (0-1)" },
+                                "text_chars": { "type": "integer" },
+                                "likely_scanned": { "type": "boolean" }
+                            }
+                        }
+                    }
+                },
+                "examples": ["apdf scanned doc.pdf", "apdf scanned doc.pdf --format json"]
+            },
+            {
+                "name": "mcp",
+                "description": "Run as a Model Context Protocol (MCP) stdio server, exposing the PDF capabilities as MCP tools (extract_text, markdown, layout, tables, figures, scan_injection, metadata, outline, annotations, images, chunk) over newline-delimited JSON-RPC 2.0 on stdin/stdout. Configure as an MCP server in an agent client.",
+                "usage": "apdf mcp",
+                "parameters": [],
+                "outputSchema": { "type": "JSON-RPC", "transport": "stdio (newline-delimited)" },
+                "examples": ["apdf mcp"]
             },
             {
                 "name": "describe",
@@ -580,6 +889,39 @@ pub fn build_ontology() -> serde_json::Value {
                 ]
             },
             {
+                "id": "llm-context-markdown",
+                "name": "Markdown for LLM Context",
+                "description": "Render a PDF as reading-order Markdown to feed directly into an LLM context window",
+                "steps": [
+                    "apdf markdown document.pdf --output document.md"
+                ]
+            },
+            {
+                "id": "citation-grounded-layout",
+                "name": "Citation-Grounded Layout Extraction",
+                "description": "Extract typed blocks with bounding boxes so an agent can cite exact source regions",
+                "steps": [
+                    "apdf layout document.pdf --output layout.json"
+                ]
+            },
+            {
+                "id": "table-extraction",
+                "name": "Table Extraction",
+                "description": "Reconstruct tables as Markdown or structured JSON for analysis or RAG",
+                "steps": [
+                    "apdf table report.pdf --format json --output tables.json"
+                ]
+            },
+            {
+                "id": "untrusted-ingestion",
+                "name": "Safe Ingestion of Untrusted PDFs",
+                "description": "Scan for prompt-injection signals, then extract sanitized Markdown with hidden text removed",
+                "steps": [
+                    "apdf scan untrusted.pdf --format json",
+                    "apdf markdown untrusted.pdf --sanitize --output clean.md"
+                ]
+            },
+            {
                 "id": "comprehensive-analysis",
                 "name": "Comprehensive Document Analysis",
                 "description": "Extract all data from a PDF in one pass for full document understanding",
@@ -615,22 +957,60 @@ pub fn build_ontology() -> serde_json::Value {
         "capabilities": [
             "text_extraction",
             "text_positioning",
+            "unicode_decoding",
+            "tounicode_cmap",
+            "winansi_encoding",
+            "composite_font_identity_h",
+            "cid_codespace_cmap",
             "font_metadata",
             "metadata_parsing",
             "semantic_chunking",
             "annotation_extraction",
             "outline_extraction",
             "image_enumeration",
+            "markdown_export",
+            "reading_order_analysis",
+            "column_detection_xy_cut",
+            "heading_detection",
+            "list_detection",
+            "table_reconstruction",
+            "ruling_line_detection",
+            "borderless_table_inference",
+            "figure_detection",
+            "caption_linking",
+            "image_placement_bbox",
+            "formula_to_latex",
+            "math_symbol_mapping",
+            "fraction_reconstruction",
+            "matrix_reconstruction",
+            "nested_radicals",
+            "diacritic_normalization",
+            "positional_accent_reconstruction",
+            "scanned_page_detection",
+            "ocr_backend_interface",
+            "tesseract_cli_backend",
+            "mcp_server",
+            "prompt_injection_scan",
+            "hidden_text_detection",
+            "sanitized_extraction",
+            "structured_layout",
+            "bounding_boxes",
             "flatedecode_decompression",
+            "ascii_hex_decode",
+            "ascii85_decode",
             "png_predictor_unfiltering",
             "xref_table_parsing",
+            "xref_stream_parsing",
+            "object_stream_parsing",
+            "page_tree_traversal",
+            "inherited_attributes",
             "encryption_detection",
             "structured_json_output",
             "page_range_filtering",
             "file_output",
             "wasm_compilation"
         ],
-        "outputFormats": ["text", "json"],
+        "outputFormats": ["text", "json", "markdown"],
         "supportedPdfVersions": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "2.0"],
         "limits": {
             "maxXRefEntries": 1000000,
@@ -734,6 +1114,37 @@ mod tests {
         let chunks = doc.generate_chunks(10, 2);
         assert!(!chunks.is_empty());
         assert!(chunks[0].content.contains("Hello"));
+    }
+
+    #[test]
+    fn extract_all_bundles_everything() {
+        let doc = PdfDocument::from_parts(
+            "1.7".into(),
+            vec![PdfPage {
+                index: 0,
+                width: 612.0,
+                height: 792.0,
+                text_content: vec![TextBlock {
+                    text: "Hello world this is content".into(),
+                    x: 72.0,
+                    y: 700.0,
+                    width: 120.0,
+                    height: 12.0,
+                    font_size: 12.0,
+                    font_name: "F".into(),
+                    page_number: 1,
+                }],
+            }],
+            PdfMetadata::default(),
+            vec![],
+            vec![],
+        );
+        let full = doc.extract_all(100, 10);
+        assert!(!full.markdown.is_empty());
+        assert!(full.scan.is_some());
+        assert!(full.scan.unwrap().clean); // no hidden text
+        // Doc-only path leaves data-dependent collections empty.
+        assert!(full.tables.is_empty());
     }
 
     #[test]

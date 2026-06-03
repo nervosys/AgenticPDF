@@ -1,0 +1,51 @@
+name: Rust CLI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "agenticpdf-rs/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "agenticpdf-rs/**"
+      - ".github/workflows/rust.yml"
+
+defaults:
+  run:
+    working-directory: agenticpdf-rs
+
+jobs:
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agenticpdf-rs
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (ocr feature)
+        run: cargo clippy --features ocr --all-targets -- -D warnings
+
+      - name: Test (default features)
+        run: cargo test
+
+      - name: Test (ocr feature)
+        run: cargo test --features ocr
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Check WASM target
+        run: cargo check --target wasm32-unknown-unknown --features wasm --no-default-features

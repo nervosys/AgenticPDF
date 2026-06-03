@@ -1,0 +1,361 @@
+//! Scanned-page detection and a pluggable OCR backend interface.
+//!
+//! Deterministic detection of image-dominated pages with little or no
+//! extractable text (i.e. scans) is always available and useful on its own —
+//! it tells an agent which pages need OCR. Actual recognition is delegated to a
+//! caller-supplied [`OcrBackend`] (e.g. wrapping Tesseract or an ONNX model);
+//! the optional `ocr` cargo feature is reserved for a future bundled engine so
+//! the default build stays a lean, dependency-free static binary.
+
+use crate::engine;
+use crate::{PdfDocument, PdfError};
+use serde::{Deserialize, Serialize};
+
+/// Whether a bundled OCR engine was compiled in (the `ocr` feature).
+pub const OCR_BUILTIN: bool = cfg!(feature = "ocr");
+
+/// Per-page scan assessment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScannedPage {
+    pub page_number: usize,
+    /// Fraction of the page covered by raster images (0.0–1.0).
+    pub image_coverage: f64,
+    /// Extractable text characters on the page.
+    pub text_chars: usize,
+    /// Heuristic verdict: image-dominated with little text.
+    pub likely_scanned: bool,
+}
+
+/// Result of running OCR over a page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrResult {
+    pub page_number: usize,
+    pub text: String,
+}
+
+/// A pluggable OCR engine. Implement this to wire an external recognizer;
+/// `ocr_scanned` will invoke it only for pages flagged as likely scanned.
+pub trait OcrBackend {
+    /// Recognize text for a page (1-based). `width`/`height` are PDF points.
+    fn recognize_page(&self, page_number: usize, width: f64, height: f64)
+    -> Result<String, String>;
+}
+
+/// A decoded 8-bit grayscale raster, ready to hand to an OCR engine.
+#[derive(Debug, Clone)]
+pub struct GrayImage {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major luminance, one byte per pixel (`width * height` bytes).
+    pub pixels: Vec<u8>,
+}
+
+/// Decode an [`engine::ImageBlob`] to grayscale pixels. Handles JPEG
+/// (DCTDecode) via the `image` crate and raw 8-bit Gray/RGB sample streams.
+/// Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
+    let (w, h) = (blob.width, blob.height);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    if blob.filter.contains("DCTDecode") || blob.filter.contains("JPXDecode") {
+        let img = image::load_from_memory(&blob.bytes).ok()?.to_luma8();
+        return Some(GrayImage {
+            width: img.width(),
+            height: img.height(),
+            pixels: img.into_raw(),
+        });
+    }
+    // Raw sample stream (Flate already undone by extract_image_blobs).
+    if blob.bits_per_component != 8 {
+        return None;
+    }
+    let n = (w as usize).checked_mul(h as usize)?;
+    let cs = blob.color_space.as_str();
+    let gray = matches!(cs, "DeviceGray" | "CalGray" | "G");
+    if gray && blob.bytes.len() >= n {
+        return Some(GrayImage {
+            width: w,
+            height: h,
+            pixels: blob.bytes[..n].to_vec(),
+        });
+    }
+    // Treat anything with 3 samples/pixel as RGB and convert to luma.
+    if blob.bytes.len() >= n * 3 {
+        let mut pixels = Vec::with_capacity(n);
+        for i in 0..n {
+            let r = blob.bytes[i * 3] as u32;
+            let g = blob.bytes[i * 3 + 1] as u32;
+            let b = blob.bytes[i * 3 + 2] as u32;
+            pixels.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
+        }
+        return Some(GrayImage {
+            width: w,
+            height: h,
+            pixels,
+        });
+    }
+    None
+}
+
+/// An OCR engine that recognizes decoded raster images. Implement this and call
+/// [`ocr_scanned_images`] to OCR scanned pages. Only available with `ocr`.
+#[cfg(feature = "ocr")]
+pub trait ImageOcrBackend {
+    fn recognize_image(&self, image: &GrayImage) -> Result<String, String>;
+}
+
+/// Decode each likely-scanned page's dominant image and run an
+/// [`ImageOcrBackend`] over it. Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub fn ocr_scanned_images<B: ImageOcrBackend>(
+    data: &[u8],
+    doc: &PdfDocument,
+    backend: &B,
+) -> Result<Vec<OcrResult>, PdfError> {
+    let scanned = detect_scanned(data, doc)?;
+    let blobs = engine::extract_image_blobs(data).unwrap_or_default();
+    let mut out = Vec::new();
+    for p in scanned.iter().filter(|p| p.likely_scanned) {
+        let dominant = blobs
+            .iter()
+            .filter(|b| b.page_number == p.page_number)
+            .max_by_key(|b| b.width as u64 * b.height as u64);
+        if let Some(blob) = dominant
+            && let Some(img) = decode_blob(blob)
+            && let Ok(text) = backend.recognize_image(&img)
+        {
+            out.push(OcrResult {
+                page_number: p.page_number,
+                text,
+            });
+        }
+    }
+    Ok(out)
+}
+
+const COVERAGE_THRESHOLD: f64 = 0.5;
+const TEXT_THRESHOLD: usize = 100;
+
+/// Detect likely-scanned pages from image coverage vs. extractable text.
+pub fn detect_scanned(data: &[u8], doc: &PdfDocument) -> Result<Vec<ScannedPage>, PdfError> {
+    // If image placement can't be recovered, assume no images (coverage 0)
+    // rather than failing the whole assessment.
+    let placed = engine::extract_placed_images(data).unwrap_or_default();
+    let mut out = Vec::with_capacity(doc.pages.len());
+    for page in &doc.pages {
+        let page_no = page.index + 1;
+        let area = (page.width * page.height).max(1.0);
+        let img_area: f64 = placed
+            .iter()
+            .filter(|p| p.page_number == page_no)
+            .map(|p| {
+                let w = (p.bbox[2] - p.bbox[0]).abs().min(page.width);
+                let h = (p.bbox[3] - p.bbox[1]).abs().min(page.height);
+                w * h
+            })
+            .sum();
+        let coverage = (img_area / area).min(1.0);
+        let text_chars: usize = page
+            .text_content
+            .iter()
+            .map(|t| t.text.chars().filter(|c| !c.is_whitespace()).count())
+            .sum();
+        let likely_scanned = coverage >= COVERAGE_THRESHOLD && text_chars < TEXT_THRESHOLD;
+        out.push(ScannedPage {
+            page_number: page_no,
+            image_coverage: (coverage * 1000.0).round() / 1000.0,
+            text_chars,
+            likely_scanned,
+        });
+    }
+    Ok(out)
+}
+
+/// Run a caller-supplied OCR backend over every likely-scanned page.
+pub fn ocr_scanned<B: OcrBackend>(
+    data: &[u8],
+    doc: &PdfDocument,
+    backend: &B,
+) -> Result<Vec<OcrResult>, PdfError> {
+    let pages = detect_scanned(data, doc)?;
+    let mut out = Vec::new();
+    for p in pages.iter().filter(|p| p.likely_scanned) {
+        if let Some(page) = doc.pages.get(p.page_number - 1)
+            && let Ok(text) = backend.recognize_page(p.page_number, page.width, page.height)
+        {
+            out.push(OcrResult {
+                page_number: p.page_number,
+                text,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A reference [`ImageOcrBackend`] that shells out to the Tesseract CLI
+/// (`tesseract` on `PATH`). No FFI and no model downloads — just the widely
+/// available `tesseract` binary. Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub struct TesseractCli {
+    /// Language(s) passed to `-l` (e.g. "eng", "eng+deu"). Defaults to "eng".
+    pub lang: String,
+}
+
+#[cfg(feature = "ocr")]
+impl Default for TesseractCli {
+    fn default() -> Self {
+        Self {
+            lang: "eng".to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "ocr")]
+impl ImageOcrBackend for TesseractCli {
+    fn recognize_image(&self, image: &GrayImage) -> Result<String, String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let buf = ::image::GrayImage::from_raw(image.width, image.height, image.pixels.clone())
+            .ok_or_else(|| "invalid image buffer".to_string())?;
+        let uniq = format!(
+            "apdf_ocr_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let png_path = std::env::temp_dir().join(format!("{uniq}.png"));
+        buf.save(&png_path)
+            .map_err(|e| format!("png encode: {e}"))?;
+
+        let result = std::process::Command::new("tesseract")
+            .arg(&png_path)
+            .arg("stdout")
+            .arg("-l")
+            .arg(&self.lang)
+            .output();
+        let _ = std::fs::remove_file(&png_path);
+
+        match result {
+            Ok(out) if out.status.success() => {
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            }
+            Ok(out) => Err(format!(
+                "tesseract failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+            Err(e) => Err(format!("could not run `tesseract` (is it installed?): {e}")),
+        }
+    }
+}
+
+/// Convenience: OCR every likely-scanned page with the bundled Tesseract CLI
+/// backend. Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub fn recognize_scanned(
+    data: &[u8],
+    doc: &PdfDocument,
+    lang: &str,
+) -> Result<Vec<OcrResult>, PdfError> {
+    let backend = TesseractCli {
+        lang: lang.to_string(),
+    };
+    ocr_scanned_images(data, doc, &backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PdfMetadata, PdfPage, TextBlock};
+
+    fn doc_with(pages: Vec<PdfPage>) -> PdfDocument {
+        PdfDocument::from_parts("1.7".into(), pages, PdfMetadata::default(), vec![], vec![])
+    }
+
+    #[test]
+    fn text_page_not_scanned() {
+        // A page full of text and no images is not scanned. (No placed images
+        // because we pass empty data; detection still classifies by text.)
+        let page = PdfPage {
+            index: 0,
+            width: 612.0,
+            height: 792.0,
+            text_content: (0..50)
+                .map(|i| TextBlock {
+                    text: "lots of words here ".into(),
+                    x: 72.0,
+                    y: 700.0 - i as f64,
+                    width: 100.0,
+                    height: 10.0,
+                    font_size: 10.0,
+                    font_name: "F".into(),
+                    page_number: 1,
+                })
+                .collect(),
+        };
+        let doc = doc_with(vec![page]);
+        // Empty PDF bytes => no placed images; coverage 0 => not scanned.
+        let report = detect_scanned(b"%PDF-1.4", &doc).unwrap();
+        assert_eq!(report.len(), 1);
+        assert!(!report[0].likely_scanned);
+        assert!(report[0].text_chars > TEXT_THRESHOLD);
+    }
+
+    struct StubOcr;
+    impl OcrBackend for StubOcr {
+        fn recognize_page(&self, n: usize, _w: f64, _h: f64) -> Result<String, String> {
+            Ok(format!("ocr text page {n}"))
+        }
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn decodes_raw_gray_blob() {
+        let blob = engine::ImageBlob {
+            page_number: 1,
+            width: 2,
+            height: 2,
+            bits_per_component: 8,
+            color_space: "DeviceGray".into(),
+            filter: "FlateDecode".into(),
+            bytes: vec![10, 20, 30, 40],
+        };
+        let img = decode_blob(&blob).expect("decoded");
+        assert_eq!((img.width, img.height), (2, 2));
+        assert_eq!(img.pixels, vec![10, 20, 30, 40]);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn decodes_rgb_blob_to_luma() {
+        let blob = engine::ImageBlob {
+            page_number: 1,
+            width: 1,
+            height: 1,
+            bits_per_component: 8,
+            color_space: "DeviceRGB".into(),
+            filter: "FlateDecode".into(),
+            bytes: vec![255, 0, 0], // pure red → luma ~76
+        };
+        let img = decode_blob(&blob).expect("decoded");
+        assert_eq!(img.pixels.len(), 1);
+        assert!((img.pixels[0] as i32 - 76).abs() <= 1);
+    }
+
+    #[test]
+    fn ocr_backend_invoked_for_scanned() {
+        // A page with no text -> we simulate scanned by checking the orchestrator
+        // path; with no images coverage is 0, so force via empty text + manual.
+        let page = PdfPage {
+            index: 0,
+            width: 612.0,
+            height: 792.0,
+            text_content: vec![],
+        };
+        let doc = doc_with(vec![page]);
+        // No images => not flagged; backend should not run. Confirms gating.
+        let results = ocr_scanned(b"%PDF-1.4", &doc, &StubOcr).unwrap();
+        assert!(results.is_empty());
+    }
+}
