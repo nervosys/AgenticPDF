@@ -28,6 +28,8 @@ miniz_oxide = "0.8"
 # Optional: only pulled in by the `ocr` feature, for decoding embedded scanned
 # images (JPEG/PNG) into pixels for an OCR backend. Keeps the default lean.
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
+# Optional: pure-Rust CCITT Group 3/4 (fax) decoder for scanned bilevel images.
+fax = { version = "0.2.7", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -44,7 +46,7 @@ wasm = ["wasm-bindgen"]
 # detection and the page-level OcrBackend interface are always available; this
 # flag adds the pixel pipeline and flips the OCR_BUILTIN marker. The recognizer
 # engine itself (Tesseract FFI / ONNX) is wired by implementing the backend.
-ocr = ["dep:image"]
+ocr = ["dep:image", "dep:fax"]
 
 [profile.release]
 opt-level = "z"

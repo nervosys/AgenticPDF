@@ -2,10 +2,11 @@
 //!
 //! Deterministic detection of image-dominated pages with little or no
 //! extractable text (i.e. scans) is always available and useful on its own —
-//! it tells an agent which pages need OCR. Actual recognition is delegated to a
-//! caller-supplied [`OcrBackend`] (e.g. wrapping Tesseract or an ONNX model);
-//! the optional `ocr` cargo feature is reserved for a future bundled engine so
-//! the default build stays a lean, dependency-free static binary.
+//! it tells an agent which pages need OCR. Recognition is delegated to a
+//! caller-supplied [`OcrBackend`]; the `ocr` cargo feature adds an image-decode
+//! pipeline (JPEG via `image`, CCITT G4 via `fax`, plus raw/indexed samples)
+//! and a bundled [`TesseractCli`] backend. The default build stays a lean,
+//! dependency-free static binary.
 
 use crate::engine;
 use crate::{PdfDocument, PdfError};
@@ -67,6 +68,39 @@ pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
             pixels: img.into_raw(),
         });
     }
+
+    // CCITT Group 4 (T.6) bilevel fax — the common scanned-page encoding.
+    if blob.filter.contains("CCITTFaxDecode")
+        && let Some(cc) = &blob.ccitt
+        && cc.k < 0
+    {
+        let width = if cc.columns > 0 { cc.columns } else { w };
+        let mut pixels: Vec<u8> = Vec::with_capacity(width as usize * h as usize);
+        let mut row_count: u32 = 0;
+        let ok = fax::decoder::decode_g4(
+            blob.bytes.iter().copied(),
+            width as u16,
+            Some(h as u16),
+            |line| {
+                for color in fax::decoder::pels(line, width as u16) {
+                    // Default CCITT: black is foreground (dark). /BlackIs1 inverts.
+                    let dark = matches!(color, fax::Color::Black);
+                    let dark = if cc.black_is_1 { !dark } else { dark };
+                    pixels.push(if dark { 0 } else { 255 });
+                }
+                row_count += 1;
+            },
+        );
+        if ok.is_some() && row_count > 0 && !pixels.is_empty() {
+            return Some(GrayImage {
+                width,
+                height: row_count,
+                pixels,
+            });
+        }
+        return None;
+    }
+
     // Raw sample stream (Flate already undone by extract_image_blobs).
     let n = (w as usize).checked_mul(h as usize)?;
     let cs = blob.color_space.as_str();
@@ -398,6 +432,7 @@ mod tests {
             filter: "FlateDecode".into(),
             bytes: vec![10, 20, 30, 40],
             palette: None,
+            ccitt: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!((img.width, img.height), (2, 2));
@@ -432,6 +467,7 @@ mod tests {
             filter: "FlateDecode".into(),
             bytes: vec![0b1111_0000],
             palette: None,
+            ccitt: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels, vec![255, 255, 255, 255, 0, 0, 0, 0]);
@@ -449,6 +485,7 @@ mod tests {
             filter: "FlateDecode".into(),
             bytes: vec![255, 0, 0], // pure red → luma ~76
             palette: None,
+            ccitt: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels.len(), 1);
@@ -471,9 +508,58 @@ mod tests {
                 base_components: 3,
                 data: vec![0, 0, 0, 255, 255, 255], // entry0 black, entry1 white
             }),
+            ccitt: None,
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels, vec![255, 0, 255, 0]);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn decodes_ccitt_g4_roundtrip() {
+        use fax::Color;
+        // Encode a known 8x2 bilevel image to CCITT G4, then decode via the
+        // product path and confirm the pixels round-trip.
+        let width: u16 = 8;
+        // Row patterns (true = black pixel).
+        let rows = [
+            [true, true, false, false, true, true, false, false],
+            [false, false, true, true, false, false, true, true],
+        ];
+        let mut enc = fax::encoder::Encoder::new(fax::VecWriter::new());
+        for row in &rows {
+            let pels = row
+                .iter()
+                .map(|&b| if b { Color::Black } else { Color::White });
+            enc.encode_line(pels, width).unwrap();
+        }
+        let encoded = enc.finish().unwrap().finish();
+
+        let blob = engine::ImageBlob {
+            page_number: 1,
+            width: width as u32,
+            height: 2,
+            bits_per_component: 1,
+            color_space: "DeviceGray".into(),
+            filter: "CCITTFaxDecode".into(),
+            bytes: encoded,
+            palette: None,
+            ccitt: Some(engine::CcittParams {
+                k: -1,
+                columns: width as u32,
+                rows: 2,
+                black_is_1: false,
+            }),
+        };
+        let img = decode_blob(&blob).expect("decoded");
+        assert_eq!((img.width, img.height), (8, 2));
+        // Black → 0, White → 255.
+        let expected: Vec<u8> = rows
+            .iter()
+            .flatten()
+            .map(|&b| if b { 0 } else { 255 })
+            .collect();
+        assert_eq!(img.pixels, expected);
     }
 
     #[test]

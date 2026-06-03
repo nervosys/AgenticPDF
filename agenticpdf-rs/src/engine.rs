@@ -1398,6 +1398,22 @@ pub struct ImageBlob {
     /// Color lookup table for an Indexed color space, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette: Option<Palette>,
+    /// CCITT fax parameters, if the image uses CCITTFaxDecode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ccitt: Option<CcittParams>,
+}
+
+/// CCITTFaxDecode parameters from the image's `/DecodeParms`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CcittParams {
+    /// `/K`: <0 = Group 4 (T.6), 0 = Group 3 1-D, >0 = Group 3 2-D.
+    pub k: i64,
+    /// `/Columns` (pixels per row); defaults to the image width.
+    pub columns: u32,
+    /// `/Rows`; defaults to the image height.
+    pub rows: u32,
+    /// `/BlackIs1`: if true, 1 bits are black (inverts the default).
+    pub black_is_1: bool,
 }
 
 /// An Indexed color-space palette: each entry is `base_components` bytes.
@@ -1464,6 +1480,7 @@ pub fn extract_image_blobs(data: &[u8]) -> Result<Vec<ImageBlob>, PdfError> {
                     filter: filter_names(d),
                     bytes,
                     palette: extract_palette(&doc, d),
+                    ccitt: extract_ccitt(&doc, d),
                 });
             }
         }
@@ -1492,6 +1509,37 @@ fn extract_palette(doc: &Document, d: &Dict) -> Option<Palette> {
     Some(Palette {
         base_components,
         data,
+    })
+}
+
+/// Parse CCITTFaxDecode parameters from an image dict, if it uses CCITT.
+fn extract_ccitt(doc: &Document, d: &Dict) -> Option<CcittParams> {
+    if !filter_names(d).contains("CCITTFaxDecode") {
+        return None;
+    }
+    let width = doc.get(d, "Width").and_then(|o| o.as_int()).unwrap_or(1728) as u32;
+    let height = doc.get(d, "Height").and_then(|o| o.as_int()).unwrap_or(0) as u32;
+    // /DecodeParms may be a dict or (parallel to a filter array) an array.
+    let parms = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
+        Some(Object::Dict(p)) => Some(p),
+        Some(Object::Array(a)) => a.iter().find_map(|o| match doc.resolve(o) {
+            Object::Dict(p) => Some(p),
+            _ => None,
+        }),
+        _ => None,
+    };
+    let g = |key: &str| parms.as_ref().and_then(|p| doc.get(p, key));
+    Some(CcittParams {
+        k: g("K").and_then(|o| o.as_int()).unwrap_or(0),
+        columns: g("Columns")
+            .and_then(|o| o.as_int())
+            .map(|n| n as u32)
+            .unwrap_or(width),
+        rows: g("Rows")
+            .and_then(|o| o.as_int())
+            .map(|n| n as u32)
+            .unwrap_or(height),
+        black_is_1: matches!(g("BlackIs1"), Some(Object::Bool(true))),
     })
 }
 

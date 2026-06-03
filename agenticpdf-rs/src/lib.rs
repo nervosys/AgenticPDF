@@ -1019,6 +1019,7 @@ pub fn build_ontology() -> serde_json::Value {
             "tesseract_cli_backend",
             "bilevel_image_decode",
             "indexed_palette_decode",
+            "ccitt_g4_decode",
             "mcp_server",
             "prompt_injection_scan",
             "hidden_text_detection",
