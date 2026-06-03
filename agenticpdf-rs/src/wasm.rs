@@ -142,6 +142,16 @@ pub fn display_list(data: &[u8], page_number: usize) -> Result<String, JsValue> 
     serde_json::to_string(&dl).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Decoded placed images for a page (JPEG passthrough or base64 RGBA), as JSON,
+/// for the WebGL renderer to upload as textures.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen(js_name = "pageImages")]
+pub fn page_images(data: &[u8], page_number: usize) -> Result<String, JsValue> {
+    let imgs = crate::engine::extract_page_images(data, page_number)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_json::to_string(&imgs).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Detect likely-scanned pages (image-dominated, low text) as JSON.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "detectScanned")]

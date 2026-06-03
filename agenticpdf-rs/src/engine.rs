@@ -1616,6 +1616,12 @@ pub enum RenderOp {
         h: f64,
         name: String,
     },
+    /// Save graphics state (push the clip/scissor stack).
+    Save,
+    /// Restore graphics state (pop the clip/scissor stack).
+    Restore,
+    /// Intersect the clip region with a device-space rectangle [x0,y0,x1,y1].
+    Clip { rect: [f64; 4] },
 }
 
 /// A page's display list in device space (origin bottom-left, y up — PDF
@@ -1745,10 +1751,33 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
         match tok {
             Token::Op(op) => {
                 match op.as_str() {
-                    "q" => ctm_stack.push(ctm),
+                    "q" => {
+                        ctm_stack.push(ctm);
+                        ops.push(RenderOp::Save);
+                    }
                     "Q" => {
                         if let Some(m) = ctm_stack.pop() {
                             ctm = m;
+                        }
+                        ops.push(RenderOp::Restore);
+                    }
+                    "W" | "W*" => {
+                        let mut minx = f64::INFINITY;
+                        let mut miny = f64::INFINITY;
+                        let mut maxx = f64::NEG_INFINITY;
+                        let mut maxy = f64::NEG_INFINITY;
+                        for sp in subpaths.iter().chain(std::iter::once(&cur)) {
+                            for p in sp {
+                                minx = minx.min(p[0]);
+                                miny = miny.min(p[1]);
+                                maxx = maxx.max(p[0]);
+                                maxy = maxy.max(p[1]);
+                            }
+                        }
+                        if minx.is_finite() && maxx > minx && maxy > miny {
+                            ops.push(RenderOp::Clip {
+                                rect: [minx, miny, maxx, maxy],
+                            });
                         }
                     }
                     "cm" => {
@@ -2145,6 +2174,194 @@ pub fn extract_image_blobs(data: &[u8]) -> Result<Vec<ImageBlob>, PdfError> {
         }
     }
     Ok(out)
+}
+
+/// An image placed on a page, decoded for a renderer. `data` is base64: either
+/// the original JPEG bytes (`format == "jpeg"`, the browser decodes) or raw
+/// RGBA (`format == "rgba"`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageImage {
+    pub name: String,
+    /// On-page placement [x, y, w, h] in device (PDF point) space.
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub format: String,
+    pub width: u32,
+    pub height: u32,
+    pub data: String,
+}
+
+/// Extract a page's placed images with decoded pixels, for the renderer.
+pub fn extract_page_images(data: &[u8], page_number: usize) -> Result<Vec<PageImage>, PdfError> {
+    let doc = Document::parse(data)?;
+    let root = doc
+        .trailer
+        .get("Root")
+        .map(|o| doc.resolve(o))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let mut page_dicts: Vec<Dict> = Vec::new();
+    if let Some(pages_obj) = doc.get(&root, "Pages")
+        && let Some(pages_dict) = pages_obj.as_dict()
+    {
+        let mut visited = std::collections::HashSet::new();
+        collect_pages(
+            &doc,
+            pages_dict,
+            &mut page_dicts,
+            &Inherited::default(),
+            0,
+            &mut visited,
+        );
+    }
+    let pd = match page_dicts.get(page_number.saturating_sub(1)) {
+        Some(p) => p,
+        None => return Ok(Vec::new()),
+    };
+    let xobjects = doc
+        .get(pd, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|r| doc.get(&r, "XObject"))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let content = extract_page_content(&doc, pd, page_number);
+    let mut out = Vec::new();
+    for (name, bbox) in content.placed {
+        let xobj = match xobjects.get(&name) {
+            Some(o) => doc.resolve(o),
+            None => continue,
+        };
+        if let Object::Stream(d, raw) = &xobj
+            && doc
+                .get(d, "Subtype")
+                .and_then(|o| o.as_name().map(String::from))
+                .as_deref()
+                == Some("Image")
+            && let Some((format, width, height, bytes)) = image_to_rgba(&doc, d, raw)
+        {
+            out.push(PageImage {
+                name,
+                x: bbox[0],
+                y: bbox[1],
+                w: bbox[2] - bbox[0],
+                h: bbox[3] - bbox[1],
+                format,
+                width,
+                height,
+                data: b64e(&bytes),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Decode an image to RGBA bytes, or pass JPEG/JPX through for browser decode.
+/// Returns (format, width, height, bytes). Pure Rust (no image codec deps).
+fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u32, Vec<u8>)> {
+    let w = doc.get(d, "Width").and_then(|o| o.as_int())? as usize;
+    let h = doc.get(d, "Height").and_then(|o| o.as_int())? as usize;
+    if w == 0 || h == 0 || w * h > 64_000_000 {
+        return None;
+    }
+    let filter = filter_names(d);
+    if filter.contains("DCTDecode") || filter.contains("JPXDecode") {
+        // Hand the JPEG/JPX bytes to the browser/decoder unchanged.
+        let bytes = decode_stream(d, raw).ok()?;
+        return Some(("jpeg".into(), w as u32, h as u32, bytes));
+    }
+    let decoded = decode_stream(d, raw).ok()?;
+    let bpc = doc
+        .get(d, "BitsPerComponent")
+        .and_then(|o| o.as_int())
+        .unwrap_or(8) as u8;
+    let cs = color_space_name(doc, d);
+    let n = w * h;
+    let mut rgba = Vec::with_capacity(n * 4);
+
+    if cs == "Indexed"
+        && let Some(pal) = extract_palette(doc, d)
+        && let Some(idx) = unpack_samples(&decoded, w, h, bpc)
+    {
+        let bc = pal.base_components as usize;
+        for i in idx {
+            let off = i as usize * bc;
+            let g = |k: usize| pal.data.get(off + k).copied().unwrap_or(0);
+            if bc >= 3 {
+                rgba.extend_from_slice(&[g(0), g(1), g(2), 255]);
+            } else {
+                let v = g(0);
+                rgba.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        return Some(("rgba".into(), w as u32, h as u32, rgba));
+    }
+
+    let gray = matches!(cs.as_str(), "DeviceGray" | "CalGray" | "G");
+    if gray && let Some(samples) = unpack_samples(&decoded, w, h, bpc) {
+        let max = ((1u32 << bpc as usize) - 1).max(1);
+        for s in samples {
+            let v = ((s * 255) / max) as u8;
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+        return Some(("rgba".into(), w as u32, h as u32, rgba));
+    }
+    if bpc == 8 && decoded.len() >= n * 3 {
+        for p in decoded.chunks_exact(3).take(n) {
+            rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
+        }
+        return Some(("rgba".into(), w as u32, h as u32, rgba));
+    }
+    None
+}
+
+/// Unpack a row-padded sample stream (1/2/4/8 bpc) to raw integer values.
+pub(crate) fn unpack_samples(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u32>> {
+    let bits = bpc as usize;
+    if !matches!(bits, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let stride = (w * bits).div_ceil(8);
+    if bytes.len() < stride.checked_mul(h)? {
+        return None;
+    }
+    let max = (1u32 << bits) - 1;
+    let mut out = Vec::with_capacity(w * h);
+    for row in 0..h {
+        let base = row * stride;
+        for col in 0..w {
+            let bit_pos = col * bits;
+            let byte = bytes[base + bit_pos / 8];
+            let shift = 8 - bits - (bit_pos % 8);
+            out.push((byte >> shift) as u32 & max);
+        }
+    }
+    Some(out)
+}
+
+/// Standard-alphabet base64 (no dependency).
+pub(crate) fn b64e(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | (*c.get(2).unwrap_or(&0) as u32);
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if c.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Parse an Indexed color-space palette from an image dict, if present.
@@ -3796,6 +4013,54 @@ mod tests {
         assert_eq!(agree.field_type, "button");
         assert_eq!(agree.value.as_deref(), Some("Yes"));
         assert!(agree.required); // Ff bit 2
+    }
+
+    #[test]
+    fn base64_encoder() {
+        assert_eq!(b64e(b"Man"), "TWFu");
+        assert_eq!(b64e(b"Ma"), "TWE=");
+        assert_eq!(b64e(b""), "");
+    }
+
+    #[test]
+    fn page_images_raw_rgb() {
+        // A 2x1 DeviceRGB image (red, green) placed via `Do`, no filter.
+        let pdf: &[u8] = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</XObject<</Im0 6 0 R>>>>>>endobj\n\
+            4 0 obj<<>>stream\nq 20 0 0 10 50 60 cm /Im0 Do Q\nendstream\nendobj\n\
+            6 0 obj<</Type/XObject/Subtype/Image/Width 2/Height 1/ColorSpace/DeviceRGB/BitsPerComponent 8/Length 6>>stream\n\
+\xff\x00\x00\x00\xff\x00\nendstream\nendobj\n\
+            startxref\n0\n%%EOF";
+        let imgs = extract_page_images(pdf, 1).unwrap();
+        assert_eq!(imgs.len(), 1);
+        let im = &imgs[0];
+        assert_eq!(im.format, "rgba");
+        assert_eq!((im.width, im.height), (2, 1));
+        assert_eq!(im.name, "Im0");
+        // Placement: cm 20 0 0 10 50 60 → bbox x 50..70, y 60..70.
+        assert!((im.x - 50.0).abs() < 1.0 && (im.w - 20.0).abs() < 1.0);
+        // RGBA bytes: red (255,0,0,255) then green (0,255,0,255).
+        assert_eq!(b64e(&[255, 0, 0, 255, 0, 255, 0, 255]), im.data);
+    }
+
+    #[test]
+    fn display_list_clip_emits_save_restore() {
+        let pdf: &[u8] = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R>>endobj\n\
+            4 0 obj<<>>stream\nq 10 10 100 50 re W n 0 0 0 rg 20 20 40 20 re f Q\nendstream\nendobj\n\
+            startxref\n0\n%%EOF";
+        let dl = extract_display_list(pdf, 1).unwrap();
+        assert!(matches!(dl.ops.first(), Some(RenderOp::Save)));
+        assert!(matches!(dl.ops.last(), Some(RenderOp::Restore)));
+        let clip = dl.ops.iter().find_map(|o| match o {
+            RenderOp::Clip { rect } => Some(*rect),
+            _ => None,
+        });
+        assert_eq!(clip, Some([10.0, 10.0, 110.0, 60.0]));
     }
 
     #[test]

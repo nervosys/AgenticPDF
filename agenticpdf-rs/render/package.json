@@ -1,0 +1,18 @@
+{
+  "name": "@agenticpdf/webgl-renderer",
+  "version": "1.0.0",
+  "description": "Hardware-accelerated WebGL2 renderer for AgenticPDF display lists.",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "main": "dist/webgl-renderer.js",
+  "types": "dist/webgl-renderer.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "serve": "http-server .. -p 8080 --cors"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "http-server": "^14.1.1"
+  }
+}

@@ -224,16 +224,21 @@ displaylist <file> --page N`; WASM: `displayList(bytes, page)`).
 
 `render/webgl-renderer.ts` rasterizes that list on the **GPU with WebGL2**:
 vector fills via the stencil even-odd technique (concave paths + holes, no CPU
-triangulation), strokes as expanded segment quads, images as quads, and crisp
-text on a 2D overlay layer. See `render/demo.html` for a runnable viewer:
+triangulation), strokes as expanded segment quads, **images as textured quads**
+(JPEG decoded by the browser, raw/indexed/bilevel decoded to RGBA in Rust via
+`pageImages`), **clip paths as a GPU scissor stack** (Save/Restore/Clip ops),
+and crisp text on a 2D overlay layer.
 
 ```bash
-wasm-pack build --target web --features wasm --no-default-features
-npx http-server agenticpdf-rs -p 8080   # open /render/demo.html
+# Build the WASM engine and the renderer, then serve the demo:
+wasm-pack build agenticpdf-rs --target web --features wasm --no-default-features
+cd agenticpdf-rs/render && npm install && npm run build && npm run serve
+# open http://localhost:8080/render/demo.html
 ```
 
-The display-list extraction is unit-tested in the Rust engine; the WebGL layer
-is browser code (validate in a WebGL2-capable browser).
+The display-list and image-pixel extraction are unit-tested in the Rust engine,
+and the renderer type-checks under `tsc --strict`; the WebGL drawing itself is
+browser code (validate in a WebGL2-capable browser).
 
 ## Architecture
 

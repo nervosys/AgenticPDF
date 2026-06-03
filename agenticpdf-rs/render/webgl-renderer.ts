@@ -1,17 +1,19 @@
 /**
  * AgenticPDF — hardware-accelerated WebGL2 renderer.
  *
- * Consumes the device-space display list produced by the Rust/WASM engine
- * (`displayList(bytes, page)`) and rasterizes it on the GPU:
- *   - vector FILLS via the stencil even-odd technique (handles concave paths
- *     and holes with no CPU triangulation);
+ * Consumes the device-space display list (`displayList`) and decoded page
+ * images (`pageImages`) from the Rust/WASM engine and rasterizes them on the
+ * GPU:
+ *   - vector FILLS via the stencil even-odd technique (concave paths + holes,
+ *     no CPU triangulation);
  *   - STROKES as GPU-expanded segment quads;
- *   - IMAGES as placeholder quads (pixels are decoded separately);
+ *   - IMAGES as textured quads (JPEG decoded by the browser, raw decoded to
+ *     RGBA in Rust);
+ *   - CLIP paths as a GPU scissor stack (Save/Restore/Clip ops);
  *   - TEXT on a crisp 2D overlay canvas stacked above the GL canvas.
  *
- * The display list is in PDF device space (origin bottom-left, y up), which
- * matches WebGL clip space, so fills/strokes need no Y flip; only the 2D text
- * overlay flips Y.
+ * Display-list coordinates are PDF device space (origin bottom-left, y up),
+ * which matches WebGL clip/scissor space; only the 2D text overlay flips Y.
  */
 
 export type RGBA = [number, number, number, number];
@@ -20,7 +22,10 @@ export type RenderOp =
   | { op: "fill"; subpaths: [number, number][][]; color: RGBA; even_odd: boolean }
   | { op: "stroke"; subpaths: [number, number][][]; color: RGBA; width: number }
   | { op: "text"; text: string; x: number; y: number; size: number; color: RGBA; font: string }
-  | { op: "image"; x: number; y: number; w: number; h: number; name: string };
+  | { op: "image"; x: number; y: number; w: number; h: number; name: string }
+  | { op: "save" }
+  | { op: "restore" }
+  | { op: "clip"; rect: [number, number, number, number] };
 
 export interface DisplayList {
   page_number: number;
@@ -29,98 +34,169 @@ export interface DisplayList {
   ops: RenderOp[];
 }
 
-const VERT = `#version 300 es
+export interface PageImage {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  format: "jpeg" | "rgba";
+  width: number;
+  height: number;
+  data: string; // base64
+}
+
+export interface WasmRender {
+  displayList(bytes: Uint8Array, page: number): string;
+  pageImages(bytes: Uint8Array, page: number): string;
+}
+
+const SOLID_VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 a_pos;
-uniform vec2 u_page;      // page width/height in PDF points
-void main() {
-  // device (y up) -> clip space (y up): no flip needed.
-  vec2 clip = (a_pos / u_page) * 2.0 - 1.0;
-  gl_Position = vec4(clip, 0.0, 1.0);
-}`;
+uniform vec2 u_page;
+void main(){ gl_Position = vec4((a_pos/u_page)*2.0-1.0, 0.0, 1.0); }`;
 
-const FRAG = `#version 300 es
+const SOLID_FS = `#version 300 es
 precision highp float;
-uniform vec4 u_color;
-out vec4 o_color;
-void main() { o_color = u_color; }`;
+uniform vec4 u_color; out vec4 o; void main(){ o = u_color; }`;
 
-function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
+const TEX_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec2 a_pos;
+layout(location=1) in vec2 a_uv;
+uniform vec2 u_page; out vec2 v_uv;
+void main(){ v_uv = a_uv; gl_Position = vec4((a_pos/u_page)*2.0-1.0, 0.0, 1.0); }`;
+
+const TEX_FS = `#version 300 es
+precision highp float;
+in vec2 v_uv; uniform sampler2D u_tex; out vec4 o; void main(){ o = texture(u_tex, v_uv); }`;
+
+function shader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const s = gl.createShader(type)!;
   gl.shaderSource(s, src);
   gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-    throw new Error("shader: " + gl.getShaderInfoLog(s));
-  }
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) ?? "shader");
   return s;
 }
 
-function program(gl: WebGL2RenderingContext): WebGLProgram {
+function makeProgram(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram {
   const p = gl.createProgram()!;
-  gl.attachShader(p, compile(gl, gl.VERTEX_SHADER, VERT));
-  gl.attachShader(p, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+  gl.attachShader(p, shader(gl, gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, shader(gl, gl.FRAGMENT_SHADER, fs));
   gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-    throw new Error("link: " + gl.getProgramInfoLog(p));
-  }
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p) ?? "link");
   return p;
 }
 
-/** Expand a polyline into triangle vertices for a stroke of `width`. */
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return a;
+}
+
+async function loadTextures(
+  gl: WebGL2RenderingContext,
+  images: PageImage[],
+): Promise<Map<string, WebGLTexture>> {
+  const map = new Map<string, WebGLTexture>();
+  for (const im of images) {
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (im.format === "jpeg") {
+      // `.slice(0)` yields a concrete ArrayBuffer (satisfies BlobPart strictly).
+      const buf = b64ToBytes(im.data).buffer.slice(0) as ArrayBuffer;
+      const blob = new Blob([buf], { type: "image/jpeg" });
+      const bitmap = await createImageBitmap(blob);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    } else {
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, im.width, im.height, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, b64ToBytes(im.data),
+      );
+    }
+    map.set(im.name, tex);
+  }
+  return map;
+}
+
 function strokeQuads(pts: [number, number][], width: number): number[] {
   const hw = Math.max(width, 0.4) / 2;
   const out: number[] = [];
   for (let i = 0; i + 1 < pts.length; i++) {
     const [ax, ay] = pts[i];
     const [bx, by] = pts[i + 1];
-    let dx = bx - ax;
-    let dy = by - ay;
+    let dx = bx - ax, dy = by - ay;
     const len = Math.hypot(dx, dy) || 1;
-    dx /= len;
-    dy /= len;
-    const nx = -dy * hw;
-    const ny = dx * hw;
-    // two triangles: (a+n, b+n, b-n) and (a+n, b-n, a-n)
+    dx /= len; dy /= len;
+    const nx = -dy * hw, ny = dx * hw;
     out.push(ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny);
     out.push(ax + nx, ay + ny, bx - nx, by - ny, ax - nx, ay - ny);
   }
   return out;
 }
 
-/**
- * Render a display list. `gl` is a WebGL2 canvas sized to page*scale; `overlay`
- * is a 2D canvas of the same CSS size, stacked above it, for text.
- */
+type Box = [number, number, number, number]; // x, y, w, h in pixels (y up)
+
+/** Render a display list with images and clip support. */
 export function renderDisplayList(
   gl: WebGL2RenderingContext,
   overlay: CanvasRenderingContext2D | null,
   dl: DisplayList,
-  scale = 1.5,
+  scale: number,
+  textures: Map<string, WebGLTexture>,
 ): void {
-  const prog = program(gl);
-  gl.useProgram(prog);
-  const uPage = gl.getUniformLocation(prog, "u_page");
-  const uColor = gl.getUniformLocation(prog, "u_color");
-  gl.uniform2f(uPage, dl.width, dl.height);
+  const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+  const solid = makeProgram(gl, SOLID_VS, SOLID_FS);
+  const tex = makeProgram(gl, TEX_VS, TEX_FS);
+  const posBuf = gl.createBuffer()!;
+  const uvBuf = gl.createBuffer()!;
 
-  const buf = gl.createBuffer()!;
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-  gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  gl.viewport(0, 0, W, H);
   gl.clearColor(1, 1, 1, 1);
   gl.clearStencil(0);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-  const upload = (verts: number[]) =>
+  // Clip/scissor stack (boxes in pixel space, y up).
+  let clip: Box | null = null;
+  const stack: (Box | null)[] = [];
+  const applyClip = () => {
+    if (clip) {
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(Math.round(clip[0]), Math.round(clip[1]), Math.round(clip[2]), Math.round(clip[3]));
+    } else {
+      gl.disable(gl.SCISSOR_TEST);
+    }
+  };
+
+  const bindPos = (verts: number[]) => {
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STREAM_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  };
 
   for (const op of dl.ops) {
-    if (op.op === "fill") {
-      // Stencil even-odd: toggle coverage, then paint a covering quad.
+    if (op.op === "save") {
+      stack.push(clip);
+    } else if (op.op === "restore") {
+      clip = stack.pop() ?? null;
+      applyClip();
+    } else if (op.op === "clip") {
+      const [x0, y0, x1, y1] = op.rect;
+      const box: Box = [x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale];
+      clip = clip ? intersect(clip, box) : box;
+      applyClip();
+    } else if (op.op === "fill") {
+      gl.useProgram(solid);
+      gl.uniform2f(gl.getUniformLocation(solid, "u_page"), dl.width, dl.height);
       gl.enable(gl.STENCIL_TEST);
       gl.clear(gl.STENCIL_BUFFER_BIT);
       gl.colorMask(false, false, false, false);
@@ -130,10 +206,9 @@ export function renderDisplayList(
       for (const sp of op.subpaths) {
         if (sp.length < 3) continue;
         const fan: number[] = [];
-        for (let i = 1; i + 1 < sp.length; i++) {
+        for (let i = 1; i + 1 < sp.length; i++)
           fan.push(sp[0][0], sp[0][1], sp[i][0], sp[i][1], sp[i + 1][0], sp[i + 1][1]);
-        }
-        upload(fan);
+        bindPos(fan);
         gl.drawArrays(gl.TRIANGLES, 0, fan.length / 2);
         for (const [x, y] of sp) {
           minX = Math.min(minX, x); minY = Math.min(minY, y);
@@ -144,29 +219,40 @@ export function renderDisplayList(
       gl.colorMask(true, true, true, true);
       gl.stencilFunc(gl.NOTEQUAL, 0, 0x1);
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-      gl.uniform4fv(uColor, op.color);
-      upload([minX, minY, maxX, minY, maxX, maxY, minX, minY, maxX, maxY, minX, maxY]);
+      gl.uniform4fv(gl.getUniformLocation(solid, "u_color"), op.color);
+      bindPos([minX, minY, maxX, minY, maxX, maxY, minX, minY, maxX, maxY, minX, maxY]);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disable(gl.STENCIL_TEST);
     } else if (op.op === "stroke") {
-      gl.uniform4fv(uColor, op.color);
+      gl.useProgram(solid);
+      gl.uniform2f(gl.getUniformLocation(solid, "u_page"), dl.width, dl.height);
+      gl.uniform4fv(gl.getUniformLocation(solid, "u_color"), op.color);
       for (const sp of op.subpaths) {
         const v = strokeQuads(sp, op.width);
-        if (v.length === 0) continue;
-        upload(v);
+        if (!v.length) continue;
+        bindPos(v);
         gl.drawArrays(gl.TRIANGLES, 0, v.length / 2);
       }
     } else if (op.op === "image") {
-      // Placeholder: pixels are decoded separately (see listImages / ocr).
-      gl.uniform4fv(uColor, [0.92, 0.92, 0.92, 1]);
+      const t = textures.get(op.name);
+      gl.useProgram(tex);
+      gl.uniform2f(gl.getUniformLocation(tex, "u_page"), dl.width, dl.height);
       const { x, y, w, h } = op;
-      upload([x, y, x + w, y, x + w, y + h, x, y, x + w, y + h, x, y + h]);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      // Two triangles; v flipped so image row 0 is at the top of the placement.
+      bindPos([x, y, x + w, y, x + w, y + h, x, y, x + w, y + h, x, y + h]);
+      gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), gl.STREAM_DRAW);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+      if (t) {
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+      gl.disableVertexAttribArray(1);
     }
     // text handled on the overlay below
   }
 
-  // Crisp text on the 2D overlay (Y flipped: PDF y-up -> canvas y-down).
   if (overlay) {
     overlay.clearRect(0, 0, dl.width * scale, dl.height * scale);
     overlay.textBaseline = "alphabetic";
@@ -181,19 +267,25 @@ export function renderDisplayList(
   }
 }
 
-/**
- * Convenience: size both canvases for a page and render. `displayListFn` is the
- * WASM `displayList` export (returns a JSON string).
- */
-export function renderPage(
+function intersect(a: Box, b: Box): Box {
+  const x0 = Math.max(a[0], b[0]);
+  const y0 = Math.max(a[1], b[1]);
+  const x1 = Math.min(a[0] + a[2], b[0] + b[2]);
+  const y1 = Math.min(a[1] + a[3], b[1] + b[3]);
+  return [x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0)];
+}
+
+/** Size the canvases for a page and render it (images loaded as textures). */
+export async function renderPage(
   glCanvas: HTMLCanvasElement,
   textCanvas: HTMLCanvasElement | null,
   bytes: Uint8Array,
   page: number,
-  displayListFn: (b: Uint8Array, p: number) => string,
+  wasm: WasmRender,
   scale = 1.5,
-): DisplayList {
-  const dl: DisplayList = JSON.parse(displayListFn(bytes, page));
+): Promise<DisplayList> {
+  const dl: DisplayList = JSON.parse(wasm.displayList(bytes, page));
+  const images: PageImage[] = JSON.parse(wasm.pageImages(bytes, page));
   glCanvas.width = Math.ceil(dl.width * scale);
   glCanvas.height = Math.ceil(dl.height * scale);
   const gl = glCanvas.getContext("webgl2", { stencil: true, antialias: true });
@@ -204,6 +296,7 @@ export function renderPage(
     textCanvas.height = glCanvas.height;
     ctx = textCanvas.getContext("2d");
   }
-  renderDisplayList(gl, ctx, dl, scale);
+  const textures = await loadTextures(gl, images);
+  renderDisplayList(gl, ctx, dl, scale, textures);
   return dl;
 }
