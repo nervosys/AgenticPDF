@@ -1984,40 +1984,66 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                     }
                     "TJ" => {
                         if let Some(Token::ArrStr(parts)) = stack.last() {
-                            let mut combined = String::new();
-                            let mut advance = 0.0f64;
+                            // Split the run into segments at column-sized gaps so
+                            // each lands at its true x; normal kerning/word spaces
+                            // (small adjustments) stay merged into one segment.
+                            const GAP_EM: f64 = 1.0;
+                            // (start_em_from_run, text, advance_em)
+                            let mut segs: Vec<(f64, String, f64)> = Vec::new();
+                            let mut cursor = 0.0f64;
+                            let mut seg = String::new();
+                            let mut seg_adv = 0.0f64;
+                            let mut seg_start = 0.0f64;
                             for part in parts {
                                 match part {
                                     ArrPart::Str(bytes) => {
-                                        if let Some(f) = cur_font {
-                                            f.decode(bytes, &mut combined);
-                                            advance += f.text_advance(bytes);
+                                        let a = if let Some(f) = cur_font {
+                                            f.decode(bytes, &mut seg);
+                                            f.text_advance(bytes)
                                         } else {
                                             for &b in bytes {
                                                 if let Some(c) = winansi(b) {
-                                                    combined.push(c);
+                                                    seg.push(c);
                                                 }
                                             }
-                                            advance += bytes.len() as f64 * 0.5;
-                                        }
+                                            bytes.len() as f64 * 0.5
+                                        };
+                                        seg_adv += a;
+                                        cursor += a;
                                     }
                                     ArrPart::Num(adj) => {
-                                        // TJ adjustments subtract from the advance
-                                        // (thousandths of em).
-                                        advance -= adj / 1000.0;
-                                        if *adj < -120.0 && !combined.ends_with(' ') {
-                                            combined.push(' ');
+                                        // TJ adjustment: forward advance (em).
+                                        let gap = -adj / 1000.0;
+                                        cursor += gap;
+                                        if gap >= GAP_EM {
+                                            // Column break: flush and jump.
+                                            let s = std::mem::take(&mut seg);
+                                            if !s.trim().is_empty() {
+                                                segs.push((seg_start, s, seg_adv));
+                                            }
+                                            seg_adv = 0.0;
+                                            seg_start = cursor;
+                                        } else {
+                                            seg_adv += gap;
+                                            if *adj < -120.0 && !seg.ends_with(' ') {
+                                                seg.push(' ');
+                                            }
                                         }
                                     }
                                 }
                             }
-                            if !combined.trim().is_empty() {
+                            if !seg.trim().is_empty() {
+                                segs.push((seg_start, seg, seg_adv));
+                            }
+                            for (start, text, adv) in segs {
+                                let seg_tm =
+                                    mat_mul(&[1.0, 0.0, 0.0, 1.0, start * font_size, 0.0], &tm);
                                 emit_text_op(
-                                    &combined,
+                                    &text,
                                     &cur_font_name,
                                     font_size,
-                                    advance,
-                                    &tm,
+                                    adv,
+                                    &seg_tm,
                                     &ctm,
                                     fill,
                                     &mut ops,
@@ -2025,7 +2051,7 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             }
                             // Advance the text matrix by the total run width so a
                             // following show on the same line lands after it.
-                            tm = mat_mul(&[1.0, 0.0, 0.0, 1.0, advance * font_size, 0.0], &tm);
+                            tm = mat_mul(&[1.0, 0.0, 0.0, 1.0, cursor * font_size, 0.0], &tm);
                         }
                     }
                     _ => {}

@@ -293,10 +293,15 @@ export function renderDisplayList(
     overlay.textBaseline = "alphabetic";
     for (const op of dl.ops) {
       if (op.op !== "text") continue;
-      const serif = /times|serif|georgia|roman|cmr|cmmi|min|mc/i.test(op.font);
+      const serif = /times|serif|georgia|roman|cmr|cmmi|cmti|cmbx|min|mc/i.test(op.font);
       const mono = /mono|courier|cmtt|consol/i.test(op.font);
       const family = mono ? "monospace" : serif ? "serif" : "sans-serif";
-      overlay.font = `${op.size * scale}px ${family}`;
+      // Mirror the PDF's emphasis: oblique/italic and bold/black weight from
+      // the font name (matches the reference renderer's styling).
+      const italic = /ital|obli|slant|-it\b|cmti|cmmi/i.test(op.font);
+      const bold = /bold|-bd\b|black|heavy|semibold|cmbx/i.test(op.font);
+      const style = `${italic ? "italic " : ""}${bold ? "700 " : ""}`;
+      overlay.font = `${style}${op.size * scale}px ${family}`;
       const [r, g, b, a] = op.color;
       overlay.fillStyle = `rgba(${r * 255},${g * 255},${b * 255},${a})`;
       // Horizontally scale the browser glyphs to the PDF advance so positioned
