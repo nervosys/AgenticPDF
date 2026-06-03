@@ -80,6 +80,7 @@ apdf scanned paper.pdf
 # OCR scanned pages (requires `--features ocr`)
 apdf ocr scanned.pdf --lang eng                       # bundled Tesseract CLI
 apdf ocr scanned.pdf --server http://localhost:8868/ocr  # PaddleOCR/EasyOCR server
+apdf ocr scanned.pdf --vlm http://localhost:8000/v1/chat/completions  # PaddleOCR-VL-1.6 (VLM)
 
 # Run as an MCP server for agent clients (Claude Desktop, etc.)
 apdf mcp
@@ -183,6 +184,7 @@ MCP server — as a single zero-runtime binary or WASM module.
 | Figures, formulas (LaTeX), tagged structure | ✅ | ✗ | partial |
 | Prompt-injection / hidden-text scan | ✅ | ✗ | ✗ |
 | Pluggable OCR (`/ocr` HTTP: PaddleOCR/EasyOCR) | ✅ | ✅ | n/a |
+| VLM OCR (PaddleOCR-VL-1.6 via OpenAI API) | ✅ | ✗ | (cloud) |
 | Bundled Tesseract OCR | ✅ (`--features ocr`) | ✅ | n/a |
 | MCP server / JSON-LD agent ontology | ✅ | ✗ | ✗ |
 | Runs fully local, no cloud | ✅ | ✅ | ✗ |
@@ -231,8 +233,19 @@ OCR: `apdf scanned` flags image-dominated pages always. Building with
   FFI, no model downloads; just `tesseract` on `PATH`).
 - **`HttpOcrBackend`** — `apdf ocr document.pdf --server <url>` POSTs each
   scanned page image to a **PaddleOCR** / EasyOCR / liteparse-compatible `/ocr`
-  endpoint (`{results:[{text,bbox,confidence}]}`). This is how you wire
-  PaddleOCR's higher-accuracy / multilingual models without any Python in-process.
+  endpoint (`{results:[{text,bbox,confidence}]}`).
+- **`VlmOcrBackend`** — `apdf ocr document.pdf --vlm <url>` sends each page image
+  to a document-parsing **vision-language model** over an OpenAI-compatible
+  `/v1/chat/completions` endpoint and returns its Markdown. This is how you wire
+  **PaddleOCR-VL-1.6** (SOTA on OmniDocBench), e.g.:
+
+  ```bash
+  # Serve the HF model with an OpenAI-compatible API:
+  vllm serve PaddlePaddle/PaddleOCR-VL-1.6
+  # Then parse scanned pages through it:
+  apdf ocr scanned.pdf --vlm http://localhost:8000/v1/chat/completions \
+      --model PaddleOCR-VL-1.6
+  ```
 
 Or implement `ImageOcrBackend` for a custom engine and call `ocr_scanned_images`.
 

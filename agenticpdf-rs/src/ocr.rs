@@ -499,6 +499,132 @@ pub fn recognize_scanned_http(
     ocr_scanned_images(data, doc, &backend)
 }
 
+/// Standard-alphabet base64 (for embedding images in JSON data URLs).
+#[cfg(feature = "ocr")]
+fn b64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// An [`ImageOcrBackend`] that calls a document-parsing **vision-language model**
+/// over an OpenAI-compatible `/v1/chat/completions` endpoint — e.g.
+/// **PaddleOCR-VL-1.6** served with vLLM (`vllm serve PaddlePaddle/PaddleOCR-VL-1.6`),
+/// or any OpenAI-compatible VLM. The page image is sent as a base64 data URL with
+/// a text prompt; the model's Markdown reply (`choices[0].message.content`) is
+/// returned. Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub struct VlmOcrBackend {
+    /// Chat-completions URL (e.g. "http://localhost:8080/v1/chat/completions").
+    pub endpoint: String,
+    /// Model name the server expects.
+    pub model: String,
+    /// Instruction prompt sent alongside the image.
+    pub prompt: String,
+    /// Optional bearer token for the `Authorization` header.
+    pub api_key: Option<String>,
+    pub timeout_secs: u64,
+}
+
+#[cfg(feature = "ocr")]
+impl VlmOcrBackend {
+    pub fn new(endpoint: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            model: model.into(),
+            prompt: "Convert this document image to Markdown, preserving \
+                     reading order, tables, and formulas."
+                .to_string(),
+            api_key: None,
+            timeout_secs: 120,
+        }
+    }
+}
+
+/// Extract the assistant message text from an OpenAI chat-completions response.
+#[cfg(feature = "ocr")]
+pub fn parse_vlm_response(json: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if let Some(err) = v.get("error") {
+        return Err(format!("VLM server error: {err}"));
+    }
+    let content = v
+        .pointer("/choices/0/message/content")
+        .ok_or_else(|| "response missing choices[0].message.content".to_string())?;
+    match content {
+        serde_json::Value::String(s) => Ok(s.clone()),
+        // Some servers return content as an array of typed parts.
+        serde_json::Value::Array(parts) => Ok(parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("")),
+        _ => Err("unexpected content type".to_string()),
+    }
+}
+
+#[cfg(feature = "ocr")]
+impl ImageOcrBackend for VlmOcrBackend {
+    fn recognize_image(&self, image: &GrayImage) -> Result<String, String> {
+        let png = encode_png(image)?;
+        let data_url = format!("data:image/png;base64,{}", b64_encode(&png));
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": 0,
+            "max_tokens": 4096,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": self.prompt },
+                    { "type": "image_url", "image_url": { "url": data_url } }
+                ]
+            }]
+        });
+        let mut req = ureq::post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .set("Content-Type", "application/json");
+        if let Some(key) = &self.api_key {
+            req = req.set("Authorization", &format!("Bearer {key}"));
+        }
+        let resp = req
+            .send_string(&body.to_string())
+            .map_err(|e| format!("VLM request to {} failed: {e}", self.endpoint))?;
+        let text = resp.into_string().map_err(|e| e.to_string())?;
+        parse_vlm_response(&text)
+    }
+}
+
+/// Convenience: parse every likely-scanned page with a document-parsing VLM
+/// (e.g. PaddleOCR-VL-1.6) over an OpenAI-compatible endpoint. `ocr` feature.
+#[cfg(feature = "ocr")]
+pub fn recognize_scanned_vlm(
+    data: &[u8],
+    doc: &PdfDocument,
+    endpoint: &str,
+    model: &str,
+) -> Result<Vec<OcrResult>, PdfError> {
+    let backend = VlmOcrBackend::new(endpoint, model);
+    ocr_scanned_images(data, doc, &backend)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,6 +784,27 @@ mod tests {
     fn parses_bare_array_ocr_response() {
         let json = r#"[{"text":"X","bbox":[1,2,3,4],"confidence":1.0}]"#;
         assert_eq!(parse_ocr_response(json).unwrap().len(), 1);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn base64_known_vectors() {
+        assert_eq!(b64_encode(b"Man"), "TWFu");
+        assert_eq!(b64_encode(b"Ma"), "TWE=");
+        assert_eq!(b64_encode(b"M"), "TQ==");
+        assert_eq!(b64_encode(b""), "");
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn parses_vlm_chat_response() {
+        let s = r##"{"choices":[{"message":{"role":"assistant","content":"# Title\n\nBody"}}]}"##;
+        assert_eq!(parse_vlm_response(s).unwrap(), "# Title\n\nBody");
+        // Array-of-parts content form.
+        let a = r#"{"choices":[{"message":{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]}}]}"#;
+        assert_eq!(parse_vlm_response(a).unwrap(), "Hello world");
+        // Server error surfaces.
+        assert!(parse_vlm_response(r#"{"error":{"message":"bad"}}"#).is_err());
     }
 
     #[cfg(feature = "ocr")]

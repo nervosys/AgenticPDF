@@ -178,6 +178,13 @@ enum Commands {
         /// Use an HTTP OCR server (PaddleOCR/EasyOCR /ocr endpoint) instead
         #[arg(short, long)]
         server: Option<String>,
+        /// Use a VLM via an OpenAI-compatible /v1/chat/completions URL
+        /// (e.g. PaddleOCR-VL-1.6 served with vLLM)
+        #[arg(long)]
+        vlm: Option<String>,
+        /// Model name for the VLM backend
+        #[arg(long, default_value = "PaddleOCR-VL-1.6")]
+        model: String,
     },
     /// Produce reading-order structured layout (blocks with type/level/bbox)
     Layout {
@@ -278,7 +285,13 @@ fn main() {
             } => cmd_formula(&file, pages.as_deref(), &format),
             Commands::Scanned { file, format } => cmd_scanned(&file, &format),
             #[cfg(feature = "ocr")]
-            Commands::Ocr { file, lang, server } => cmd_ocr(&file, &lang, server.as_deref()),
+            Commands::Ocr {
+                file,
+                lang,
+                server,
+                vlm,
+                model,
+            } => cmd_ocr(&file, &lang, server.as_deref(), vlm.as_deref(), &model),
             Commands::Annotations {
                 file,
                 pages,
@@ -596,12 +609,19 @@ fn cmd_scanned(file: &str, format: &str) -> Result<(), PdfError> {
 }
 
 #[cfg(all(feature = "cli", feature = "ocr"))]
-fn cmd_ocr(file: &str, lang: &str, server: Option<&str>) -> Result<(), PdfError> {
+fn cmd_ocr(
+    file: &str,
+    lang: &str,
+    server: Option<&str>,
+    vlm: Option<&str>,
+    model: &str,
+) -> Result<(), PdfError> {
     let data = fs::read(file)?;
     let doc = PdfDocument::from_bytes(&data)?;
-    let results = match server {
-        Some(url) => agenticpdf::ocr::recognize_scanned_http(&data, &doc, url)?,
-        None => agenticpdf::ocr::recognize_scanned(&data, &doc, lang)?,
+    let results = match (vlm, server) {
+        (Some(url), _) => agenticpdf::ocr::recognize_scanned_vlm(&data, &doc, url, model)?,
+        (None, Some(url)) => agenticpdf::ocr::recognize_scanned_http(&data, &doc, url)?,
+        (None, None) => agenticpdf::ocr::recognize_scanned(&data, &doc, lang)?,
     };
     if results.is_empty() {
         eprintln!("No likely-scanned pages to OCR.");
