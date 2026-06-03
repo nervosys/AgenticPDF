@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgenticPDF — WebGL2 Renderer Demo</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 1.5rem; color: #1a1a1a; }
+    h1 { font-size: 1.2rem; }
+    .stage { position: relative; box-shadow: 0 1px 6px rgba(0,0,0,.2); width: max-content; }
+    /* The text overlay sits exactly above the WebGL canvas. */
+    #gl, #text { position: absolute; inset: 0; }
+    #text { pointer-events: none; }
+    .row { margin: .75rem 0; display: flex; gap: .75rem; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>AgenticPDF — hardware-accelerated WebGL2 renderer</h1>
+  <p>Vector fills/strokes are rasterized on the GPU from the Rust/WASM display
+     list; text is drawn on a crisp 2D overlay.</p>
+  <div class="row">
+    <input type="file" id="file" accept="application/pdf" />
+    <label>Page <input type="number" id="page" value="1" min="1" style="width:4rem" /></label>
+    <label>Scale <input type="number" id="scale" value="1.5" step="0.25" style="width:4rem" /></label>
+    <button id="render">Render</button>
+  </div>
+  <div class="stage" id="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="text"></canvas>
+  </div>
+  <pre id="status"></pre>
+
+  <script type="module">
+    import init, { displayList } from "../pkg/agenticpdf.js";
+    import { renderPage } from "./webgl-renderer.js"; // tsc-compiled output
+
+    const status = document.getElementById("status");
+    let ready = false;
+    init().then(() => { ready = true; status.textContent = "WASM ready. Choose a PDF."; });
+
+    document.getElementById("render").addEventListener("click", async () => {
+      if (!ready) return;
+      const f = document.getElementById("file").files[0];
+      if (!f) { status.textContent = "Pick a PDF first."; return; }
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const page = parseInt(document.getElementById("page").value, 10) || 1;
+      const scale = parseFloat(document.getElementById("scale").value) || 1.5;
+      try {
+        const dl = renderPage(
+          document.getElementById("gl"),
+          document.getElementById("text"),
+          bytes, page, displayList, scale,
+        );
+        document.getElementById("stage").style.width = dl.width * scale + "px";
+        document.getElementById("stage").style.height = dl.height * scale + "px";
+        status.textContent = `Rendered page ${page}: ${dl.ops.length} ops, ${dl.width}×${dl.height} pt.`;
+      } catch (e) {
+        status.textContent = "Error: " + e;
+      }
+    });
+  </script>
+</body>
+</html>

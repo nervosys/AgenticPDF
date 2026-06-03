@@ -1032,6 +1032,8 @@ pub fn build_ontology() -> serde_json::Value {
             "borderless_table_inference",
             "tagged_structure_extraction",
             "form_field_extraction",
+            "display_list_extraction",
+            "webgl_hardware_renderer",
             "figure_detection",
             "caption_linking",
             "image_placement_bbox",

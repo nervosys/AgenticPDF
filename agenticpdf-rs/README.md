@@ -208,13 +208,32 @@ data-extraction surface an agent uses, AgenticPDF matches it and goes further:
 | Tables / figures / formulas | ✅ | ✗ |
 | Tagged-PDF structure tree | ✅ | partial |
 | Semantic chunks, injection scan, MCP, OCR | ✅ | ✗ |
-| Page **rendering** to raster/canvas | ✗ (out of scope) | ✅ |
+| Page **rendering** to canvas | ✅ **WebGL2 (GPU)** | ✅ (Canvas2D) |
 | Footprint | single static binary / WASM, no runtime | JS engine |
 
-The one thing PDF.js does that AgenticPDF intentionally does not is **rasterize
-pages to pixels** — its core purpose. AgenticPDF is an extraction/understanding
-engine, not a renderer; for vision-model workflows it instead decodes a page's
-embedded images (`--features ocr`) and can route them to a VLM.
+For rendering, AgenticPDF goes a step further than PDF.js's Canvas2D engine: the
+Rust/WASM core emits a device-space **display list** and a **WebGL2 renderer**
+rasterizes vector fills/strokes on the **GPU** (see Rendering, below).
+
+## Rendering (hardware-accelerated)
+
+The engine emits a device-space **display list** of draw primitives — flattened
+fill/stroke subpaths (RGBA, even-odd/width), text runs (position/size/colour),
+and image placements — via `engine::extract_display_list` (CLI: `apdf
+displaylist <file> --page N`; WASM: `displayList(bytes, page)`).
+
+`render/webgl-renderer.ts` rasterizes that list on the **GPU with WebGL2**:
+vector fills via the stencil even-odd technique (concave paths + holes, no CPU
+triangulation), strokes as expanded segment quads, images as quads, and crisp
+text on a 2D overlay layer. See `render/demo.html` for a runnable viewer:
+
+```bash
+wasm-pack build --target web --features wasm --no-default-features
+npx http-server agenticpdf-rs -p 8080   # open /render/demo.html
+```
+
+The display-list extraction is unit-tested in the Rust engine; the WebGL layer
+is browser code (validate in a WebGL2-capable browser).
 
 ## Architecture
 

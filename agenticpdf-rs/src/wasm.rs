@@ -132,6 +132,16 @@ pub fn extract_form_fields(data: &[u8]) -> Result<String, JsValue> {
     serde_json::to_string(&fields).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Extract a device-space display list (render ops) for a page, as JSON. This
+/// is the draw list the hardware-accelerated WebGL renderer consumes.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen(js_name = "displayList")]
+pub fn display_list(data: &[u8], page_number: usize) -> Result<String, JsValue> {
+    let dl = crate::engine::extract_display_list(data, page_number)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_json::to_string(&dl).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Detect likely-scanned pages (image-dominated, low text) as JSON.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "detectScanned")]

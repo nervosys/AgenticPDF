@@ -1577,6 +1577,472 @@ pub fn extract_graphics(data: &[u8]) -> Result<Vec<PageGraphics>, PdfError> {
     Ok(out)
 }
 
+// ============================================================================
+// Display list — device-space draw primitives for a GPU renderer
+// ============================================================================
+
+/// A single drawing primitive in device (PDF point) space, ready for a
+/// rasterizer. Beziers are pre-flattened to polylines so a GPU renderer only
+/// has to handle polygons (fills) and polylines (strokes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum RenderOp {
+    /// Fill closed subpaths (each a polyline of [x, y] points).
+    Fill {
+        subpaths: Vec<Vec<[f64; 2]>>,
+        color: [f64; 4],
+        even_odd: bool,
+    },
+    /// Stroke subpaths with `width` (device units) and `color`.
+    Stroke {
+        subpaths: Vec<Vec<[f64; 2]>>,
+        color: [f64; 4],
+        width: f64,
+    },
+    /// A text run anchored at its baseline origin.
+    Text {
+        text: String,
+        x: f64,
+        y: f64,
+        size: f64,
+        color: [f64; 4],
+        font: String,
+    },
+    /// An image XObject placement; `name` is the page resource key.
+    Image {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        name: String,
+    },
+}
+
+/// A page's display list in device space (origin bottom-left, y up — PDF
+/// convention; a renderer flips to its own coordinate system).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplayList {
+    pub page_number: usize,
+    pub width: f64,
+    pub height: f64,
+    pub ops: Vec<RenderOp>,
+}
+
+/// Extract a device-space display list for one page (1-based).
+pub fn extract_display_list(data: &[u8], page_number: usize) -> Result<DisplayList, PdfError> {
+    let doc = Document::parse(data)?;
+    let root = doc
+        .trailer
+        .get("Root")
+        .map(|o| doc.resolve(o))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let mut page_dicts: Vec<Dict> = Vec::new();
+    if let Some(pages_obj) = doc.get(&root, "Pages")
+        && let Some(pages_dict) = pages_obj.as_dict()
+    {
+        let mut visited = std::collections::HashSet::new();
+        collect_pages(
+            &doc,
+            pages_dict,
+            &mut page_dicts,
+            &Inherited::default(),
+            0,
+            &mut visited,
+        );
+    }
+    let pd = page_dicts
+        .get(page_number.saturating_sub(1))
+        .ok_or_else(|| PdfError::ObjectParseError("page out of range".into()))?;
+    let (width, height) = media_box(&doc, pd);
+    let ops = build_display_ops(&doc, pd);
+    Ok(DisplayList {
+        page_number,
+        width,
+        height,
+        ops,
+    })
+}
+
+/// Flatten a cubic Bézier (already in device space) into line points.
+fn flatten_cubic(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], out: &mut Vec<[f64; 2]>) {
+    const N: usize = 12;
+    for i in 1..=N {
+        let t = i as f64 / N as f64;
+        let mt = 1.0 - t;
+        let a = mt * mt * mt;
+        let b = 3.0 * mt * mt * t;
+        let c = 3.0 * mt * t * t;
+        let d = t * t * t;
+        out.push([
+            a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+            a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+        ]);
+    }
+}
+
+/// Read the last `n` numeric operands as an RGBA color (gray/rgb/cmyk by count).
+fn color_from_stack(stack: &[Token]) -> [f64; 4] {
+    let nums: Vec<f64> = stack.iter().rev().map_while(|t| t.as_num()).collect();
+    match nums.len() {
+        1 => {
+            let g = nums[0];
+            [g, g, g, 1.0]
+        }
+        3 => [nums[2], nums[1], nums[0], 1.0],
+        4 => {
+            // nums is reversed: [k, y, m, c]
+            let (c, m, y, k) = (nums[3], nums[2], nums[1], nums[0]);
+            [
+                (1.0 - c) * (1.0 - k),
+                (1.0 - m) * (1.0 - k),
+                (1.0 - y) * (1.0 - k),
+                1.0,
+            ]
+        }
+        _ => [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
+    let fonts = build_fonts(doc, page);
+    let content = page_contents(doc, page);
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let mut ops = Vec::new();
+
+    let mut ctm_stack: Vec<Matrix> = Vec::new();
+    let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut tlm: Matrix = tm;
+    let mut font_size = 0.0f64;
+    let mut leading = 0.0f64;
+    let mut cur_font: Option<&Font> = None;
+    let mut cur_font_name = String::new();
+    let mut fill: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    let mut stroke: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    let mut line_width = 1.0f64;
+
+    // Path state, in device space.
+    let mut subpaths: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut cur: Vec<[f64; 2]> = Vec::new();
+    let mut start = [0.0f64, 0.0];
+    let mut pt = [0.0f64, 0.0];
+
+    let mut stack: Vec<Token> = Vec::new();
+    let mut lex = ContentLexer::new(&content);
+
+    let close_cur = |subpaths: &mut Vec<Vec<[f64; 2]>>, cur: &mut Vec<[f64; 2]>| {
+        if cur.len() > 1 {
+            subpaths.push(std::mem::take(cur));
+        } else {
+            cur.clear();
+        }
+    };
+
+    while let Some(tok) = lex.next_token() {
+        match tok {
+            Token::Op(op) => {
+                match op.as_str() {
+                    "q" => ctm_stack.push(ctm),
+                    "Q" => {
+                        if let Some(m) = ctm_stack.pop() {
+                            ctm = m;
+                        }
+                    }
+                    "cm" => {
+                        if let Some(m) = last6(&stack) {
+                            ctm = mat_mul(&m, &ctm);
+                        }
+                    }
+                    "w" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            let scale = (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs().sqrt();
+                            line_width = (*v * scale).max(0.1);
+                        }
+                    }
+                    "g" | "rg" | "k" => fill = color_from_stack(&stack),
+                    "G" | "RG" | "K" => stroke = color_from_stack(&stack),
+                    "sc" | "scn" => fill = color_from_stack(&stack),
+                    "SC" | "SCN" => stroke = color_from_stack(&stack),
+                    "m" => {
+                        if let Some([x, y]) = last2(&stack) {
+                            close_cur(&mut subpaths, &mut cur);
+                            let p = transform_point(&ctm, x, y);
+                            pt = [p.0, p.1];
+                            start = pt;
+                            cur.push(pt);
+                        }
+                    }
+                    "l" => {
+                        if let Some([x, y]) = last2(&stack) {
+                            let p = transform_point(&ctm, x, y);
+                            pt = [p.0, p.1];
+                            cur.push(pt);
+                        }
+                    }
+                    "c" if stack.len() >= 6 => {
+                        // Full cubic: two control points + endpoint.
+                        let n = stack.len();
+                        let g = |k: usize| {
+                            let p = transform_point(
+                                &ctm,
+                                stack[n - k].as_num().unwrap_or(0.0),
+                                stack[n - k + 1].as_num().unwrap_or(0.0),
+                            );
+                            [p.0, p.1]
+                        };
+                        let (p1, p2, p3) = (g(6), g(4), g(2));
+                        flatten_cubic(pt, p1, p2, p3, &mut cur);
+                        pt = p3;
+                    }
+                    "v" | "y" => {
+                        // One control point implicit; approximate as a curve to end.
+                        if let Some([x, y]) = last2(&stack) {
+                            let p = transform_point(&ctm, x, y);
+                            flatten_cubic(pt, pt, [p.0, p.1], [p.0, p.1], &mut cur);
+                            pt = [p.0, p.1];
+                        }
+                    }
+                    "re" => {
+                        if let Some([x, y, rw, rh]) = last4(&stack) {
+                            close_cur(&mut subpaths, &mut cur);
+                            let c0 = transform_point(&ctm, x, y);
+                            let c1 = transform_point(&ctm, x + rw, y);
+                            let c2 = transform_point(&ctm, x + rw, y + rh);
+                            let c3 = transform_point(&ctm, x, y + rh);
+                            subpaths.push(vec![
+                                [c0.0, c0.1],
+                                [c1.0, c1.1],
+                                [c2.0, c2.1],
+                                [c3.0, c3.1],
+                                [c0.0, c0.1],
+                            ]);
+                            pt = [c0.0, c0.1];
+                            start = pt;
+                        }
+                    }
+                    "h" if !cur.is_empty() => {
+                        cur.push(start);
+                    }
+                    "f" | "F" | "f*" | "b" | "b*" | "B" | "B*" | "S" | "s" => {
+                        if matches!(op.as_str(), "s" | "b" | "b*") && !cur.is_empty() {
+                            cur.push(start);
+                        }
+                        close_cur(&mut subpaths, &mut cur);
+                        let paths = std::mem::take(&mut subpaths);
+                        let fills =
+                            matches!(op.as_str(), "f" | "F" | "f*" | "B" | "B*" | "b" | "b*");
+                        let strokes = matches!(op.as_str(), "S" | "s" | "B" | "B*" | "b" | "b*");
+                        if !paths.is_empty() {
+                            if fills {
+                                ops.push(RenderOp::Fill {
+                                    subpaths: paths.clone(),
+                                    color: fill,
+                                    even_odd: op.ends_with('*'),
+                                });
+                            }
+                            if strokes {
+                                ops.push(RenderOp::Stroke {
+                                    subpaths: paths,
+                                    color: stroke,
+                                    width: line_width,
+                                });
+                            }
+                        }
+                    }
+                    "n" => {
+                        cur.clear();
+                        subpaths.clear();
+                    }
+                    "Do" => {
+                        if let Some(Token::Name(name)) = stack.last() {
+                            let c0 = transform_point(&ctm, 0.0, 0.0);
+                            let c1 = transform_point(&ctm, 1.0, 0.0);
+                            let c2 = transform_point(&ctm, 1.0, 1.0);
+                            let c3 = transform_point(&ctm, 0.0, 1.0);
+                            let xs = [c0.0, c1.0, c2.0, c3.0];
+                            let ys = [c0.1, c1.1, c2.1, c3.1];
+                            let left = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+                            let right = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                            let bottom = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+                            let top = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                            ops.push(RenderOp::Image {
+                                x: left,
+                                y: bottom,
+                                w: right - left,
+                                h: top - bottom,
+                                name: name.clone(),
+                            });
+                        }
+                    }
+                    "BT" => {
+                        tm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                        tlm = tm;
+                    }
+                    "Tf" if stack.len() >= 2 => {
+                        if let Token::Num(sz) = stack[stack.len() - 1] {
+                            font_size = sz;
+                        }
+                        if let Token::Name(n) = &stack[stack.len() - 2] {
+                            cur_font = fonts.get(n);
+                            cur_font_name = match cur_font {
+                                Some(f) if !f.base_font.is_empty() => f.base_font.clone(),
+                                _ => n.clone(),
+                            };
+                        }
+                    }
+                    "TL" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            leading = *v;
+                        }
+                    }
+                    "Td" | "TD" => {
+                        if let Some([x, y]) = last2(&stack) {
+                            if op == "TD" {
+                                leading = -y;
+                            }
+                            tlm = mat_mul(&[1.0, 0.0, 0.0, 1.0, x, y], &tlm);
+                            tm = tlm;
+                        }
+                    }
+                    "Tm" => {
+                        if let Some(m) = last6(&stack) {
+                            tm = m;
+                            tlm = m;
+                        }
+                    }
+                    "T*" => {
+                        tlm = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, -leading], &tlm);
+                        tm = tlm;
+                    }
+                    "Tj" | "'" | "\"" => {
+                        if op != "Tj" {
+                            tlm = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, -leading], &tlm);
+                            tm = tlm;
+                        }
+                        if let Some(Token::Str(bytes)) = stack.last() {
+                            push_text_op(
+                                bytes,
+                                cur_font,
+                                &cur_font_name,
+                                font_size,
+                                &tm,
+                                &ctm,
+                                fill,
+                                &mut ops,
+                            );
+                        }
+                    }
+                    "TJ" => {
+                        if let Some(Token::ArrStr(parts)) = stack.last() {
+                            let mut combined = String::new();
+                            for part in parts {
+                                match part {
+                                    ArrPart::Str(bytes) => {
+                                        if let Some(f) = cur_font {
+                                            f.decode(bytes, &mut combined);
+                                        } else {
+                                            for &b in bytes {
+                                                if let Some(c) = winansi(b) {
+                                                    combined.push(c);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    ArrPart::Num(adj) => {
+                                        if *adj < -120.0 && !combined.ends_with(' ') {
+                                            combined.push(' ');
+                                        }
+                                    }
+                                }
+                            }
+                            if !combined.trim().is_empty() {
+                                emit_text_op(
+                                    &combined,
+                                    &cur_font_name,
+                                    font_size,
+                                    &tm,
+                                    &ctm,
+                                    fill,
+                                    &mut ops,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                stack.clear();
+            }
+            other => {
+                stack.push(other);
+                if stack.len() > 64 {
+                    stack.remove(0);
+                }
+            }
+        }
+        if ops.len() > 2_000_000 {
+            break;
+        }
+    }
+    ops
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_text_op(
+    bytes: &[u8],
+    font: Option<&Font>,
+    font_name: &str,
+    font_size: f64,
+    tm: &Matrix,
+    ctm: &Matrix,
+    color: [f64; 4],
+    ops: &mut Vec<RenderOp>,
+) {
+    let mut s = String::new();
+    if let Some(f) = font {
+        f.decode(bytes, &mut s);
+    } else {
+        for &b in bytes {
+            if let Some(c) = winansi(b) {
+                s.push(c);
+            }
+        }
+    }
+    if s.trim().is_empty() {
+        return;
+    }
+    emit_text_op(&s, font_name, font_size, tm, ctm, color, ops);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_text_op(
+    text: &str,
+    font_name: &str,
+    font_size: f64,
+    tm: &Matrix,
+    ctm: &Matrix,
+    color: [f64; 4],
+    ops: &mut Vec<RenderOp>,
+) {
+    let trm = mat_mul(tm, ctm);
+    let scale = (trm[0] * trm[3] - trm[1] * trm[2]).abs().sqrt();
+    let size = if font_size > 0.0 {
+        font_size * scale.max(0.01)
+    } else {
+        scale.max(1.0)
+    };
+    ops.push(RenderOp::Text {
+        text: text.to_string(),
+        x: trm[4],
+        y: trm[5],
+        size,
+        color,
+        font: font_name.to_string(),
+    });
+}
+
 /// An image XObject with its filter-decoded bytes (Flate/ASCII undone; image
 /// codecs like DCTDecode left encoded so a decoder can consume them).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3330,6 +3796,46 @@ mod tests {
         assert_eq!(agree.field_type, "button");
         assert_eq!(agree.value.as_deref(), Some("Yes"));
         assert!(agree.required); // Ff bit 2
+    }
+
+    #[test]
+    fn display_list_fill_and_text() {
+        let pdf = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n\
+            4 0 obj<<>>stream\n\
+1 0 0 rg\n100 100 50 40 re\nf\nBT /F1 12 Tf 100 200 Td (Hi) Tj ET\n\
+endstream\nendobj\n\
+            5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n\
+            startxref\n0\n%%EOF";
+        let dl = extract_display_list(pdf, 1).unwrap();
+        assert_eq!((dl.width, dl.height), (612.0, 792.0));
+        let fill = dl.ops.iter().find_map(|o| match o {
+            RenderOp::Fill {
+                color, subpaths, ..
+            } => Some((*color, subpaths.clone())),
+            _ => None,
+        });
+        let (color, subpaths) = fill.expect("a fill op");
+        assert!(
+            (color[0] - 1.0).abs() < 1e-9 && color[1] < 1e-9 && color[2] < 1e-9,
+            "red fill"
+        );
+        assert!(
+            !subpaths.is_empty() && subpaths[0].len() >= 4,
+            "rect polygon"
+        );
+        let text = dl.ops.iter().find_map(|o| match o {
+            RenderOp::Text { text, x, y, .. } => Some((text.clone(), *x, *y)),
+            _ => None,
+        });
+        let (t, x, y) = text.expect("a text op");
+        assert_eq!(t, "Hi");
+        assert!(
+            (x - 100.0).abs() < 1.0 && (y - 200.0).abs() < 1.0,
+            "baseline at (100,200)"
+        );
     }
 
     #[test]

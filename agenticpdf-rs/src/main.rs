@@ -156,6 +156,15 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         format: String,
     },
+    /// Emit a page's device-space display list (render ops) as JSON, for the
+    /// hardware-accelerated WebGL renderer
+    Displaylist {
+        /// Path to the PDF file
+        file: String,
+        /// Page number (1-based)
+        #[arg(short, long, default_value = "1")]
+        page: usize,
+    },
     /// Detect formulas and reconstruct best-effort LaTeX
     Formula {
         /// Path to the PDF file
@@ -282,6 +291,7 @@ fn main() {
             Commands::Scan { file, format } => cmd_scan(&file, &format),
             Commands::Structure { file, format } => cmd_structure(&file, &format),
             Commands::Forms { file, format } => cmd_forms(&file, &format),
+            Commands::Displaylist { file, page } => cmd_displaylist(&file, page),
             Commands::Figures {
                 file,
                 pages,
@@ -641,6 +651,17 @@ fn cmd_ocr(
         println!("{}", r.text.trim());
     }
     eprintln!("OCR'd {} page(s)", results.len());
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn cmd_displaylist(file: &str, page: usize) -> Result<(), PdfError> {
+    let data = fs::read(file)?;
+    let dl = agenticpdf::engine::extract_display_list(&data, page)?;
+    let json =
+        serde_json::to_string_pretty(&dl).map_err(|e| PdfError::ExportError(e.to_string()))?;
+    println!("{}", json);
+    eprintln!("Page {}: {} render ops", page, dl.ops.len());
     Ok(())
 }
 
@@ -1008,7 +1029,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
                     "ontology_self_description"
                 ],
                 "formats": ["text", "json", "markdown"],
-                "commands": ["text", "markdown", "layout", "table", "structure", "forms", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
+                "commands": ["text", "markdown", "layout", "table", "structure", "forms", "displaylist", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
                 "discovery": "Run `apdf describe` for full JSON-LD ontology with output schemas and workflow templates."
             });
             println!(
@@ -1030,6 +1051,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
             println!("  scan         Detect hidden / off-page text (prompt-injection signals)");
             println!("  structure    Extract tagged-PDF logical structure tree");
             println!("  forms        Extract interactive AcroForm fields");
+            println!("  displaylist  Emit a page's render display list (for the WebGL renderer)");
             println!("  figures      Detect figures and link them to captions");
             println!("  formula      Detect formulas and reconstruct best-effort LaTeX");
             println!("  scanned      Detect likely-scanned pages that need OCR");
