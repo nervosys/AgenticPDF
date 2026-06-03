@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>AgenticPDF renderer compare</title>
+<style>body{margin:0}.stage{position:relative}#gl,#text{position:absolute;left:0;top:0}</style>
+</head>
+<body>
+  <!-- WebGL (GPU) renderer output: gl canvas + crisp text overlay -->
+  <div class="stage" id="stage"><canvas id="gl"></canvas><canvas id="text"></canvas></div>
+  <!-- Canvas2D reference renderer output -->
+  <canvas id="c2d"></canvas>
+
+  <script src="/agenticpdf-browser.js"></script>
+  <script type="module">
+    import init, { displayList, pageImages, getPageCount } from "/agenticpdf-rs/pkg/agenticpdf.js";
+    import { renderPage } from "/agenticpdf-rs/render/dist/webgl-renderer.js";
+
+    let ab = null, bytes = null, c2dPdf = null;
+    const stage = document.getElementById("stage");
+
+    window.boot = async () => {
+      await init();
+      ab = await (await fetch("/demos/sample.pdf")).arrayBuffer();
+      bytes = new Uint8Array(ab);
+      window.pageCount = getPageCount(bytes);
+      window.__ready = true;
+    };
+
+    window.renderWebGL = async (p, scale = 1) => {
+      const dl = await renderPage(
+        document.getElementById("gl"), document.getElementById("text"),
+        bytes, p, { displayList, pageImages }, scale,
+      );
+      stage.style.width = dl.width * scale + "px";
+      stage.style.height = dl.height * scale + "px";
+      return { ops: dl.ops.length, w: dl.width, h: dl.height };
+    };
+
+    window.renderC2D = async (p, scale = 1) => {
+      const AgenticPDF = window.AgenticPDF.default ?? window.AgenticPDF;
+      if (!c2dPdf) c2dPdf = await AgenticPDF.fromBuffer(ab.slice(0));
+      const c = document.getElementById("c2d");
+      await c2dPdf.renderPage(p, c, { scale });
+      return { w: c.width, h: c.height };
+    };
+  </script>
+</body>
+</html>

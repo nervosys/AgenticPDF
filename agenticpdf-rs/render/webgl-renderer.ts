@@ -21,7 +21,7 @@ export type RGBA = [number, number, number, number];
 export type RenderOp =
   | { op: "fill"; subpaths: [number, number][][]; color: RGBA; even_odd: boolean }
   | { op: "stroke"; subpaths: [number, number][][]; color: RGBA; width: number }
-  | { op: "text"; text: string; x: number; y: number; size: number; color: RGBA; font: string }
+  | { op: "text"; text: string; x: number; y: number; size: number; width: number; rot: number; color: RGBA; font: string }
   | { op: "image"; x: number; y: number; w: number; h: number; name: string }
   | { op: "save" }
   | { op: "restore" }
@@ -293,11 +293,23 @@ export function renderDisplayList(
     overlay.textBaseline = "alphabetic";
     for (const op of dl.ops) {
       if (op.op !== "text") continue;
-      const serif = /times|serif|georgia|roman/i.test(op.font);
-      overlay.font = `${op.size * scale}px ${serif ? "serif" : "sans-serif"}`;
+      const serif = /times|serif|georgia|roman|cmr|cmmi|min|mc/i.test(op.font);
+      const mono = /mono|courier|cmtt|consol/i.test(op.font);
+      const family = mono ? "monospace" : serif ? "serif" : "sans-serif";
+      overlay.font = `${op.size * scale}px ${family}`;
       const [r, g, b, a] = op.color;
       overlay.fillStyle = `rgba(${r * 255},${g * 255},${b * 255},${a})`;
-      overlay.fillText(op.text, op.x * scale, dl.height * scale - op.y * scale);
+      // Horizontally scale the browser glyphs to the PDF advance so positioned
+      // words/runs line up exactly (no overlap), like the reference renderer.
+      const measured = overlay.measureText(op.text).width || 1;
+      const target = op.width * scale;
+      const sx = target > 1 && measured > 1 ? Math.min(Math.max(target / measured, 0.2), 4) : 1;
+      overlay.save();
+      overlay.translate(op.x * scale, dl.height * scale - op.y * scale);
+      if (op.rot) overlay.rotate(-op.rot);
+      if (sx !== 1) overlay.scale(sx, 1);
+      overlay.fillText(op.text, 0, 0);
+      overlay.restore();
     }
   }
 }

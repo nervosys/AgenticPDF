@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AgenticPDF — WebGL2 render: demos/sample.pdf</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 16px; background: #f3f3f3; color: #222; }
+    h1 { font-size: 1rem; font-weight: 600; }
+    .bar { margin: 8px 0; display: flex; gap: 8px; align-items: center; }
+    .stage { position: relative; width: max-content; box-shadow: 0 2px 10px rgba(0,0,0,.25); background: #fff; }
+    #gl, #text { position: absolute; left: 0; top: 0; }
+    #text { pointer-events: none; }
+    #status { font-variant-numeric: tabular-nums; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>AgenticPDF — hardware-accelerated WebGL2 renderer · <code>demos/sample.pdf</code></h1>
+  <div class="bar">
+    <button id="prev">◀ Prev</button>
+    <span id="status">loading…</span>
+    <button id="next">Next ▶</button>
+  </div>
+  <div class="stage" id="stage">
+    <canvas id="gl"></canvas>
+    <canvas id="text"></canvas>
+  </div>
+
+  <script type="module">
+    import init, { displayList, pageImages } from "/agenticpdf-rs/pkg/agenticpdf.js";
+    import { renderPage } from "/agenticpdf-rs/render/dist/webgl-renderer.js";
+
+    const status = document.getElementById("status");
+    const stage = document.getElementById("stage");
+    const gl = document.getElementById("gl");
+    const text = document.getElementById("text");
+    let bytes = null, page = 1, scale = 1.5, pageCount = 99;
+
+    async function show(p) {
+      page = Math.max(1, Math.min(pageCount, p));
+      const t0 = performance.now();
+      try {
+        const dl = await renderPage(gl, text, bytes, page, { displayList, pageImages }, scale);
+        stage.style.width = dl.width * scale + "px";
+        stage.style.height = dl.height * scale + "px";
+        status.textContent =
+          `page ${page} · ${dl.ops.length} ops · ${Math.round(dl.width)}×${Math.round(dl.height)} pt · ${(performance.now() - t0).toFixed(1)} ms (GPU)`;
+      } catch (e) {
+        status.textContent = "render error: " + e;
+      }
+    }
+
+    (async () => {
+      await init();
+      bytes = new Uint8Array(await (await fetch("/demos/sample.pdf")).arrayBuffer());
+      await show(1);
+      document.getElementById("prev").onclick = () => show(page - 1);
+      document.getElementById("next").onclick = () => show(page + 1);
+    })();
+  </script>
+</body>
+</html>
