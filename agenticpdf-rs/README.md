@@ -12,6 +12,7 @@ or a WASM module. No JVM, no Python, no model server.
 | Runtime | none — single static binary / WASM | JVM 11+ or Python 3.10+ |
 | Cold start | milliseconds | seconds (JVM/interp warmup) |
 | Edge / serverless / browser | ✅ (WASM, ~no deps) | ✗ / awkward |
+| Tagged-PDF structure (`/StructTreeRoot`) | ✅ author-provided tree | ✅ |
 | Reading order, headings, lists | ✅ deterministic, local | often needs an AI backend |
 | Tables (bordered + borderless + panels) | ✅ rulings + text-alignment, local | often needs an AI backend |
 | Figure ↔ caption linking | ✅ image bbox + caption proximity | varies |
@@ -59,6 +60,9 @@ apdf layout paper.pdf --output layout.json
 # Reconstruct tables (bordered, booktabs, borderless) → Markdown or JSON
 apdf table report.pdf
 apdf table report.pdf --format json --output tables.json
+
+# Tagged-PDF logical structure tree (author-provided, no heuristics)
+apdf structure tagged.pdf
 
 # Detect hidden / off-page text (prompt-injection defense)
 apdf scan untrusted.pdf
@@ -168,6 +172,7 @@ src/
 ├── lib.rs       # Public types (PdfDocument, PdfPage, TextBlock, …) + JSON-LD ontology
 ├── engine.rs    # Object model, lexer, xref (table+stream), object streams,
 │                # page tree, fonts/encoding, content-stream text extraction
+│                # plus tagged-PDF /StructTreeRoot logical structure extraction
 ├── layout.rs    # Reading order, XY-cut columns, block classification, Markdown
 ├── tables.rs    # Table reconstruction (rulings + text-alignment + panels) → Markdown/JSON
 ├── figures.rs   # Figure detection + caption linking

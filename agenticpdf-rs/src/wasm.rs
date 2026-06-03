@@ -114,6 +114,15 @@ pub fn extract_formulas(data: &[u8]) -> Result<String, JsValue> {
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Extract the tagged-PDF logical structure tree as JSON.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen(js_name = "extractStructure")]
+pub fn extract_structure(data: &[u8]) -> Result<String, JsValue> {
+    let tree =
+        crate::engine::extract_structure(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_json::to_string(&tree).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Detect likely-scanned pages (image-dominated, low text) as JSON.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "detectScanned")]

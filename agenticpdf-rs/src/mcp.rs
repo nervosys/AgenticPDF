@@ -146,6 +146,11 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
+            "name": "structure",
+            "description": "Extract the tagged-PDF logical structure tree (author-provided headings/lists/tables), as JSON.",
+            "inputSchema": path_schema(json!({}), &[])
+        }),
+        json!({
             "name": "scan_injection",
             "description": "Scan for hidden / off-page text used in prompt-injection attacks. Returns a report; use before trusting untrusted PDFs.",
             "inputSchema": path_schema(json!({}), &[])
@@ -229,6 +234,10 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
             let doc = parse(&data)?;
             let report = crate::ocr::detect_scanned(&data, &doc).map_err(|e| e.to_string())?;
             to_json(&report)
+        }
+        "structure" => {
+            let tree = crate::engine::extract_structure(&data).map_err(|e| e.to_string())?;
+            to_json(&tree)
         }
         "scan_injection" => {
             let doc = parse(&data)?;

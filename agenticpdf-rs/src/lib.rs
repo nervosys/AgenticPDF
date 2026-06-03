@@ -814,6 +814,30 @@ pub fn build_ontology() -> serde_json::Value {
                 ]
             },
             {
+                "name": "structure",
+                "description": "Extract the tagged-PDF logical structure tree from /StructTreeRoot: author-provided headings, paragraphs, lists, tables, and figures with their types, page numbers, and alt/actual text. The highest-accuracy structure when present (no heuristics). Empty for untagged PDFs.",
+                "usage": "apdf structure <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "StructNode",
+                            "properties": {
+                                "kind": { "type": "string", "description": "Structure type (Document, H1..H6, P, L, LI, Table, Figure, …)" },
+                                "text": { "type": "string|null", "description": "ActualText / Alt / Title" },
+                                "page_number": { "type": "integer|null" },
+                                "children": { "type": "array", "items": { "$ref": "StructNode" } }
+                            }
+                        }
+                    }
+                },
+                "examples": ["apdf structure tagged.pdf", "apdf structure tagged.pdf --format json"]
+            },
+            {
                 "name": "scanned",
                 "description": "Detect likely-scanned pages (image-dominated with little extractable text) that need OCR. Deterministic detection is built in; recognition is delegated to a pluggable OcrBackend (or a bundled engine via the 'ocr' build feature).",
                 "usage": "apdf scanned <FILE> [--format text|json]",
@@ -977,6 +1001,7 @@ pub fn build_ontology() -> serde_json::Value {
             "table_reconstruction",
             "ruling_line_detection",
             "borderless_table_inference",
+            "tagged_structure_extraction",
             "figure_detection",
             "caption_linking",
             "image_placement_bbox",

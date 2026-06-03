@@ -1182,6 +1182,170 @@ pub fn extract_images(data: &[u8]) -> Result<Vec<ImageInfo>, PdfError> {
     Ok(images)
 }
 
+/// A node in a tagged PDF's logical structure tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructNode {
+    /// Structure type from `/S` (e.g. "Document", "H1", "P", "Table", "Figure").
+    pub kind: String,
+    /// Author-provided text: `/ActualText`, else `/Alt`, else `/T` (title).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// 1-based page the element is on (`/Pg`), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<usize>,
+    pub children: Vec<StructNode>,
+}
+
+/// Extract the tagged-PDF logical structure tree from `/StructTreeRoot`.
+///
+/// This is the author-provided structure (headings, lists, tables, reading
+/// order) — the highest-accuracy source when present, requiring no heuristics.
+/// Returns an empty vec for untagged documents.
+pub fn extract_structure(data: &[u8]) -> Result<Vec<StructNode>, PdfError> {
+    let doc = Document::parse(data)?;
+    let root = doc
+        .trailer
+        .get("Root")
+        .map(|o| doc.resolve(o))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let str_root = match doc
+        .get(&root, "StructTreeRoot")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        Some(d) => d,
+        None => return Ok(Vec::new()),
+    };
+    let pages = build_page_index(&doc, &root);
+    let mut visited = std::collections::HashSet::new();
+    let k = match str_root.get("K") {
+        Some(k) => k.clone(),
+        None => return Ok(Vec::new()),
+    };
+    Ok(walk_struct_kids(&doc, &k, &pages, &mut visited, 0))
+}
+
+/// Map page object numbers to 0-based page indices.
+fn build_page_index(doc: &Document, root: &Dict) -> HashMap<u32, usize> {
+    let mut map = HashMap::new();
+    if let Some(pages) = doc.get(root, "Pages").and_then(|o| o.as_dict().cloned()) {
+        let mut counter = 0usize;
+        let mut visited = std::collections::HashSet::new();
+        page_index_walk(doc, &pages, &mut map, &mut counter, &mut visited, 0);
+    }
+    map
+}
+
+fn page_index_walk(
+    doc: &Document,
+    node: &Dict,
+    map: &mut HashMap<u32, usize>,
+    counter: &mut usize,
+    visited: &mut std::collections::HashSet<u32>,
+    depth: usize,
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let kids = match doc
+        .get(node, "Kids")
+        .and_then(|o| o.as_array().map(|a| a.to_vec()))
+    {
+        Some(k) => k,
+        None => return,
+    };
+    for kid in &kids {
+        if let Object::Ref(n, _) = kid {
+            if !visited.insert(*n) {
+                continue;
+            }
+            let kd = match doc.resolve(kid).as_dict().cloned() {
+                Some(d) => d,
+                None => continue,
+            };
+            let is_page = kd.get("Type").and_then(|o| o.as_name()) == Some("Page")
+                || !kd.contains_key("Kids");
+            if is_page {
+                map.insert(*n, *counter);
+                *counter += 1;
+            } else {
+                page_index_walk(doc, &kd, map, counter, visited, depth + 1);
+            }
+        }
+    }
+}
+
+/// Walk the `/K` contents of a structure element or the tree root.
+fn walk_struct_kids(
+    doc: &Document,
+    k: &Object,
+    pages: &HashMap<u32, usize>,
+    visited: &mut std::collections::HashSet<u32>,
+    depth: usize,
+) -> Vec<StructNode> {
+    if depth > MAX_DEPTH {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    match k {
+        Object::Array(items) => {
+            for item in items {
+                out.extend(walk_struct_kids(doc, item, pages, visited, depth));
+            }
+        }
+        Object::Ref(n, _) if visited.insert(*n) => {
+            let resolved = doc.resolve(k);
+            if let Some(node) = struct_elem(doc, &resolved, pages, visited, depth) {
+                out.push(node);
+            }
+        }
+        Object::Dict(_) => {
+            if let Some(node) = struct_elem(doc, k, pages, visited, depth) {
+                out.push(node);
+            }
+        }
+        // Integers / MCR / OBJR are content leaves, not structural elements.
+        _ => {}
+    }
+    out
+}
+
+/// Build a `StructNode` from a structure-element object, if it is one.
+fn struct_elem(
+    doc: &Document,
+    obj: &Object,
+    pages: &HashMap<u32, usize>,
+    visited: &mut std::collections::HashSet<u32>,
+    depth: usize,
+) -> Option<StructNode> {
+    let d = obj.as_dict()?;
+    // A marked-content (/MCR) or object (/OBJR) reference is a leaf, not an elem.
+    let ty = d.get("Type").and_then(|o| o.as_name());
+    if matches!(ty, Some("MCR") | Some("OBJR")) {
+        return None;
+    }
+    let kind = doc
+        .get(d, "S")
+        .and_then(|o| o.as_name().map(String::from))?;
+    let text = text_string(doc, d, "ActualText")
+        .or_else(|| text_string(doc, d, "Alt"))
+        .or_else(|| text_string(doc, d, "T"));
+    let page_number = d
+        .get("Pg")
+        .and_then(|o| o.as_ref())
+        .and_then(|(n, _)| pages.get(&n).map(|i| i + 1));
+    let children = match d.get("K") {
+        Some(k) => walk_struct_kids(doc, k, pages, visited, depth + 1),
+        None => Vec::new(),
+    };
+    Some(StructNode {
+        kind,
+        text,
+        page_number,
+        children,
+    })
+}
+
 /// Extract per-page ruling-line geometry (for table reconstruction).
 pub fn extract_graphics(data: &[u8]) -> Result<Vec<PageGraphics>, PdfError> {
     let doc = Document::parse(data)?;
@@ -2881,6 +3045,38 @@ mod tests {
         let d = obj.as_dict().unwrap();
         assert_eq!(d.get("Type").and_then(|o| o.as_name()), Some("Page"));
         assert_eq!(d.get("Count").and_then(|o| o.as_int()), Some(3));
+    }
+
+    #[test]
+    fn tagged_structure_tree() {
+        // Minimal tagged PDF: Document > [H1 "Title" (p1), P (p1)].
+        let pdf = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R/StructTreeRoot 5 0 R/MarkInfo<</Marked true>>>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+            5 0 obj<</Type/StructTreeRoot/K 6 0 R>>endobj\n\
+            6 0 obj<</Type/StructElem/S/Document/P 5 0 R/K[7 0 R 8 0 R]>>endobj\n\
+            7 0 obj<</Type/StructElem/S/H1/P 6 0 R/Pg 3 0 R/ActualText(Title)/K 0>>endobj\n\
+            8 0 obj<</Type/StructElem/S/P/P 6 0 R/Pg 3 0 R/K 1>>endobj\n\
+            startxref\n0\n%%EOF";
+        let tree = extract_structure(pdf).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].kind, "Document");
+        assert_eq!(tree[0].children.len(), 2);
+        assert_eq!(tree[0].children[0].kind, "H1");
+        assert_eq!(tree[0].children[0].text.as_deref(), Some("Title"));
+        assert_eq!(tree[0].children[0].page_number, Some(1));
+        assert_eq!(tree[0].children[1].kind, "P");
+    }
+
+    #[test]
+    fn untagged_structure_empty() {
+        let pdf = b"%PDF-1.4\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+            startxref\n0\n%%EOF";
+        assert!(extract_structure(pdf).unwrap().is_empty());
     }
 
     #[test]

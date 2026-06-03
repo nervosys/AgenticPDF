@@ -140,6 +140,14 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         format: String,
     },
+    /// Extract the tagged-PDF logical structure tree (author-provided)
+    Structure {
+        /// Path to the PDF file
+        file: String,
+        /// Output format: text or json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
     /// Detect formulas and reconstruct best-effort LaTeX
     Formula {
         /// Path to the PDF file
@@ -254,6 +262,7 @@ fn main() {
                 output,
             } => cmd_table(&file, pages.as_deref(), &format, output.as_deref()),
             Commands::Scan { file, format } => cmd_scan(&file, &format),
+            Commands::Structure { file, format } => cmd_structure(&file, &format),
             Commands::Figures {
                 file,
                 pages,
@@ -601,6 +610,43 @@ fn cmd_ocr(file: &str, lang: &str) -> Result<(), PdfError> {
 }
 
 #[cfg(feature = "cli")]
+fn cmd_structure(file: &str, format: &str) -> Result<(), PdfError> {
+    let data = fs::read(file)?;
+    let tree = agenticpdf::engine::extract_structure(&data)?;
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&tree)
+                .map_err(|e| PdfError::ExportError(e.to_string()))?;
+            println!("{}", json);
+        }
+        _ => {
+            if tree.is_empty() {
+                println!("No tagged structure (document is not a Tagged PDF).");
+            } else {
+                fn print_nodes(nodes: &[agenticpdf::engine::StructNode], depth: usize) {
+                    for n in nodes {
+                        let indent = "  ".repeat(depth);
+                        let text = n
+                            .text
+                            .as_deref()
+                            .map(|t| format!(" — {t}"))
+                            .unwrap_or_default();
+                        let pg = n
+                            .page_number
+                            .map(|p| format!(" (p{p})"))
+                            .unwrap_or_default();
+                        println!("{indent}{}{pg}{text}", n.kind);
+                        print_nodes(&n.children, depth + 1);
+                    }
+                }
+                print_nodes(&tree, 0);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
 fn cmd_scan(file: &str, format: &str) -> Result<(), PdfError> {
     let doc = load_pdf(file)?;
     let report = agenticpdf::sanitize::scan(&doc);
@@ -895,7 +941,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
                     "ontology_self_description"
                 ],
                 "formats": ["text", "json", "markdown"],
-                "commands": ["text", "markdown", "layout", "table", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
+                "commands": ["text", "markdown", "layout", "table", "structure", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
                 "discovery": "Run `apdf describe` for full JSON-LD ontology with output schemas and workflow templates."
             });
             println!(
@@ -915,6 +961,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
             println!("  layout       Reading-order structured blocks with bounding boxes (JSON)");
             println!("  table        Reconstruct tables (Markdown or JSON)");
             println!("  scan         Detect hidden / off-page text (prompt-injection signals)");
+            println!("  structure    Extract tagged-PDF logical structure tree");
             println!("  figures      Detect figures and link them to captions");
             println!("  formula      Detect formulas and reconstruct best-effort LaTeX");
             println!("  scanned      Detect likely-scanned pages that need OCR");
