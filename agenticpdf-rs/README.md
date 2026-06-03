@@ -201,15 +201,21 @@ image and runs the `tesseract` binary on it (no FFI, no model downloads; just
 `tesseract` on `PATH`). To use a different engine (ONNX, a cloud API), implement
 `ImageOcrBackend` and call `ocr_scanned_images`.
 
-Math: symbol mapping, super/subscripts, `\frac` (from rule bars), multi-token
-`\sqrt` radicands, and bracket-delimited matrices → `\begin{bmatrix}…`.
+Math: symbol mapping, super/subscripts, operator limits (`\sum_{i}^{n}`),
+`\frac` (from rule bars) including **nested fractions**, multi-token `\sqrt`
+radicands, and bracket-delimited matrices → `\begin{bmatrix}…`.
 
-CID fonts: ToUnicode CMaps, WinAnsi + `/Differences`, Identity-H, and embedded
-CMap **codespace ranges** for correct mixed-byte-width tokenization.
+CID fonts: ToUnicode CMaps, WinAnsi + `/Differences`, Identity-H, embedded-CMap
+**codespace ranges** (mixed-byte-width tokenization), and **Unicode predefined
+CMaps** (`UniGB-UCS2-H` etc.) so CJK text decodes without a ToUnicode map.
 
-Planned (genuinely ML/research-grade): a model-based OCR engine bundled with
-weights, full 2-D math semantics (nested fractions, integrals with limits), and
-CID→Unicode fallback tables for CJK fonts that ship no ToUnicode.
+OCR image decode (`--features ocr`): JPEG (DCTDecode), 8-bit Gray/RGB, and
+**1/2/4-bit bilevel/low-depth** grayscale scans.
+
+Planned (genuinely ML/research-grade): a model-weighted OCR engine bundled with
+weights, CCITT/JBIG2 image codecs, and CID→Unicode fallback tables for the
+character-collection CMaps (Adobe-Japan1, GB1, …) of CJK fonts that ship no
+ToUnicode.
 
 ## License
 

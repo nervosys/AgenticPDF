@@ -1564,6 +1564,9 @@ struct Font {
     /// Codespace ranges (low, high, byte-width) from an embedded /Encoding
     /// CMap. Empty for Identity-H (which is a fixed 2-byte codespace).
     codespace: Vec<(u32, u32, u8)>,
+    /// True when the encoding is a Unicode predefined CMap (UniXXX-UCS2/UTF16),
+    /// so a character code maps directly to a Unicode scalar value.
+    cmap_unicode: bool,
     base_font: String,
 }
 
@@ -1617,12 +1620,17 @@ impl Font {
                 i += w.max(1);
                 if let Some(s) = self.to_unicode.get(&code) {
                     out.push_str(s);
-                } else if let Some(c) = char::from_u32(code) {
-                    // Last resort; usually wrong for CID, but better than nothing.
-                    if !c.is_control() && code > 0x1f {
+                } else if self.cmap_unicode {
+                    // Unicode predefined CMap: the code IS a Unicode scalar.
+                    if let Some(c) = char::from_u32(code)
+                        && !c.is_control()
+                    {
                         out.push(c);
                     }
                 }
+                // Otherwise (Identity-H / CID without ToUnicode) we cannot
+                // recover Unicode without a CID→Unicode table, so we skip
+                // rather than emit a garbage glyph-id character.
             }
         } else {
             for &b in bytes {
@@ -1733,14 +1741,22 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     // so codes of mixed byte widths tokenize correctly. Named encodings
     // (Identity-H/V and predefined CMaps) leave this empty → 2-byte default.
     let mut codespace = Vec::new();
-    if two_byte
-        && let Some(Object::Stream(d, raw)) = doc.get(font, "Encoding")
-        && let Ok(decoded) = decode_stream(&d, &raw)
-    {
-        codespace = parse_codespace(&decoded);
-        // Some embedded CMaps also carry their own ToUnicode-style maps;
-        // if we had no ToUnicode, derive code→Unicode from cidrange is
-        // out of scope (needs CID→Unicode tables), so we keep ToUnicode.
+    let mut cmap_unicode = false;
+    if two_byte {
+        match doc.get(font, "Encoding") {
+            Some(Object::Stream(d, raw)) => {
+                if let Ok(decoded) = decode_stream(&d, &raw) {
+                    codespace = parse_codespace(&decoded);
+                }
+            }
+            Some(Object::Name(n)) => {
+                // Unicode predefined CMaps map a 2-byte code straight to a
+                // Unicode scalar (UCS-2 / UTF-16 BMP), so CJK text decodes
+                // without a ToUnicode map or CID→Unicode tables.
+                cmap_unicode = n.starts_with("Uni") && (n.contains("UCS2") || n.contains("UTF16"));
+            }
+            _ => {}
+        }
     }
 
     Font {
@@ -1748,6 +1764,7 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
         to_unicode,
         simple,
         codespace,
+        cmap_unicode,
         base_font,
     }
 }
@@ -2816,6 +2833,7 @@ mod tests {
             to_unicode: tu,
             simple: None,
             codespace: vec![(0x00, 0x80, 1), (0x8140, 0x9ffc, 2)],
+            cmap_unicode: false,
             base_font: String::new(),
         };
         let mut out = String::new();
@@ -2832,10 +2850,45 @@ mod tests {
             to_unicode: tu,
             simple: None,
             codespace: vec![], // Identity-H
+            cmap_unicode: false,
             base_font: String::new(),
         };
         let mut out = String::new();
         font.decode(&[0x00, 0x41], &mut out);
         assert_eq!(out, "A");
+    }
+
+    #[test]
+    fn unicode_cmap_decodes_without_tounicode() {
+        // UniGB-UCS2-H style: 2-byte code is the Unicode scalar directly.
+        let font = Font {
+            two_byte: true,
+            to_unicode: HashMap::new(),
+            simple: None,
+            codespace: vec![],
+            cmap_unicode: true,
+            base_font: String::new(),
+        };
+        let mut out = String::new();
+        // U+4E2D 中, U+6587 文
+        font.decode(&[0x4E, 0x2D, 0x65, 0x87], &mut out);
+        assert_eq!(out, "中文");
+    }
+
+    #[test]
+    fn identity_without_tounicode_skips_garbage() {
+        // No ToUnicode, not a Unicode CMap → cannot recover Unicode, emit nothing
+        // rather than a garbage glyph-id character.
+        let font = Font {
+            two_byte: true,
+            to_unicode: HashMap::new(),
+            simple: None,
+            codespace: vec![],
+            cmap_unicode: false,
+            base_font: String::new(),
+        };
+        let mut out = String::new();
+        font.decode(&[0x00, 0x03], &mut out);
+        assert_eq!(out, "");
     }
 }

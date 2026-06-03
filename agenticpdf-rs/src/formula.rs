@@ -45,8 +45,16 @@ pub fn extract_formulas(doc: &PdfDocument, graphics: &[PageGraphics]) -> Vec<For
     out
 }
 
-/// Detect fractions: a short horizontal rule (the fraction bar) with text
-/// centered above (numerator) and below (denominator) within its span.
+/// A candidate fraction bar.
+struct Bar {
+    x0: f64,
+    x1: f64,
+    y: f64,
+}
+
+/// Detect fractions (including nested `\frac` inside `\frac`): a short
+/// horizontal rule (the fraction bar) with text centered above (numerator) and
+/// below (denominator); a side that itself contains a bar nests recursively.
 fn detect_fractions(
     frags: &[TextBlock],
     h_lines: &[crate::engine::Seg],
@@ -54,10 +62,10 @@ fn detect_fractions(
     page_width: f64,
     out: &mut Vec<Formula>,
 ) {
-    // Table rules repeat their horizontal extent (top/mid/bottom, row
-    // separators); a fraction bar is unique. Count extent signatures so we can
-    // skip structural (table) rules.
     use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    // Table rules repeat their horizontal extent; a fraction bar is unique.
     let mut sig_count: HashMap<(i64, i64), usize> = HashMap::new();
     for s in h_lines {
         let key = (
@@ -66,97 +74,160 @@ fn detect_fractions(
         );
         *sig_count.entry(key).or_insert(0) += 1;
     }
+    let bars: Vec<Bar> = h_lines
+        .iter()
+        .filter(|s| {
+            let key = (
+                (s.x0.min(s.x1) / 6.0).round() as i64,
+                (s.x0.max(s.x1) / 6.0).round() as i64,
+            );
+            let len = (s.x0 - s.x1).abs();
+            sig_count.get(&key).copied().unwrap_or(0) < 2 && len >= 4.0 && len <= page_width * 0.45
+        })
+        .map(|s| Bar {
+            x0: s.x0.min(s.x1),
+            x1: s.x0.max(s.x1),
+            y: s.y0,
+        })
+        .collect();
 
-    for bar in h_lines {
-        let key = (
-            (bar.x0.min(bar.x1) / 6.0).round() as i64,
-            (bar.x0.max(bar.x1) / 6.0).round() as i64,
-        );
-        if sig_count.get(&key).copied().unwrap_or(0) >= 2 {
-            continue; // structural (table) rule, not a fraction bar
-        }
-        let x0 = bar.x0.min(bar.x1);
-        let x1 = bar.x0.max(bar.x1);
-        let len = x1 - x0;
-        // Fraction bars are short; long rules are table/section dividers.
-        if len < 4.0 || len > page_width * 0.45 {
+    let mut consumed: HashSet<usize> = HashSet::new();
+    for k in 0..bars.len() {
+        if consumed.contains(&k) {
             continue;
         }
-        let bar_y = bar.y0;
-
-        let mut above: Vec<&TextBlock> = Vec::new();
-        let mut below: Vec<&TextBlock> = Vec::new();
-        for f in frags {
-            let cx = f.x + f.width / 2.0;
-            if cx < x0 - 2.0 || cx > x1 + 2.0 {
-                continue;
-            }
-            let band = f.font_size.max(8.0) * 1.8;
-            let dy = f.y - bar_y;
-            if dy > 0.5 && dy <= band {
-                above.push(f);
-            } else if dy < -0.5 && dy >= -band {
-                below.push(f);
-            }
+        if let Some((latex, bbox, text)) = build_frac(k, &bars, frags, &mut consumed, 0) {
+            out.push(Formula {
+                page_number,
+                bbox,
+                latex,
+                text,
+            });
         }
-        if above.is_empty() || below.is_empty() {
-            continue;
-        }
-        above.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-        below.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Real fractions have short, compact numerators/denominators — this
-        // rejects table rules and footnote/section separators.
-        let raw = |v: &[&TextBlock]| {
-            v.iter()
-                .map(|f| f.text.trim())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let num_raw = raw(&above);
-        let den_raw = raw(&below);
-        if num_raw.chars().count() > 24 || den_raw.chars().count() > 24 {
-            continue;
-        }
-        if num_raw.split_whitespace().count() > 5 || den_raw.split_whitespace().count() > 5 {
-            continue;
-        }
-        // The bar should roughly match the width of its content, not span far
-        // beyond it (as a table/section rule does).
-        let span = |v: &[&TextBlock]| {
-            let l = v.iter().map(|f| f.x).fold(f64::INFINITY, f64::min);
-            let r = v
-                .iter()
-                .map(|f| f.x + f.width)
-                .fold(f64::NEG_INFINITY, f64::max);
-            (r - l).max(0.0)
-        };
-        let content_span = span(&above).max(span(&below));
-        if len > content_span * 2.0 + 8.0 {
-            continue;
-        }
-
-        let num = join_mapped(&above);
-        let den = join_mapped(&below);
-        if num.trim().is_empty() || den.trim().is_empty() {
-            continue;
-        }
-        let latex = wrap_radicals(&format!("\\frac{{{}}}{{{}}}", num.trim(), den.trim()));
-        let text: String = above
-            .iter()
-            .chain(below.iter())
-            .map(|f| f.text.trim())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let top = above.iter().map(|f| f.y + f.height).fold(bar_y, f64::max);
-        let bottom = below.iter().map(|f| f.y).fold(bar_y, f64::min);
-        out.push(Formula {
-            page_number,
-            bbox: [x0, bottom, x1, top],
-            latex,
-            text,
-        });
     }
+}
+
+/// Collect fragments centered within a bar's span, split into above/below.
+fn frac_sides<'a>(bar: &Bar, frags: &'a [TextBlock]) -> (Vec<&'a TextBlock>, Vec<&'a TextBlock>) {
+    let mut above = Vec::new();
+    let mut below = Vec::new();
+    for f in frags {
+        let cx = f.x + f.width / 2.0;
+        if cx < bar.x0 - 2.0 || cx > bar.x1 + 2.0 {
+            continue;
+        }
+        let band = f.font_size.max(8.0) * 1.8;
+        let dy = f.y - bar.y;
+        if dy > 0.5 && dy <= band {
+            above.push(f);
+        } else if dy < -0.5 && dy >= -band {
+            below.push(f);
+        }
+    }
+    above.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    below.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    (above, below)
+}
+
+/// Build a side's LaTeX: a nested fraction if a sub-bar sits within it,
+/// otherwise the mapped text. Returns (latex, nested?).
+fn build_side(
+    side: &[&TextBlock],
+    bar: &Bar,
+    above: bool,
+    bars: &[Bar],
+    frags: &[TextBlock],
+    consumed: &mut std::collections::HashSet<usize>,
+    depth: usize,
+) -> Option<(String, bool)> {
+    if side.is_empty() {
+        return None;
+    }
+    // A nested fraction's bar sits in this side, within a generous vertical
+    // window above/below the parent bar (a couple of stacked rows).
+    let fs = side.iter().map(|f| f.font_size).fold(8.0, f64::max);
+    let window = fs * 3.5;
+    for (m, sub) in bars.iter().enumerate() {
+        if consumed.contains(&m) {
+            continue;
+        }
+        let inside_x = sub.x0 >= bar.x0 - 2.0 && sub.x1 <= bar.x1 + 2.0;
+        let inside_y = if above {
+            sub.y > bar.y + 2.0 && sub.y <= bar.y + window
+        } else {
+            sub.y < bar.y - 2.0 && sub.y >= bar.y - window
+        };
+        if inside_x
+            && inside_y
+            && let Some((latex, _, _)) = build_frac(m, bars, frags, consumed, depth + 1)
+        {
+            consumed.insert(m);
+            return Some((latex, true));
+        }
+    }
+    let text = join_mapped(side);
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some((text.trim().to_string(), false))
+}
+
+/// Recursively build a fraction rooted at bar index `k`.
+fn build_frac(
+    k: usize,
+    bars: &[Bar],
+    frags: &[TextBlock],
+    consumed: &mut std::collections::HashSet<usize>,
+    depth: usize,
+) -> Option<(String, [f64; 4], String)> {
+    if depth > 2 {
+        return None;
+    }
+    let bar = &bars[k];
+    let (above, below) = frac_sides(bar, frags);
+    if above.is_empty() || below.is_empty() {
+        return None;
+    }
+
+    let (num, num_nested) = build_side(&above, bar, true, bars, frags, consumed, depth)?;
+    let (den, den_nested) = build_side(&below, bar, false, bars, frags, consumed, depth)?;
+
+    // Precision guards apply only to plain (non-nested) sides, so that
+    // legitimate sub-fractions aren't rejected for length.
+    if !num_nested && (num.chars().count() > 24 || num.split_whitespace().count() > 5) {
+        return None;
+    }
+    if !den_nested && (den.chars().count() > 24 || den.split_whitespace().count() > 5) {
+        return None;
+    }
+
+    // Bar width should roughly match its content (rejects stray wide rules).
+    let span = |v: &[&TextBlock]| {
+        if v.is_empty() {
+            return 0.0;
+        }
+        let l = v.iter().map(|f| f.x).fold(f64::INFINITY, f64::min);
+        let r = v
+            .iter()
+            .map(|f| f.x + f.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        (r - l).max(0.0)
+    };
+    let content_span = span(&above).max(span(&below));
+    if (bar.x1 - bar.x0) > content_span * 2.0 + 8.0 {
+        return None;
+    }
+
+    let latex = wrap_radicals(&format!("\\frac{{{}}}{{{}}}", num, den));
+    let text: String = above
+        .iter()
+        .chain(below.iter())
+        .map(|f| f.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let top = above.iter().map(|f| f.y + f.height).fold(bar.y, f64::max);
+    let bottom = below.iter().map(|f| f.y).fold(bar.y, f64::min);
+    Some((latex, [bar.x0, bottom, bar.x1, top], text))
 }
 
 /// Detect bracket-delimited matrices: an open bracket `[` or `(` and a matching
@@ -425,7 +496,9 @@ fn build_formula(line: &MathLine, page_number: usize) -> Option<Formula> {
         }
     }
 
-    let latex = wrap_radicals(&latex.split_whitespace().collect::<Vec<_>>().join(" "));
+    let latex = attach_limits(&wrap_radicals(
+        &latex.split_whitespace().collect::<Vec<_>>().join(" "),
+    ));
     if latex.is_empty() {
         return None;
     }
@@ -491,6 +564,61 @@ fn wrap_radicals(s: &str) -> String {
         }
     }
     out.join(" ")
+}
+
+/// Attach sub/superscripts immediately following a large operator as limits:
+/// `\sum _{i} ^{n}` → `\sum_{i}^{n}`.
+fn attach_limits(s: &str) -> String {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if is_big_operator(tokens[i]) {
+            let mut sub: Option<&str> = None;
+            let mut sup: Option<&str> = None;
+            let mut j = i + 1;
+            for _ in 0..2 {
+                if j < tokens.len() && tokens[j].starts_with("_{") && sub.is_none() {
+                    sub = Some(tokens[j]);
+                    j += 1;
+                } else if j < tokens.len() && tokens[j].starts_with("^{") && sup.is_none() {
+                    sup = Some(tokens[j]);
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            let mut merged = tokens[i].to_string();
+            if let Some(s) = sub {
+                merged.push_str(s);
+            }
+            if let Some(s) = sup {
+                merged.push_str(s);
+            }
+            out.push(merged);
+            i = j;
+        } else {
+            out.push(tokens[i].to_string());
+            i += 1;
+        }
+    }
+    out.join(" ")
+}
+
+fn is_big_operator(tok: &str) -> bool {
+    matches!(
+        tok,
+        "\\sum"
+            | "\\prod"
+            | "\\int"
+            | "\\oint"
+            | "\\coprod"
+            | "\\bigcup"
+            | "\\bigcap"
+            | "\\bigoplus"
+            | "\\bigotimes"
+            | "\\lim"
+    )
 }
 
 /// Tokens that end a radicand group (additive / relational operators).
@@ -710,6 +838,51 @@ mod tests {
         // Multiplicative terms stay inside; stop at the relational operator.
         assert_eq!(wrap_radicals("\\sqrt a b \\leq c"), "\\sqrt{a b} \\leq c");
         assert_eq!(wrap_radicals("\\sqrt x y z"), "\\sqrt{x y z}");
+    }
+
+    #[test]
+    fn attaches_operator_limits() {
+        assert_eq!(attach_limits("\\sum _{i} ^{n} x"), "\\sum_{i}^{n} x");
+        assert_eq!(
+            attach_limits("\\int _{0} ^{\\infty} f"),
+            "\\int_{0}^{\\infty} f"
+        );
+        // Non-operator scripts are untouched.
+        assert_eq!(attach_limits("x ^{2}"), "x ^{2}");
+    }
+
+    #[test]
+    fn nested_fraction() {
+        use crate::engine::Seg;
+        // Outer bar at y=500 (x 100..150); numerator is itself a fraction with a
+        // sub-bar at y=512 (a/b); denominator "c".
+        let outer = Seg {
+            x0: 116.0,
+            y0: 500.0,
+            x1: 132.0,
+            y1: 500.0,
+        };
+        let inner = Seg {
+            x0: 118.0,
+            y0: 512.0,
+            x1: 128.0,
+            y1: 512.0,
+        };
+        let frags = vec![
+            frag("a", 120.0, 520.0, 10.0, "CMR10"), // inner numerator (above inner)
+            frag("b", 120.0, 505.0, 10.0, "CMR10"), // inner denominator (above outer)
+            frag("c", 120.0, 488.0, 10.0, "CMR10"), // outer denominator (below outer)
+        ];
+        let mut out = Vec::new();
+        detect_fractions(&frags, &[outer, inner], 1, 600.0, &mut out);
+        // One top-level fraction whose numerator is the nested fraction.
+        assert_eq!(
+            out.len(),
+            1,
+            "{:?}",
+            out.iter().map(|f| &f.latex).collect::<Vec<_>>()
+        );
+        assert_eq!(out[0].latex, "\\frac{\\frac{a}{b}}{c}");
     }
 
     #[test]

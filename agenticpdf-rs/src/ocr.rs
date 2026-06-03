@@ -68,21 +68,25 @@ pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
         });
     }
     // Raw sample stream (Flate already undone by extract_image_blobs).
-    if blob.bits_per_component != 8 {
-        return None;
-    }
     let n = (w as usize).checked_mul(h as usize)?;
     let cs = blob.color_space.as_str();
     let gray = matches!(cs, "DeviceGray" | "CalGray" | "G");
-    if gray && blob.bytes.len() >= n {
-        return Some(GrayImage {
-            width: w,
-            height: h,
-            pixels: blob.bytes[..n].to_vec(),
-        });
+    let bpc = blob.bits_per_component;
+
+    if gray {
+        // Rows are padded to a byte boundary; unpack 1/2/4/8-bit samples,
+        // scaling sub-byte depths up to the full 0–255 range. This covers
+        // bilevel scans (the common 1-bit fax-style page image).
+        if let Some(pixels) = unpack_gray(&blob.bytes, w as usize, h as usize, bpc) {
+            return Some(GrayImage {
+                width: w,
+                height: h,
+                pixels,
+            });
+        }
     }
-    // Treat anything with 3 samples/pixel as RGB and convert to luma.
-    if blob.bytes.len() >= n * 3 {
+    // Treat 8-bit, 3-samples/pixel as RGB and convert to luma.
+    if bpc == 8 && blob.bytes.len() >= n * 3 {
         let mut pixels = Vec::with_capacity(n);
         for i in 0..n {
             let r = blob.bytes[i * 3] as u32;
@@ -97,6 +101,33 @@ pub fn decode_blob(blob: &engine::ImageBlob) -> Option<GrayImage> {
         });
     }
     None
+}
+
+/// Unpack a row-padded grayscale sample stream (1/2/4/8 bpc) to 8-bit luma.
+#[cfg(feature = "ocr")]
+fn unpack_gray(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Option<Vec<u8>> {
+    let bits = bpc as usize;
+    if !matches!(bits, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let stride = (w * bits).div_ceil(8); // bytes per row, padded to a byte
+    if bytes.len() < stride.checked_mul(h)? {
+        return None;
+    }
+    let max = (1u32 << bits) - 1; // 1, 3, 15, 255
+    let mut pixels = Vec::with_capacity(w * h);
+    for row in 0..h {
+        let base = row * stride;
+        for col in 0..w {
+            let bit_pos = col * bits;
+            let byte = bytes[base + bit_pos / 8];
+            let shift = 8 - bits - (bit_pos % 8);
+            let raw = (byte >> shift) as u32 & max;
+            // Scale to the full 0–255 range (1-bit: 0→0, 1→255).
+            pixels.push(((raw * 255) / max) as u8);
+        }
+    }
+    Some(pixels)
 }
 
 /// An OCR engine that recognizes decoded raster images. Implement this and call
@@ -324,6 +355,38 @@ mod tests {
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!((img.width, img.height), (2, 2));
         assert_eq!(img.pixels, vec![10, 20, 30, 40]);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn unpacks_1bit_bilevel() {
+        // One row of 8 pixels: 0b10101010 → 255,0,255,0,...
+        let px = unpack_gray(&[0b1010_1010], 8, 1, 1).unwrap();
+        assert_eq!(px, vec![255, 0, 255, 0, 255, 0, 255, 0]);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn unpacks_4bit_gray_with_row_padding() {
+        // width 3 @ 4bpc = 12 bits → 2 bytes/row (padded). Values 0x0,0xF,0x8.
+        let px = unpack_gray(&[0x0F, 0x80], 3, 1, 4).unwrap();
+        assert_eq!(px, vec![0, 255, 136]); // 0x8*255/15 = 136
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn decodes_1bit_blob_via_decode_blob() {
+        let blob = engine::ImageBlob {
+            page_number: 1,
+            width: 8,
+            height: 1,
+            bits_per_component: 1,
+            color_space: "DeviceGray".into(),
+            filter: "FlateDecode".into(),
+            bytes: vec![0b1111_0000],
+        };
+        let img = decode_blob(&blob).expect("decoded");
+        assert_eq!(img.pixels, vec![255, 255, 255, 255, 0, 0, 0, 0]);
     }
 
     #[cfg(feature = "ocr")]
