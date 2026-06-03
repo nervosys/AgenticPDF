@@ -167,14 +167,17 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// OCR likely-scanned pages with the bundled Tesseract CLI backend
+    /// OCR likely-scanned pages (Tesseract CLI, or a PaddleOCR/EasyOCR server)
     #[cfg(feature = "ocr")]
     Ocr {
         /// Path to the PDF file
         file: String,
-        /// Tesseract language(s), e.g. "eng" or "eng+deu"
+        /// Tesseract language(s), e.g. "eng" or "eng+deu" (CLI backend)
         #[arg(short, long, default_value = "eng")]
         lang: String,
+        /// Use an HTTP OCR server (PaddleOCR/EasyOCR /ocr endpoint) instead
+        #[arg(short, long)]
+        server: Option<String>,
     },
     /// Produce reading-order structured layout (blocks with type/level/bbox)
     Layout {
@@ -275,7 +278,7 @@ fn main() {
             } => cmd_formula(&file, pages.as_deref(), &format),
             Commands::Scanned { file, format } => cmd_scanned(&file, &format),
             #[cfg(feature = "ocr")]
-            Commands::Ocr { file, lang } => cmd_ocr(&file, &lang),
+            Commands::Ocr { file, lang, server } => cmd_ocr(&file, &lang, server.as_deref()),
             Commands::Annotations {
                 file,
                 pages,
@@ -593,10 +596,13 @@ fn cmd_scanned(file: &str, format: &str) -> Result<(), PdfError> {
 }
 
 #[cfg(all(feature = "cli", feature = "ocr"))]
-fn cmd_ocr(file: &str, lang: &str) -> Result<(), PdfError> {
+fn cmd_ocr(file: &str, lang: &str, server: Option<&str>) -> Result<(), PdfError> {
     let data = fs::read(file)?;
     let doc = PdfDocument::from_bytes(&data)?;
-    let results = agenticpdf::ocr::recognize_scanned(&data, &doc, lang)?;
+    let results = match server {
+        Some(url) => agenticpdf::ocr::recognize_scanned_http(&data, &doc, url)?,
+        None => agenticpdf::ocr::recognize_scanned(&data, &doc, lang)?,
+    };
     if results.is_empty() {
         eprintln!("No likely-scanned pages to OCR.");
         return Ok(());

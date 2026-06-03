@@ -1017,6 +1017,8 @@ pub fn build_ontology() -> serde_json::Value {
             "scanned_page_detection",
             "ocr_backend_interface",
             "tesseract_cli_backend",
+            "http_ocr_backend",
+            "paddleocr_integration",
             "bilevel_image_decode",
             "indexed_palette_decode",
             "ccitt_g4_decode",

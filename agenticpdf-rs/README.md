@@ -77,8 +77,9 @@ apdf formula paper.pdf
 # Flag likely-scanned pages that need OCR
 apdf scanned paper.pdf
 
-# OCR scanned pages (requires `--features ocr` and the tesseract binary)
-apdf ocr scanned.pdf --lang eng
+# OCR scanned pages (requires `--features ocr`)
+apdf ocr scanned.pdf --lang eng                       # bundled Tesseract CLI
+apdf ocr scanned.pdf --server http://localhost:8868/ocr  # PaddleOCR/EasyOCR server
 
 # Run as an MCP server for agent clients (Claude Desktop, etc.)
 apdf mcp
@@ -165,6 +166,31 @@ JSON-RPC 2.0), exposing tools `extract_text`, `markdown`, `layout`, `tables`,
 Each tool takes a `path` argument (plus options like `sanitize`, `size`,
 `overlap`); results come back as text/JSON content.
 
+## vs. liteparse / LlamaParse
+
+[`liteparse`](https://github.com/run-llama/liteparse) is a fast local Rust PDF
+parser, but its README explicitly defers **table extraction, image analysis,
+reading-order optimization, document chunking, and metadata extraction** to the
+LlamaParse *cloud*. AgenticPDF does all of those locally — plus figure↔caption
+linking, formula→LaTeX, tagged-PDF structure, prompt-injection scanning, and an
+MCP server — as a single zero-runtime binary or WASM module.
+
+| | AgenticPDF | liteparse | LlamaParse (cloud) |
+| --- | --- | --- | --- |
+| Reading order, headings, lists | ✅ | ✗ (deferred) | ✅ |
+| Tables | ✅ | ✗ (deferred) | ✅ |
+| Metadata, chunking | ✅ | ✗ (deferred) | ✅ |
+| Figures, formulas (LaTeX), tagged structure | ✅ | ✗ | partial |
+| Prompt-injection / hidden-text scan | ✅ | ✗ | ✗ |
+| Pluggable OCR (`/ocr` HTTP: PaddleOCR/EasyOCR) | ✅ | ✅ | n/a |
+| Bundled Tesseract OCR | ✅ (`--features ocr`) | ✅ | n/a |
+| MCP server / JSON-LD agent ontology | ✅ | ✗ | ✗ |
+| Runs fully local, no cloud | ✅ | ✅ | ✗ |
+
+The HTTP OCR backend speaks liteparse's exact `/ocr` contract
+(`{results:[{text,bbox,confidence}]}`), so the same PaddleOCR/EasyOCR server
+works as a drop-in — AgenticPDF is a strict superset of that integration.
+
 ## Architecture
 
 ```shell
@@ -200,11 +226,15 @@ enumeration, annotations, outline, metadata, semantic chunks, and a built-in
 **MCP server**.
 
 OCR: `apdf scanned` flags image-dominated pages always. Building with
-`--features ocr` adds the `image`-crate decode pipeline **and a bundled
-`TesseractCli` backend** — `apdf ocr document.pdf` decodes each scanned page's
-image and runs the `tesseract` binary on it (no FFI, no model downloads; just
-`tesseract` on `PATH`). To use a different engine (ONNX, a cloud API), implement
-`ImageOcrBackend` and call `ocr_scanned_images`.
+`--features ocr` adds the image-decode pipeline and two backends:
+- **`TesseractCli`** — `apdf ocr document.pdf` runs the `tesseract` binary (no
+  FFI, no model downloads; just `tesseract` on `PATH`).
+- **`HttpOcrBackend`** — `apdf ocr document.pdf --server <url>` POSTs each
+  scanned page image to a **PaddleOCR** / EasyOCR / liteparse-compatible `/ocr`
+  endpoint (`{results:[{text,bbox,confidence}]}`). This is how you wire
+  PaddleOCR's higher-accuracy / multilingual models without any Python in-process.
+
+Or implement `ImageOcrBackend` for a custom engine and call `ocr_scanned_images`.
 
 Math: symbol mapping, super/subscripts, operator limits (`\sum_{i}^{n}`),
 `\frac` (from rule bars) including **nested fractions**, multi-token `\sqrt`

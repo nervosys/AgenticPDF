@@ -375,6 +375,130 @@ pub fn recognize_scanned(
     ocr_scanned_images(data, doc, &backend)
 }
 
+/// A recognized word/line with position and confidence (from an HTTP backend).
+#[cfg(feature = "ocr")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrWord {
+    pub text: String,
+    /// Bounding box [x1, y1, x2, y2] in the image's pixel space.
+    pub bbox: [f64; 4],
+    pub confidence: f64,
+}
+
+/// An [`ImageOcrBackend`] that delegates to an external OCR HTTP server —
+/// e.g. **PaddleOCR**, EasyOCR, or any liteparse-compatible `/ocr` endpoint.
+/// The server receives the page image (PNG) in the request body and returns
+/// `{ "results": [ { "text", "bbox": [x1,y1,x2,y2], "confidence" } ] }`.
+/// Only available with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub struct HttpOcrBackend {
+    /// Full URL of the `/ocr` endpoint (e.g. "http://localhost:8868/ocr").
+    pub endpoint: String,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+#[cfg(feature = "ocr")]
+impl HttpOcrBackend {
+    pub fn new(endpoint: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            timeout_secs: 60,
+        }
+    }
+}
+
+/// Parse a liteparse/PaddleOCR-style `/ocr` JSON response into words.
+#[cfg(feature = "ocr")]
+pub fn parse_ocr_response(json: &str) -> Result<Vec<OcrWord>, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    // Accept either {"results":[...]} or a bare array of results.
+    let arr = v
+        .get("results")
+        .and_then(|r| r.as_array())
+        .or_else(|| v.as_array())
+        .ok_or_else(|| "response missing `results` array".to_string())?;
+    let mut out = Vec::new();
+    for r in arr {
+        let text = r
+            .get("text")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let mut bbox = [0.0; 4];
+        if let Some(b) = r.get("bbox").and_then(|b| b.as_array()) {
+            for (i, slot) in bbox.iter_mut().enumerate() {
+                *slot = b.get(i).and_then(|x| x.as_f64()).unwrap_or(0.0);
+            }
+        }
+        let confidence = r.get("confidence").and_then(|c| c.as_f64()).unwrap_or(1.0);
+        out.push(OcrWord {
+            text,
+            bbox,
+            confidence,
+        });
+    }
+    Ok(out)
+}
+
+/// Encode a grayscale image to in-memory PNG bytes.
+#[cfg(feature = "ocr")]
+fn encode_png(image: &GrayImage) -> Result<Vec<u8>, String> {
+    let buf = ::image::GrayImage::from_raw(image.width, image.height, image.pixels.clone())
+        .ok_or_else(|| "invalid image buffer".to_string())?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    ::image::DynamicImage::ImageLuma8(buf)
+        .write_to(&mut out, ::image::ImageFormat::Png)
+        .map_err(|e| format!("png encode: {e}"))?;
+    Ok(out.into_inner())
+}
+
+#[cfg(feature = "ocr")]
+impl ImageOcrBackend for HttpOcrBackend {
+    fn recognize_image(&self, image: &GrayImage) -> Result<String, String> {
+        let png = encode_png(image)?;
+        let resp = ureq::post(&self.endpoint)
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .set("Content-Type", "image/png")
+            .send_bytes(&png)
+            .map_err(|e| format!("OCR request to {} failed: {e}", self.endpoint))?;
+        let body = resp.into_string().map_err(|e| e.to_string())?;
+        let words = parse_ocr_response(&body)?;
+        // Join recognized words/lines top-to-bottom, left-to-right.
+        let mut words = words;
+        words.sort_by(|a, b| {
+            a.bbox[1]
+                .partial_cmp(&b.bbox[1])
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(
+                    a.bbox[0]
+                        .partial_cmp(&b.bbox[0])
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+        });
+        Ok(words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+}
+
+/// Convenience: OCR every likely-scanned page via an external HTTP OCR server
+/// (PaddleOCR / EasyOCR / liteparse-compatible). Only with the `ocr` feature.
+#[cfg(feature = "ocr")]
+pub fn recognize_scanned_http(
+    data: &[u8],
+    doc: &PdfDocument,
+    endpoint: &str,
+) -> Result<Vec<OcrResult>, PdfError> {
+    let backend = HttpOcrBackend::new(endpoint);
+    ocr_scanned_images(data, doc, &backend)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +636,28 @@ mod tests {
         };
         let img = decode_blob(&blob).expect("decoded");
         assert_eq!(img.pixels, vec![255, 0, 255, 0]);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn parses_http_ocr_response() {
+        let json = r#"{"results":[
+            {"text":"Hello","bbox":[10,20,60,40],"confidence":0.98},
+            {"text":"world","bbox":[70,20,120,40],"confidence":0.95},
+            {"text":"  ","bbox":[0,0,1,1],"confidence":0.1}
+        ]}"#;
+        let words = parse_ocr_response(json).unwrap();
+        assert_eq!(words.len(), 2); // blank entry skipped
+        assert_eq!(words[0].text, "Hello");
+        assert_eq!(words[0].bbox, [10.0, 20.0, 60.0, 40.0]);
+        assert!((words[1].confidence - 0.95).abs() < 1e-9);
+    }
+
+    #[cfg(feature = "ocr")]
+    #[test]
+    fn parses_bare_array_ocr_response() {
+        let json = r#"[{"text":"X","bbox":[1,2,3,4],"confidence":1.0}]"#;
+        assert_eq!(parse_ocr_response(json).unwrap().len(), 1);
     }
 
     #[cfg(feature = "ocr")]

@@ -30,6 +30,9 @@ miniz_oxide = "0.8"
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
 # Optional: pure-Rust CCITT Group 3/4 (fax) decoder for scanned bilevel images.
 fax = { version = "0.2.7", optional = true }
+# Optional: lightweight blocking HTTP client (no TLS) for the HTTP OCR backend
+# that calls a PaddleOCR / EasyOCR / liteparse-compatible /ocr server.
+ureq = { version = "2", optional = true, default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -46,7 +49,7 @@ wasm = ["wasm-bindgen"]
 # detection and the page-level OcrBackend interface are always available; this
 # flag adds the pixel pipeline and flips the OCR_BUILTIN marker. The recognizer
 # engine itself (Tesseract FFI / ONNX) is wired by implementing the backend.
-ocr = ["dep:image", "dep:fax"]
+ocr = ["dep:image", "dep:fax", "dep:ureq"]
 
 [profile.release]
 opt-level = "z"
