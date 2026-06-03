@@ -838,6 +838,35 @@ pub fn build_ontology() -> serde_json::Value {
                 "examples": ["apdf structure tagged.pdf", "apdf structure tagged.pdf --format json"]
             },
             {
+                "name": "forms",
+                "description": "Extract interactive AcroForm fields: fully-qualified name, type (text/button/choice/signature), value, default, selectable options, widget rectangle, page, and required/read-only flags. The structured form data PDF.js exposes via getFieldObjects.",
+                "usage": "apdf forms <FILE> [--format text|json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "json", "description": "Output format" }
+                ],
+                "outputSchema": {
+                    "json": {
+                        "type": "array",
+                        "items": {
+                            "type": "FormField",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "field_type": { "type": "enum", "values": ["text", "button", "choice", "signature", "unknown"] },
+                                "value": { "type": "string|null" },
+                                "default_value": { "type": "string|null" },
+                                "rect": { "type": "array|null", "items": { "type": "number" } },
+                                "page_number": { "type": "integer|null" },
+                                "options": { "type": "array", "items": { "type": "string" } },
+                                "required": { "type": "boolean" },
+                                "read_only": { "type": "boolean" }
+                            }
+                        }
+                    }
+                },
+                "examples": ["apdf forms invoice.pdf", "apdf forms form.pdf --format json"]
+            },
+            {
                 "name": "scanned",
                 "description": "Detect likely-scanned pages (image-dominated with little extractable text) that need OCR. Deterministic detection is built in; recognition is delegated to a pluggable OcrBackend (or a bundled engine via the 'ocr' build feature).",
                 "usage": "apdf scanned <FILE> [--format text|json]",
@@ -1002,6 +1031,7 @@ pub fn build_ontology() -> serde_json::Value {
             "ruling_line_detection",
             "borderless_table_inference",
             "tagged_structure_extraction",
+            "form_field_extraction",
             "figure_detection",
             "caption_linking",
             "image_placement_bbox",

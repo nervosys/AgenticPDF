@@ -148,6 +148,14 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
+    /// Extract interactive AcroForm fields (names, types, values)
+    Forms {
+        /// Path to the PDF file
+        file: String,
+        /// Output format: text or json
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
     /// Detect formulas and reconstruct best-effort LaTeX
     Formula {
         /// Path to the PDF file
@@ -273,6 +281,7 @@ fn main() {
             } => cmd_table(&file, pages.as_deref(), &format, output.as_deref()),
             Commands::Scan { file, format } => cmd_scan(&file, &format),
             Commands::Structure { file, format } => cmd_structure(&file, &format),
+            Commands::Forms { file, format } => cmd_forms(&file, &format),
             Commands::Figures {
                 file,
                 pages,
@@ -636,6 +645,38 @@ fn cmd_ocr(
 }
 
 #[cfg(feature = "cli")]
+fn cmd_forms(file: &str, format: &str) -> Result<(), PdfError> {
+    let data = fs::read(file)?;
+    let fields = agenticpdf::engine::extract_form_fields(&data)?;
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&fields)
+                .map_err(|e| PdfError::ExportError(e.to_string()))?;
+            println!("{}", json);
+        }
+        _ => {
+            if fields.is_empty() {
+                println!("No interactive form fields (document has no AcroForm).");
+            } else {
+                for f in &fields {
+                    let val = f.value.as_deref().unwrap_or("");
+                    print!("  [{}] {} = \"{}\"", f.field_type, f.name, val);
+                    if f.required {
+                        print!(" (required)");
+                    }
+                    if f.read_only {
+                        print!(" (read-only)");
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+    eprintln!("Found {} form fields", fields.len());
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
 fn cmd_structure(file: &str, format: &str) -> Result<(), PdfError> {
     let data = fs::read(file)?;
     let tree = agenticpdf::engine::extract_structure(&data)?;
@@ -967,7 +1008,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
                     "ontology_self_description"
                 ],
                 "formats": ["text", "json", "markdown"],
-                "commands": ["text", "markdown", "layout", "table", "structure", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
+                "commands": ["text", "markdown", "layout", "table", "structure", "forms", "scan", "figures", "formula", "scanned", "meta", "annotations", "outline", "images", "chunk", "all", "mcp", "describe", "info"],
                 "discovery": "Run `apdf describe` for full JSON-LD ontology with output schemas and workflow templates."
             });
             println!(
@@ -988,6 +1029,7 @@ fn cmd_info(format: &str) -> Result<(), PdfError> {
             println!("  table        Reconstruct tables (Markdown or JSON)");
             println!("  scan         Detect hidden / off-page text (prompt-injection signals)");
             println!("  structure    Extract tagged-PDF logical structure tree");
+            println!("  forms        Extract interactive AcroForm fields");
             println!("  figures      Detect figures and link them to captions");
             println!("  formula      Detect formulas and reconstruct best-effort LaTeX");
             println!("  scanned      Detect likely-scanned pages that need OCR");

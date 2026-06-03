@@ -1201,6 +1201,199 @@ pub struct StructNode {
 /// This is the author-provided structure (headings, lists, tables, reading
 /// order) — the highest-accuracy source when present, requiring no heuristics.
 /// Returns an empty vec for untagged documents.
+/// An AcroForm field (interactive form), à la PDF.js `getFieldObjects`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormField {
+    /// Fully-qualified field name (parent.child).
+    pub name: String,
+    /// "text" | "button" | "choice" | "signature" | "unknown".
+    pub field_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
+    /// Widget rectangle [x1, y1, x2, y2], if the field has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rect: Option<[f64; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_number: Option<usize>,
+    /// Selectable options for choice fields.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    pub required: bool,
+    pub read_only: bool,
+}
+
+/// Extract interactive AcroForm fields (names, types, values, positions).
+pub fn extract_form_fields(data: &[u8]) -> Result<Vec<FormField>, PdfError> {
+    let doc = Document::parse(data)?;
+    let root = doc
+        .trailer
+        .get("Root")
+        .map(|o| doc.resolve(o))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let acro = match doc
+        .get(&root, "AcroForm")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+    let fields = match doc
+        .get(&acro, "Fields")
+        .and_then(|o| o.as_array().map(|a| a.to_vec()))
+    {
+        Some(f) => f,
+        None => return Ok(Vec::new()),
+    };
+    let pages = build_page_index(&doc, &root);
+    let mut out = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    for f in &fields {
+        walk_field(&doc, f, "", None, &pages, &mut out, &mut visited, 0);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_field(
+    doc: &Document,
+    field: &Object,
+    parent_name: &str,
+    inherited_ft: Option<&str>,
+    pages: &HashMap<u32, usize>,
+    out: &mut Vec<FormField>,
+    visited: &mut std::collections::HashSet<u32>,
+    depth: usize,
+) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    if let Object::Ref(n, _) = field
+        && !visited.insert(*n)
+    {
+        return;
+    }
+    let d = match doc.resolve(field).as_dict().cloned() {
+        Some(d) => d,
+        None => return,
+    };
+    let partial = text_string(doc, &d, "T");
+    let full = match &partial {
+        Some(p) if parent_name.is_empty() => p.clone(),
+        Some(p) => format!("{parent_name}.{p}"),
+        None => parent_name.to_string(),
+    };
+    let ft = doc
+        .get(&d, "FT")
+        .and_then(|o| o.as_name().map(String::from))
+        .or_else(|| inherited_ft.map(String::from));
+
+    // Kids that are themselves fields (have /T) make this a non-terminal node.
+    let kids = doc
+        .get(&d, "Kids")
+        .and_then(|o| o.as_array().map(|a| a.to_vec()));
+    let field_kids: Vec<Object> = kids
+        .as_ref()
+        .map(|ks| {
+            ks.iter()
+                .filter(|k| {
+                    doc.resolve(k)
+                        .as_dict()
+                        .map(|kd| kd.contains_key("T"))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !field_kids.is_empty() {
+        for k in &field_kids {
+            walk_field(doc, k, &full, ft.as_deref(), pages, out, visited, depth + 1);
+        }
+        return;
+    }
+
+    // Terminal field: emit if it looks like one (has a type or a name).
+    if ft.is_none() && partial.is_none() {
+        return;
+    }
+    let field_type = match ft.as_deref() {
+        Some("Tx") => "text",
+        Some("Btn") => "button",
+        Some("Ch") => "choice",
+        Some("Sig") => "signature",
+        _ => "unknown",
+    }
+    .to_string();
+
+    let value = field_value(doc, &d, "V");
+    let default_value = field_value(doc, &d, "DV");
+    // Rect from the field, else from a widget kid.
+    let rect = rect4(doc, &d, "Rect").or_else(|| {
+        kids.as_ref().and_then(|ks| {
+            ks.iter().find_map(|k| {
+                doc.resolve(k)
+                    .as_dict()
+                    .and_then(|kd| rect4(doc, kd, "Rect"))
+            })
+        })
+    });
+    let page_number = d
+        .get("P")
+        .and_then(|o| o.as_ref())
+        .or_else(|| {
+            kids.as_ref().and_then(|ks| {
+                ks.iter().find_map(|k| {
+                    doc.resolve(k)
+                        .as_dict()
+                        .and_then(|kd| kd.get("P").and_then(|o| o.as_ref()))
+                })
+            })
+        })
+        .and_then(|(n, _)| pages.get(&n).map(|i| i + 1));
+    let options = doc
+        .get(&d, "Opt")
+        .and_then(|o| o.as_array().map(|a| a.to_vec()))
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| match doc.resolve(o) {
+                    Object::Str(b) => Some(decode_text_string(&b)),
+                    // [export, display] pair → take the display string.
+                    Object::Array(pair) => pair
+                        .last()
+                        .and_then(|x| x.as_str_bytes().map(decode_text_string)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let flags = doc.get(&d, "Ff").and_then(|o| o.as_int()).unwrap_or(0);
+
+    out.push(FormField {
+        name: full,
+        field_type,
+        value,
+        default_value,
+        rect,
+        page_number,
+        options,
+        read_only: flags & 1 != 0,
+        required: flags & 2 != 0,
+    });
+}
+
+/// A form field value: a text string or a button/checkbox state name.
+fn field_value(doc: &Document, d: &Dict, key: &str) -> Option<String> {
+    match doc.get(d, key)? {
+        Object::Str(b) => Some(decode_text_string(&b)),
+        Object::Name(n) => Some(n),
+        _ => None,
+    }
+}
+
 pub fn extract_structure(data: &[u8]) -> Result<Vec<StructNode>, PdfError> {
     let doc = Document::parse(data)?;
     let root = doc
@@ -3115,6 +3308,38 @@ mod tests {
         assert_eq!(tree[0].children[0].text.as_deref(), Some("Title"));
         assert_eq!(tree[0].children[0].page_number, Some(1));
         assert_eq!(tree[0].children[1].kind, "P");
+    }
+
+    #[test]
+    fn acroform_fields() {
+        // Minimal AcroForm: a text field "name" = "Jane", a checkbox "agree" = /Yes.
+        let pdf = b"%PDF-1.5\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R/AcroForm<</Fields[7 0 R 8 0 R]>>>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Annots[7 0 R 8 0 R]>>endobj\n\
+            7 0 obj<</FT/Tx/T(name)/V(Jane)/Rect[100 700 300 720]/P 3 0 R>>endobj\n\
+            8 0 obj<</FT/Btn/T(agree)/V/Yes/Rect[100 660 120 680]/P 3 0 R/Ff 2>>endobj\n\
+            startxref\n0\n%%EOF";
+        let fields = extract_form_fields(pdf).unwrap();
+        assert_eq!(fields.len(), 2);
+        let name = fields.iter().find(|f| f.name == "name").unwrap();
+        assert_eq!(name.field_type, "text");
+        assert_eq!(name.value.as_deref(), Some("Jane"));
+        assert_eq!(name.page_number, Some(1));
+        let agree = fields.iter().find(|f| f.name == "agree").unwrap();
+        assert_eq!(agree.field_type, "button");
+        assert_eq!(agree.value.as_deref(), Some("Yes"));
+        assert!(agree.required); // Ff bit 2
+    }
+
+    #[test]
+    fn no_acroform_empty() {
+        let pdf = b"%PDF-1.4\n\
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+            startxref\n0\n%%EOF";
+        assert!(extract_form_fields(pdf).unwrap().is_empty());
     }
 
     #[test]

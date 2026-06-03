@@ -193,6 +193,29 @@ The HTTP OCR backend speaks liteparse's exact `/ocr` contract
 (`{results:[{text,bbox,confidence}]}`), so the same PaddleOCR/EasyOCR server
 works as a drop-in — AgenticPDF is a strict superset of that integration.
 
+## vs. PDF.js
+
+PDF.js is the reference JS engine for **rendering** PDFs to a canvas. On the
+data-extraction surface an agent uses, AgenticPDF matches it and goes further:
+
+| Extraction feature | AgenticPDF | PDF.js |
+| --- | --- | --- |
+| Text with positions | ✅ | ✅ (`getTextContent`) |
+| Annotations | ✅ | ✅ (`getAnnotations`) |
+| AcroForm fields | ✅ `apdf forms` | ✅ (`getFieldObjects`) |
+| Outline / metadata | ✅ | ✅ |
+| Reading-order Markdown | ✅ | ✗ |
+| Tables / figures / formulas | ✅ | ✗ |
+| Tagged-PDF structure tree | ✅ | partial |
+| Semantic chunks, injection scan, MCP, OCR | ✅ | ✗ |
+| Page **rendering** to raster/canvas | ✗ (out of scope) | ✅ |
+| Footprint | single static binary / WASM, no runtime | JS engine |
+
+The one thing PDF.js does that AgenticPDF intentionally does not is **rasterize
+pages to pixels** — its core purpose. AgenticPDF is an extraction/understanding
+engine, not a renderer; for vision-model workflows it instead decodes a page's
+embedded images (`--features ocr`) and can route them to a VLM.
+
 ## Architecture
 
 ```shell

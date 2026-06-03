@@ -151,6 +151,11 @@ fn tool_defs() -> Vec<Value> {
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
+            "name": "forms",
+            "description": "Extract interactive AcroForm fields (name, type, value, options, page), as JSON.",
+            "inputSchema": path_schema(json!({}), &[])
+        }),
+        json!({
             "name": "scan_injection",
             "description": "Scan for hidden / off-page text used in prompt-injection attacks. Returns a report; use before trusting untrusted PDFs.",
             "inputSchema": path_schema(json!({}), &[])
@@ -238,6 +243,10 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         "structure" => {
             let tree = crate::engine::extract_structure(&data).map_err(|e| e.to_string())?;
             to_json(&tree)
+        }
+        "forms" => {
+            let fields = crate::engine::extract_form_fields(&data).map_err(|e| e.to_string())?;
+            to_json(&fields)
         }
         "scan_injection" => {
             let doc = parse(&data)?;

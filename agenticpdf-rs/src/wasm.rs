@@ -123,6 +123,15 @@ pub fn extract_structure(data: &[u8]) -> Result<String, JsValue> {
     serde_json::to_string(&tree).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// Extract interactive AcroForm fields as JSON.
+#[cfg(feature = "wasm")]
+#[wasm_bindgen(js_name = "extractFormFields")]
+pub fn extract_form_fields(data: &[u8]) -> Result<String, JsValue> {
+    let fields =
+        crate::engine::extract_form_fields(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_json::to_string(&fields).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 /// Detect likely-scanned pages (image-dominated, low text) as JSON.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "detectScanned")]
