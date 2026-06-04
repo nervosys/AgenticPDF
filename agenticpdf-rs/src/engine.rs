@@ -1607,6 +1607,13 @@ pub enum RenderOp {
         size: f64,
         /// Target advance width in device units (fit rendered glyphs to this).
         width: f64,
+        /// Per-character advance in device units (PDF glyph widths), parallel to
+        /// the Unicode chars of `text`. Lets a renderer place each glyph at the
+        /// exact PDF cumulative position (matching the reference renderer).
+        advances: Vec<f64>,
+        /// True when the PDF lacked explicit glyph widths (advances are a flat
+        /// default); a renderer should measure real glyph widths instead.
+        measured: bool,
         /// Baseline rotation in radians (0 for horizontal text).
         rot: f64,
         color: [f64; 4],
@@ -1988,28 +1995,32 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             // each lands at its true x; normal kerning/word spaces
                             // (small adjustments) stay merged into one segment.
                             const GAP_EM: f64 = 1.0;
-                            // (start_em_from_run, text, advance_em)
-                            let mut segs: Vec<(f64, String, f64)> = Vec::new();
+                            // (start_em_from_run, text, per-char advances em)
+                            let mut segs: Vec<(f64, String, Vec<f64>)> = Vec::new();
                             let mut cursor = 0.0f64;
                             let mut seg = String::new();
-                            let mut seg_adv = 0.0f64;
+                            let mut seg_advs: Vec<f64> = Vec::new();
                             let mut seg_start = 0.0f64;
                             for part in parts {
                                 match part {
                                     ArrPart::Str(bytes) => {
-                                        let a = if let Some(f) = cur_font {
-                                            f.decode(bytes, &mut seg);
-                                            f.text_advance(bytes)
+                                        if let Some(f) = cur_font {
+                                            let before = seg_advs.iter().sum::<f64>();
+                                            f.decode_with_advances(
+                                                bytes,
+                                                &mut seg,
+                                                &mut seg_advs,
+                                            );
+                                            cursor += seg_advs.iter().sum::<f64>() - before;
                                         } else {
                                             for &b in bytes {
                                                 if let Some(c) = winansi(b) {
                                                     seg.push(c);
+                                                    seg_advs.push(0.5);
+                                                    cursor += 0.5;
                                                 }
                                             }
-                                            bytes.len() as f64 * 0.5
-                                        };
-                                        seg_adv += a;
-                                        cursor += a;
+                                        }
                                     }
                                     ArrPart::Num(adj) => {
                                         // TJ adjustment: forward advance (em).
@@ -2017,32 +2028,44 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                         cursor += gap;
                                         if gap >= GAP_EM {
                                             // Column break: flush and jump.
-                                            let s = std::mem::take(&mut seg);
-                                            if !s.trim().is_empty() {
-                                                segs.push((seg_start, s, seg_adv));
+                                            if !seg.trim().is_empty() {
+                                                segs.push((
+                                                    seg_start,
+                                                    std::mem::take(&mut seg),
+                                                    std::mem::take(&mut seg_advs),
+                                                ));
+                                            } else {
+                                                seg.clear();
+                                                seg_advs.clear();
                                             }
-                                            seg_adv = 0.0;
                                             seg_start = cursor;
+                                        } else if *adj < -120.0 && !seg.ends_with(' ') {
+                                            // Inter-word space: a space glyph carries the gap.
+                                            seg.push(' ');
+                                            seg_advs.push(gap);
+                                        } else if let Some(last) = seg_advs.last_mut() {
+                                            // Small kern: fold into the previous glyph.
+                                            *last += gap;
                                         } else {
-                                            seg_adv += gap;
-                                            if *adj < -120.0 && !seg.ends_with(' ') {
-                                                seg.push(' ');
-                                            }
+                                            // Leading kern before any glyph.
+                                            seg_start += gap;
                                         }
                                     }
                                 }
                             }
                             if !seg.trim().is_empty() {
-                                segs.push((seg_start, seg, seg_adv));
+                                segs.push((seg_start, seg, seg_advs));
                             }
-                            for (start, text, adv) in segs {
+                            let measured = cur_font.map(|f| !f.has_widths).unwrap_or(true);
+                            for (start, text, advs) in segs {
                                 let seg_tm =
                                     mat_mul(&[1.0, 0.0, 0.0, 1.0, start * font_size, 0.0], &tm);
                                 emit_text_op(
                                     &text,
                                     &cur_font_name,
                                     font_size,
-                                    adv,
+                                    &advs,
+                                    measured,
                                     &seg_tm,
                                     &ctm,
                                     fill,
@@ -2086,32 +2109,34 @@ fn push_text_op(
     ops: &mut Vec<RenderOp>,
 ) -> f64 {
     let mut s = String::new();
+    let mut advs: Vec<f64> = Vec::new();
     if let Some(f) = font {
-        f.decode(bytes, &mut s);
+        f.decode_with_advances(bytes, &mut s, &mut advs);
     } else {
         for &b in bytes {
             if let Some(c) = winansi(b) {
                 s.push(c);
+                advs.push(0.5);
             }
         }
     }
-    let advance = match font {
-        Some(f) => f.text_advance(bytes),
-        None => s.chars().count() as f64 * 0.5,
-    };
+    let advance: f64 = advs.iter().sum();
+    let measured = font.map(|f| !f.has_widths).unwrap_or(true);
     if !s.trim().is_empty() {
-        emit_text_op(&s, font_name, font_size, advance, tm, ctm, color, ops);
+        emit_text_op(&s, font_name, font_size, &advs, measured, tm, ctm, color, ops);
     }
     advance
 }
 
-/// `advance` is the run's width in em fractions (× font size = text-space width).
+/// `advs_em` holds per-character advances in em fractions (× font size × CTM
+/// scale = device width), parallel to the chars of `text`.
 #[allow(clippy::too_many_arguments)]
 fn emit_text_op(
     text: &str,
     font_name: &str,
     font_size: f64,
-    advance: f64,
+    advs_em: &[f64],
+    measured: bool,
     tm: &Matrix,
     ctm: &Matrix,
     color: [f64; 4],
@@ -2125,8 +2150,10 @@ fn emit_text_op(
         scale.max(1.0)
     };
     let fsz = if font_size > 0.0 { font_size } else { 1.0 };
-    // Device advance width = text-space width (advance × fontSize) × CTM scale.
-    let width = advance * fsz * scale.max(0.01);
+    // Device advance = text-space width (em × fontSize) × CTM scale.
+    let factor = fsz * scale.max(0.01);
+    let advances: Vec<f64> = advs_em.iter().map(|a| a * factor).collect();
+    let width = advances.iter().sum();
     let rot = trm[1].atan2(trm[0]);
     ops.push(RenderOp::Text {
         text: text.to_string(),
@@ -2134,6 +2161,8 @@ fn emit_text_op(
         y: trm[5],
         size,
         width,
+        advances,
+        measured,
         rot,
         color,
         font: font_name.to_string(),
@@ -2835,36 +2864,14 @@ struct Font {
     widths: HashMap<u32, f64>,
     /// Default advance (em fraction) for codes absent from `widths`.
     default_width: f64,
+    /// Whether the PDF supplied explicit glyph widths (/Widths, /W, /DW, or
+    /// /MissingWidth). When false, advances are a flat default and a renderer
+    /// should measure real glyph widths instead.
+    has_widths: bool,
     base_font: String,
 }
 
 impl Font {
-    /// Total advance width of a byte string, in em fractions (× font size =
-    /// text-space width). Used to fit rendered glyphs to the PDF layout.
-    fn text_advance(&self, bytes: &[u8]) -> f64 {
-        let mut adv = 0.0;
-        if self.two_byte {
-            let mut i = 0;
-            while i < bytes.len() {
-                let (code, w) = self.next_code(&bytes[i..]);
-                i += w.max(1);
-                adv += self
-                    .widths
-                    .get(&code)
-                    .copied()
-                    .unwrap_or(self.default_width);
-            }
-        } else {
-            for &b in bytes {
-                adv += self
-                    .widths
-                    .get(&(b as u32))
-                    .copied()
-                    .unwrap_or(self.default_width);
-            }
-        }
-        adv
-    }
 
     /// Determine the next character code and its byte width from a composite
     /// font's byte string, using codespace ranges (or 2-byte Identity default).
@@ -2940,6 +2947,83 @@ impl Font {
                     out.push(c);
                 }
             }
+        }
+    }
+
+    /// Like `decode`, but also records a per-output-character advance (em
+    /// fraction) parallel to the pushed characters, so a renderer can place each
+    /// glyph at its PDF cumulative width. A code that produces N characters
+    /// splits its width evenly; a skipped code's width folds into the next
+    /// emitted glyph so the total run width is preserved.
+    fn decode_with_advances(&self, bytes: &[u8], out: &mut String, advs: &mut Vec<f64>) {
+        let mut pending = 0.0f64;
+        // A code that decodes to several characters (e.g. an "ﬁ" ligature) is one
+        // cluster: the full code width goes on the first character and 0 on the
+        // rest, so a renderer draws the cluster as a unit and advances once — the
+        // same way the Canvas2D reference draws the whole code string.
+        let mut emit = |s: &str, w: f64, out: &mut String, advs: &mut Vec<f64>| {
+            if s.is_empty() {
+                pending += w;
+                return;
+            }
+            let total = w + pending;
+            pending = 0.0;
+            for (i, c) in s.chars().enumerate() {
+                out.push(c);
+                advs.push(if i == 0 { total } else { 0.0 });
+            }
+        };
+        let mut tmp = String::new();
+        if self.two_byte {
+            let mut i = 0;
+            while i < bytes.len() {
+                let (code, bw) = self.next_code(&bytes[i..]);
+                i += bw.max(1);
+                let w = self
+                    .widths
+                    .get(&code)
+                    .copied()
+                    .unwrap_or(self.default_width);
+                tmp.clear();
+                if let Some(s) = self.to_unicode.get(&code) {
+                    tmp.push_str(s);
+                } else if self.cmap_unicode
+                    && let Some(c) = char::from_u32(code)
+                    && !c.is_control()
+                {
+                    tmp.push(c);
+                }
+                emit(&tmp, w, out, advs);
+            }
+        } else {
+            for &b in bytes {
+                let code = b as u32;
+                let w = self
+                    .widths
+                    .get(&code)
+                    .copied()
+                    .unwrap_or(self.default_width);
+                tmp.clear();
+                // An unmapped simple-font code emits nothing (no winansi
+                // fallback), matching `decode`'s behaviour.
+                #[allow(clippy::collapsible_if)]
+                if let Some(s) = self.to_unicode.get(&code) {
+                    tmp.push_str(s);
+                } else if let Some(tbl) = &self.simple {
+                    if let Some(c) = tbl[b as usize] {
+                        tmp.push(c);
+                    }
+                } else if let Some(c) = winansi(b) {
+                    tmp.push(c);
+                }
+                emit(&tmp, w, out, advs);
+            }
+        }
+        // Fold any trailing skipped width into the last glyph.
+        if pending > 0.0
+            && let Some(last) = advs.last_mut()
+        {
+            *last += pending;
         }
     }
 }
@@ -3055,7 +3139,7 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     }
 
     // Glyph advance widths (em fractions) for fitting rendered text to layout.
-    let (widths, default_width) = parse_font_widths(doc, font, two_byte);
+    let (widths, default_width, has_widths) = parse_font_widths(doc, font, two_byte);
 
     Font {
         two_byte,
@@ -3065,23 +3149,31 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
         cmap_unicode,
         widths,
         default_width,
+        has_widths,
         base_font,
     }
 }
 
 /// Parse glyph advance widths: simple fonts use /Widths + /FirstChar; Type0
-/// uses the descendant font's /W array + /DW. Returns (code→em-fraction, default).
-fn parse_font_widths(doc: &Document, font: &Dict, two_byte: bool) -> (HashMap<u32, f64>, f64) {
+/// uses the descendant font's /W array + /DW. Returns (code→em-fraction,
+/// default, has_explicit_widths). When `has_explicit_widths` is false (e.g. a
+/// base-14 font with no /Widths), the advances are a flat default and a renderer
+/// should measure real glyph widths instead — matching the reference renderer.
+fn parse_font_widths(
+    doc: &Document,
+    font: &Dict,
+    two_byte: bool,
+) -> (HashMap<u32, f64>, f64, bool) {
     let mut widths = HashMap::new();
     if !two_byte {
         let first = doc
             .get(font, "FirstChar")
             .and_then(|o| o.as_int())
             .unwrap_or(0) as u32;
-        if let Some(arr) = doc
+        let widths_arr = doc
             .get(font, "Widths")
-            .and_then(|o| o.as_array().map(|a| a.to_vec()))
-        {
+            .and_then(|o| o.as_array().map(|a| a.to_vec()));
+        if let Some(arr) = &widths_arr {
             for (i, wo) in arr.iter().enumerate() {
                 if let Some(w) = doc.resolve(wo).as_f64() {
                     widths.insert(first + i as u32, w / 1000.0);
@@ -3091,10 +3183,10 @@ fn parse_font_widths(doc: &Document, font: &Dict, two_byte: bool) -> (HashMap<u3
         let missing = doc
             .get(font, "FontDescriptor")
             .and_then(|o| o.as_dict().cloned())
-            .and_then(|fd| doc.get(&fd, "MissingWidth"))
-            .and_then(|o| o.as_f64())
-            .unwrap_or(500.0);
-        return (widths, missing / 1000.0);
+            .and_then(|fd| doc.get(&fd, "MissingWidth"));
+        let has = widths_arr.map(|a| !a.is_empty()).unwrap_or(false) || missing.is_some();
+        let default_width = missing.and_then(|o| o.as_f64()).unwrap_or(500.0) / 1000.0;
+        return (widths, default_width, has);
     }
 
     // Type0: descendant CIDFont carries /W and /DW.
@@ -3103,15 +3195,12 @@ fn parse_font_widths(doc: &Document, font: &Dict, two_byte: bool) -> (HashMap<u3
         .and_then(|o| o.as_array().and_then(|a| a.first().map(|x| doc.resolve(x))))
         .and_then(|o| o.as_dict().cloned())
         .unwrap_or_default();
-    let dw = doc
-        .get(&desc, "DW")
-        .and_then(|o| o.as_f64())
-        .unwrap_or(1000.0)
-        / 1000.0;
-    if let Some(w) = doc
+    let dw_obj = doc.get(&desc, "DW");
+    let dw = dw_obj.as_ref().and_then(|o| o.as_f64()).unwrap_or(1000.0) / 1000.0;
+    let w_arr = doc
         .get(&desc, "W")
-        .and_then(|o| o.as_array().map(|a| a.to_vec()))
-    {
+        .and_then(|o| o.as_array().map(|a| a.to_vec()));
+    if let Some(w) = &w_arr {
         let mut i = 0;
         while i + 1 < w.len() {
             let c = match doc.resolve(&w[i]).as_int() {
@@ -3143,7 +3232,8 @@ fn parse_font_widths(doc: &Document, font: &Dict, two_byte: bool) -> (HashMap<u3
             }
         }
     }
-    (widths, dw)
+    let has = w_arr.map(|a| !a.is_empty()).unwrap_or(false) || dw_obj.is_some();
+    (widths, dw, has)
 }
 
 /// Parse `begincodespacerange`/`endcodespacerange` from a CMap, returning
@@ -4384,6 +4474,7 @@ endstream\nendobj\n\
             cmap_unicode: false,
             widths: HashMap::new(),
             default_width: 0.5,
+            has_widths: true,
             base_font: String::new(),
         };
         let mut out = String::new();
@@ -4403,6 +4494,7 @@ endstream\nendobj\n\
             cmap_unicode: false,
             widths: HashMap::new(),
             default_width: 0.5,
+            has_widths: true,
             base_font: String::new(),
         };
         let mut out = String::new();
@@ -4421,6 +4513,7 @@ endstream\nendobj\n\
             cmap_unicode: true,
             widths: HashMap::new(),
             default_width: 0.5,
+            has_widths: true,
             base_font: String::new(),
         };
         let mut out = String::new();
@@ -4441,6 +4534,7 @@ endstream\nendobj\n\
             cmap_unicode: false,
             widths: HashMap::new(),
             default_width: 0.5,
+            has_widths: true,
             base_font: String::new(),
         };
         let mut out = String::new();

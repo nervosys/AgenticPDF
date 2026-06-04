@@ -21,7 +21,7 @@ export type RGBA = [number, number, number, number];
 export type RenderOp =
   | { op: "fill"; subpaths: [number, number][][]; color: RGBA; even_odd: boolean }
   | { op: "stroke"; subpaths: [number, number][][]; color: RGBA; width: number }
-  | { op: "text"; text: string; x: number; y: number; size: number; width: number; rot: number; color: RGBA; font: string }
+  | { op: "text"; text: string; x: number; y: number; size: number; width: number; advances: number[]; measured: boolean; rot: number; color: RGBA; font: string }
   | { op: "image"; x: number; y: number; w: number; h: number; name: string }
   | { op: "save" }
   | { op: "restore" }
@@ -255,6 +255,10 @@ export function renderDisplayList(
       bindPos([minX, minY, maxX, minY, maxX, maxY, minX, minY, maxX, maxY, minX, maxY]);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     } else if (op.op === "stroke") {
+      // Thin strokes are drawn on the 2D overlay (ctx.stroke) for rasterization
+      // identical to the Canvas2D reference; only render them on the GPU when
+      // there is no overlay canvas.
+      if (overlay) continue;
       gl.useProgram(solid);
       setPage(solid);
       gl.stencilMask(0x0);
@@ -289,34 +293,93 @@ export function renderDisplayList(
   }
 
   if (overlay) {
-    overlay.clearRect(0, 0, dl.width * scale, dl.height * scale);
+    const H2 = dl.height * scale;
+    overlay.clearRect(0, 0, dl.width * scale, H2);
     overlay.textBaseline = "alphabetic";
+    // Convert device space (y-up) to canvas space (y-down).
+    const cy = (y: number) => H2 - y * scale;
+    // Mirror the clip stack so strokes/text are clipped like the GPU pass.
+    let depth = 0;
     for (const op of dl.ops) {
-      if (op.op !== "text") continue;
-      const serif = /times|serif|georgia|roman|cmr|cmmi|cmti|cmbx|min|mc/i.test(op.font);
-      const mono = /mono|courier|cmtt|consol/i.test(op.font);
-      const family = mono ? "monospace" : serif ? "serif" : "sans-serif";
-      // Mirror the PDF's emphasis: oblique/italic and bold/black weight from
-      // the font name (matches the reference renderer's styling).
-      const italic = /ital|obli|slant|-it\b|cmti|cmmi/i.test(op.font);
-      const bold = /bold|-bd\b|black|heavy|semibold|cmbx/i.test(op.font);
-      const style = `${italic ? "italic " : ""}${bold ? "700 " : ""}`;
-      overlay.font = `${style}${op.size * scale}px ${family}`;
-      const [r, g, b, a] = op.color;
-      overlay.fillStyle = `rgba(${r * 255},${g * 255},${b * 255},${a})`;
-      // Horizontally scale the browser glyphs to the PDF advance so positioned
-      // words/runs line up exactly (no overlap), like the reference renderer.
-      const measured = overlay.measureText(op.text).width || 1;
-      const target = op.width * scale;
-      const sx = target > 1 && measured > 1 ? Math.min(Math.max(target / measured, 0.2), 4) : 1;
-      overlay.save();
-      overlay.translate(op.x * scale, dl.height * scale - op.y * scale);
-      if (op.rot) overlay.rotate(-op.rot);
-      if (sx !== 1) overlay.scale(sx, 1);
-      overlay.fillText(op.text, 0, 0);
-      overlay.restore();
+      if (op.op === "save") {
+        overlay.save();
+        depth++;
+      } else if (op.op === "restore") {
+        if (depth > 0) { overlay.restore(); depth--; }
+      } else if (op.op === "clip") {
+        const [x0, y0, x1, y1] = op.rect;
+        overlay.beginPath();
+        overlay.rect(x0 * scale, cy(y1), (x1 - x0) * scale, (y1 - y0) * scale);
+        overlay.clip();
+      } else if (op.op === "stroke") {
+        // Stroke with Canvas2D for rasterization identical to the reference.
+        const [r, g, b, a] = op.color;
+        overlay.strokeStyle = `rgba(${r * 255},${g * 255},${b * 255},${a})`;
+        overlay.lineWidth = Math.max(op.width * scale, 0.1);
+        overlay.beginPath();
+        for (const sp of op.subpaths) {
+          for (let i = 0; i < sp.length; i++) {
+            const [px, py] = sp[i];
+            if (i === 0) overlay.moveTo(px * scale, cy(py));
+            else overlay.lineTo(px * scale, cy(py));
+          }
+        }
+        overlay.stroke();
+      } else if (op.op === "text") {
+        overlay.font = `${fontStyle(op.font)}${op.size * scale}px ${fontFamily(op.font)}`;
+        const [r, g, b, a] = op.color;
+        overlay.fillStyle = `rgba(${r * 255},${g * 255},${b * 255},${a})`;
+        // Place each glyph at its PDF cumulative advance — identical layout to
+        // the Canvas2D reference (which advances by the same PDF widths) — so the
+        // two renderers' text matches pixel-for-pixel under the same font.
+        overlay.save();
+        overlay.translate(op.x * scale, cy(op.y));
+        if (op.rot) overlay.rotate(-op.rot);
+        const chars = Array.from(op.text);
+        let gx = 0;
+        if (op.measured) {
+          // No explicit widths: measure each glyph, like the reference does.
+          for (let i = 0; i < chars.length; i++) {
+            overlay.fillText(chars[i], gx, 0);
+            gx += overlay.measureText(chars[i]).width;
+          }
+        } else {
+          // Draw one fillText per code-cluster (continuation chars carry advance
+          // 0), advancing by the code's PDF width — identical to the reference.
+          for (let i = 0; i < chars.length; ) {
+            const adv = (op.advances[i] || 0) * scale;
+            let cluster = chars[i];
+            let j = i + 1;
+            while (j < chars.length && (op.advances[j] || 0) === 0) cluster += chars[j++];
+            overlay.fillText(cluster, gx, 0);
+            gx += adv;
+            i = j;
+          }
+        }
+        overlay.restore();
+      }
     }
+    while (depth-- > 0) overlay.restore();
   }
+}
+
+// Font family/style mapping — mirrors the Canvas2D reference (PDFGraphicsExecutor
+// .setFont) exactly so both renderers pick the same substituted browser font.
+function fontFamily(name: string): string {
+  const bf = name.replace(/^[^+]{1,6}\+/, "").toLowerCase();
+  if (/courier|mono|nimbusmono|nimbusl|nimbusmonl/.test(bf)) return '"Courier New", monospace';
+  if (/times|nimbus|cmr|cmb|cmmi|cmsy|cmt|roman/.test(bf) || (/serif/.test(bf) && !/sans/.test(bf)))
+    return '"Times New Roman", serif';
+  if (/helvetica|arial|sans/.test(bf)) return '"Helvetica", "Arial", sans-serif';
+  return '"Times New Roman", serif'; // default serif for academic/book content
+}
+
+function fontStyle(name: string): string {
+  const bf = name.replace(/^[^+]{1,6}\+/, "").toLowerCase();
+  let style = "";
+  if (/bold|medi|cmb/.test(bf)) style += "bold ";
+  if (/ital|obli|cmmi|cmti/.test(bf)) style += "italic ";
+  return style;
 }
 
 function intersect(a: Box, b: Box): Box {
@@ -340,7 +403,7 @@ export async function renderPage(
   const images: PageImage[] = JSON.parse(wasm.pageImages(bytes, page));
   glCanvas.width = Math.ceil(dl.width * scale);
   glCanvas.height = Math.ceil(dl.height * scale);
-  const gl = glCanvas.getContext("webgl2", { stencil: true, antialias: true });
+  const gl = glCanvas.getContext("webgl2", { stencil: true, antialias: true, preserveDrawingBuffer: true });
   if (!gl) throw new Error("WebGL2 not available");
   let ctx: CanvasRenderingContext2D | null = null;
   if (textCanvas) {

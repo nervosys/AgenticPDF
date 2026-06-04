@@ -8,6 +8,8 @@
   <div class="stage" id="stage"><canvas id="gl"></canvas><canvas id="text"></canvas></div>
   <!-- Canvas2D reference renderer output -->
   <canvas id="c2d"></canvas>
+  <!-- Pixel-diff heatmap (red = differing pixels) -->
+  <canvas id="diff"></canvas>
 
   <script src="/agenticpdf-browser.js"></script>
   <script type="module">
@@ -39,8 +41,49 @@
       const AgenticPDF = window.AgenticPDF.default ?? window.AgenticPDF;
       if (!c2dPdf) c2dPdf = await AgenticPDF.fromBuffer(ab.slice(0));
       const c = document.getElementById("c2d");
-      await c2dPdf.renderPage(p, c, { scale });
+      // renderScale:1 so the reference canvas is the same pixel resolution as the
+      // WebGL output (its default is 2× supersampling) — needed for a fair diff.
+      await c2dPdf.renderPage(p, c, { scale, renderScale: 1 });
       return { w: c.width, h: c.height };
+    };
+
+    // Composite the WebGL output (gl + text overlay) and the Canvas2D output,
+    // then count pixels whose colour differs beyond a threshold. Returns a diff
+    // ratio over inked pixels and paints a red heatmap into #diff.
+    window.diffPage = async (p, scale = 1) => {
+      await window.renderWebGL(p, scale);
+      await window.renderC2D(p, scale);
+      const gl = document.getElementById("gl");
+      const text = document.getElementById("text");
+      const c2d = document.getElementById("c2d");
+      const W = gl.width, H = gl.height;
+      const mk = () => { const c = document.createElement("canvas"); c.width = W; c.height = H; return c; };
+      const A = mk(), B = mk();
+      const actx = A.getContext("2d"), bctx = B.getContext("2d");
+      actx.drawImage(gl, 0, 0); actx.drawImage(text, 0, 0);
+      bctx.drawImage(c2d, 0, 0, W, H);
+      const ia = actx.getImageData(0, 0, W, H).data;
+      const ib = bctx.getImageData(0, 0, W, H).data;
+      const diff = document.getElementById("diff");
+      diff.width = W; diff.height = H;
+      const dctx = diff.getContext("2d");
+      const out = dctx.createImageData(W, H);
+      let diffPx = 0, inkPx = 0, hardPx = 0;
+      for (let i = 0; i < ia.length; i += 4) {
+        const d = Math.abs(ia[i] - ib[i]) + Math.abs(ia[i + 1] - ib[i + 1]) + Math.abs(ia[i + 2] - ib[i + 2]);
+        const inkA = 765 - ia[i] - ia[i + 1] - ia[i + 2];
+        const inkB = 765 - ib[i] - ib[i + 1] - ib[i + 2];
+        if (inkA > 40 || inkB > 40) inkPx++;
+        if (d > 75) {
+          diffPx++;
+          if (d > 300) hardPx++;
+          out.data[i] = 255; out.data[i + 1] = d > 300 ? 0 : 140; out.data[i + 2] = 0; out.data[i + 3] = 255;
+        } else {
+          out.data[i] = ia[i]; out.data[i + 1] = ia[i + 1]; out.data[i + 2] = ia[i + 2]; out.data[i + 3] = 255;
+        }
+      }
+      dctx.putImageData(out, 0, 0);
+      return { W, H, diffPx, hardPx, inkPx, pctAll: diffPx / (W * H), pctInk: inkPx ? diffPx / inkPx : 0 };
     };
   </script>
 </body>
