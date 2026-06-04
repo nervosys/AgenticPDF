@@ -40,6 +40,7 @@ for (const p of PAGES) {
   totalDiff += r.diffPx; totalInk += r.inkPx;
   const box = r.hardBox ? ` hardBox=[${r.hardBox.join(",")}]` : "";
   console.log(`page ${p}: ${r.diffPx} diff (${r.hardPx} hard) / ${r.inkPx} inked = ${(r.pctInk * 100).toFixed(2)}% differs, ${((r.hardPx / r.inkPx) * 100).toFixed(2)}% hard (${(r.pctAll * 100).toFixed(3)}% of page)${box}`);
+  if (r.samples?.length && process.env.SAMPLES) console.log("  samples (x,y,d,A,B):", r.samples.map((s) => `(${s[0]},${s[1]},d${s[2]},${s[3]}vs${s[4]})`).join(" "));
 }
 console.log(`OVERALL: ${(totalInk ? (totalDiff / totalInk) * 100 : 0).toFixed(2)}% of inked pixels differ`);
 await browser.close();

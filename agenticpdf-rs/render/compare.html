@@ -93,7 +93,13 @@
         }
       }
       const hardBox = hx1 >= 0 ? [hx0, hy0, hx1, hy1] : null;
-      return { W, H, diffPx, hardPx, inkPx, hardBox, pctAll: diffPx / (W * H), pctInk: inkPx ? diffPx / inkPx : 0 };
+      // Sample a few diff-pixel locations to see where they cluster.
+      const samples = [];
+      for (let i = 0, px = 0; i < ia.length && samples.length < 12; i += 4, px++) {
+        const dd = Math.abs(ia[i] - ib[i]) + Math.abs(ia[i + 1] - ib[i + 1]) + Math.abs(ia[i + 2] - ib[i + 2]);
+        if (dd > 75 && (px % 7 === 0)) samples.push([px % W, (px / W) | 0, dd, ia[i], ib[i]]);
+      }
+      return { W, H, diffPx, hardPx, inkPx, hardBox, samples, pctAll: diffPx / (W * H), pctInk: inkPx ? diffPx / inkPx : 0 };
     };
   </script>
 </body>
