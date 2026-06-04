@@ -255,6 +255,31 @@ const pdf = await AgenticPDF.fromFile(file, {
 });
 ```
 
+## Privacy & Telemetry
+
+AgenticPDF collects **anonymous, aggregate usage metrics** to guide development. It is privacy-preserving by design:
+
+- **Your documents never leave your machine.** No PDF content, extracted text, file names, file paths, URLs, or error messages are ever transmitted. Only coarse metrics are sent: event type, page-count, file-size *bucket* (e.g. `<1MB`), operation duration, feature name, and error *type* (e.g. `TypeError`).
+- All event data is anonymized before sending; any string containing `/`, `\`, or `@`, or longer than 100 characters, is dropped. The collection endpoint is fixed in code and **cannot be reconfigured by callers**, so it can't be repurposed to exfiltrate data.
+- Telemetry is **on by default** and sends batched events to `https://telemetry.nervosys.ai`.
+
+**To disable telemetry**, use any one of:
+
+```bash
+export AGENTICPDF_NO_TELEMETRY=1   # or AGENTICPDF_OFFLINE=1
+```
+
+```typescript
+import { Telemetry } from 'agenticpdf';
+Telemetry.disable();                       // programmatic opt-out
+```
+
+```js
+globalThis.__AGENTICPDF_NO_TELEMETRY__ = true;  // browser, before first use
+```
+
+When disabled, no network requests are made. Optional [OpenTelemetry](https://opentelemetry.io/) export is **off** unless you set `OTEL_EXPORTER_OTLP_ENDPOINT` yourself; see `.env.example`.
+
 ## Demos
 
 The `demos/` directory contains ready-to-run HTML demos:

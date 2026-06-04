@@ -67,7 +67,7 @@
     "pdf-parser",
     "pdf-alternative"
   ],
-  "author": "AgenticPDF Team",
+  "author": "NERVOSYS <opensource@nervosys.ai>",
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",

@@ -13,12 +13,19 @@ build/
 coverage/
 .nyc_output/
 
-# Environment variables
+# Environment variables — ignore every .env variant, but keep the template.
+# (Catches .env.production etc. so a file with real secrets can't slip in.)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+
+# Secrets / credentials that must never be committed
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+*.cert
 
 # IDE and editor files
 .vscode/
