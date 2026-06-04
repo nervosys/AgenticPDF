@@ -2043,9 +2043,14 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                             // Inter-word space: a space glyph carries the gap.
                                             seg.push(' ');
                                             seg_advs.push(gap);
-                                        } else if let Some(last) = seg_advs.last_mut() {
-                                            // Small kern: fold into the previous glyph.
-                                            *last += gap;
+                                        } else if let Some(idx) =
+                                            seg_advs.iter().rposition(|&a| a != 0.0)
+                                        {
+                                            // Small kern: fold into the current
+                                            // cluster's advance-bearing char,
+                                            // skipping zero-advance ligature
+                                            // continuations so clusters stay intact.
+                                            seg_advs[idx] += gap;
                                         } else {
                                             // Leading kern before any glyph.
                                             seg_start += gap;

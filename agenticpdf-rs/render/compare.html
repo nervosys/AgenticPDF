@@ -83,7 +83,17 @@
         }
       }
       dctx.putImageData(out, 0, 0);
-      return { W, H, diffPx, hardPx, inkPx, pctAll: diffPx / (W * H), pctInk: inkPx ? diffPx / inkPx : 0 };
+      // Bounding box of hard-diff pixels, to locate the worst mismatches.
+      let hx0 = 1e9, hy0 = 1e9, hx1 = -1, hy1 = -1;
+      for (let i = 0, px = 0; i < ia.length; i += 4, px++) {
+        const d = Math.abs(ia[i] - ib[i]) + Math.abs(ia[i + 1] - ib[i + 1]) + Math.abs(ia[i + 2] - ib[i + 2]);
+        if (d > 300) {
+          const x = px % W, y = (px / W) | 0;
+          hx0 = Math.min(hx0, x); hy0 = Math.min(hy0, y); hx1 = Math.max(hx1, x); hy1 = Math.max(hy1, y);
+        }
+      }
+      const hardBox = hx1 >= 0 ? [hx0, hy0, hx1, hy1] : null;
+      return { W, H, diffPx, hardPx, inkPx, hardBox, pctAll: diffPx / (W * H), pctInk: inkPx ? diffPx / inkPx : 0 };
     };
   </script>
 </body>

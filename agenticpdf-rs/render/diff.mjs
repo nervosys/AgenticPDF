@@ -38,7 +38,8 @@ for (const p of PAGES) {
   const r = await page.evaluate((pp) => window.diffPage(pp, 1), p);
   await page.locator("#diff").screenshot({ path: path.join(OUT, `p${p}-diff.png`) });
   totalDiff += r.diffPx; totalInk += r.inkPx;
-  console.log(`page ${p}: ${r.diffPx} diff (${r.hardPx} hard) / ${r.inkPx} inked = ${(r.pctInk * 100).toFixed(2)}% differs, ${((r.hardPx / r.inkPx) * 100).toFixed(2)}% hard (${(r.pctAll * 100).toFixed(3)}% of page)`);
+  const box = r.hardBox ? ` hardBox=[${r.hardBox.join(",")}]` : "";
+  console.log(`page ${p}: ${r.diffPx} diff (${r.hardPx} hard) / ${r.inkPx} inked = ${(r.pctInk * 100).toFixed(2)}% differs, ${((r.hardPx / r.inkPx) * 100).toFixed(2)}% hard (${(r.pctAll * 100).toFixed(3)}% of page)${box}`);
 }
 console.log(`OVERALL: ${(totalInk ? (totalDiff / totalInk) * 100 : 0).toFixed(2)}% of inked pixels differ`);
 await browser.close();
