@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Figure / caption detection and linking.
 //!
 //! Associates placed image XObjects with their captions ("Figure N", "Chart

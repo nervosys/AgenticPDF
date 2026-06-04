@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! WASM bindings for AgenticPDF.
 //!
 //! Exposes PDF processing functions to JavaScript via wasm-bindgen.

@@ -142,6 +142,7 @@
     "scripts/setup-env.cjs",
     "README.md",
     "LICENSE",
+    "LICENSE-AGPL.txt",
     "CHANGELOG.md"
   ]
 }

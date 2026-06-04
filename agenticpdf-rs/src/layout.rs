@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Reading-order analysis, block classification, and Markdown rendering.
 //!
 //! Takes the positioned text fragments produced by [`crate::engine`] and turns

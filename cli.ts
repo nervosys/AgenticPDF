@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 NERVOSYS, LLC. Dual-licensed under the GNU AGPLv3 or a
+// commercial license; see LICENSE and LICENSE-AGPL.txt.
 
 /**
  * AgenticPDF CLI - Command-line interface for PDF processing

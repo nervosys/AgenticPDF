@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! AgenticPDF CLI — Command-line interface for PDF processing.
 //!
 //! A self-describing CLI that agentic LLMs (ChatGPT, Claude, Gemini, etc.)

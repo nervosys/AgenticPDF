@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Table reconstruction from ruling lines + positioned text.
 //!
 //! Deterministic, local, and zero-dependency. Tables are anchored on groups of

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Stream decoding helpers and a thin parser facade.
 //!
 //! The full parsing pipeline lives in [`crate::engine`]. This module keeps the

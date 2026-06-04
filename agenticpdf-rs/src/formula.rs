@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Best-effort formula → LaTeX extraction.
 //!
 //! Deterministic and heuristic: detects math content by math-font names

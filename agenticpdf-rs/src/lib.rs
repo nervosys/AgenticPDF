@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! AgenticPDF — High-performance PDF processing library in Rust.
 //!
 //! Core PDF parsing, text extraction, and WASM-exportable operations

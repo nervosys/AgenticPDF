@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! AgenticPDF parsing engine — a real PDF object model.
 //!
 //! This module replaces the previous heuristic byte-scanner with a proper

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Scanned-page detection and a pluggable OCR backend interface.
 //!
 //! Deterministic detection of image-dominated pages with little or no

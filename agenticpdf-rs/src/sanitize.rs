@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Prompt-injection / hidden-text scanning for agentic safety.
 //!
 //! PDFs fed to an LLM can carry text the human reader never sees — positioned

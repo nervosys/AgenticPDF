@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Unicode diacritic normalization for extracted text.
 //!
 //! Many PDFs (especially TeX output) draw accented letters as a base glyph

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 //! Model Context Protocol (MCP) stdio server.
 //!
 //! A hand-rolled, zero-extra-dependency JSON-RPC 2.0 server over newline-
