@@ -187,15 +187,15 @@ impl DocxReader<'_> {
                         }
                     }
                     "ind" => {
-                        if let Some(twips) = attr_i64(&element, "left").or(attr_i64(&element, "start"))
+                        if let Some(twips) =
+                            attr_i64(&element, "left").or(attr_i64(&element, "start"))
                         {
                             properties.indent = (twips as f64 / TWIPS_PER_POINT).max(0.0);
                         }
                     }
-                    "br"
-                        if element.attr_local("type") == Some("page") => {
-                            properties.page_break = true;
-                        }
+                    "br" if element.attr_local("type") == Some("page") => {
+                        properties.page_break = true;
+                    }
                     _ => {}
                 },
                 _ => {}
@@ -228,7 +228,11 @@ impl DocxReader<'_> {
                         // Only `xml:space="preserve"` guarantees the spaces
                         // matter; elsewhere leading/trailing whitespace is
                         // formatting noise from a pretty-printed file.
-                        let text = if preserve_space { text } else { text.trim().to_string() };
+                        let text = if preserve_space {
+                            text
+                        } else {
+                            text.trim().to_string()
+                        };
                         if !text.is_empty() {
                             push_run(into, Run::styled(text, style.clone()));
                         }
@@ -260,8 +264,7 @@ impl DocxReader<'_> {
                         "i" | "iCs" => style.italic = on,
                         "strike" | "dstrike" => style.strikethrough = on,
                         "u" => {
-                            style.underline =
-                                on && element.attr_local("val") != Some("none");
+                            style.underline = on && element.attr_local("val") != Some("none");
                         }
                         // Word's hidden-text property: invisible on the page,
                         // fully present in the file.
@@ -284,9 +287,12 @@ impl DocxReader<'_> {
                         }
                         "color" => style.color = parse_color(element.attr_local("val")),
                         "rStyle"
-                            if self.styles.is_code(element.attr_local("val").unwrap_or_default()) => {
-                                style.code = true;
-                            }
+                            if self
+                                .styles
+                                .is_code(element.attr_local("val").unwrap_or_default()) =>
+                        {
+                            style.code = true;
+                        }
                         _ => {}
                     }
                 }
@@ -714,8 +720,7 @@ impl Styles {
     }
 
     fn is_quote(&self, id: &str) -> bool {
-        self.quotes.iter().any(|s| s == id)
-            || id.to_ascii_lowercase().contains("quote")
+        self.quotes.iter().any(|s| s == id) || id.to_ascii_lowercase().contains("quote")
     }
 
     fn is_code(&self, id: &str) -> bool {

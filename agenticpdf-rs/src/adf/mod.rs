@@ -304,7 +304,10 @@ impl std::fmt::Display for AdfError {
             AdfError::Truncated => write!(f, "ADF document is truncated"),
             AdfError::Malformed(why) => write!(f, "malformed ADF document: {why}"),
             AdfError::UnsupportedVersion(major) => {
-                write!(f, "ADF major version {major} is not supported by this build")
+                write!(
+                    f,
+                    "ADF major version {major} is not supported by this build"
+                )
             }
             AdfError::MissingChunk(kind) => write!(f, "ADF document has no {kind:?} chunk"),
         }

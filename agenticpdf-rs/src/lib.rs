@@ -308,7 +308,6 @@ impl PdfDocument {
     pub fn export_json(&self) -> Result<String, PdfError> {
         serde_json::to_string_pretty(&self.pages).map_err(|e| PdfError::ExportError(e.to_string()))
     }
-
 }
 
 /// Group text fragments into overlapping chunks for RAG pipelines.

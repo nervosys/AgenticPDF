@@ -91,9 +91,10 @@ impl App {
     }
 
     fn open_path(&mut self, path: &str) {
-        match std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| {
-            Session::open(bytes).map_err(|e| e.to_string())
-        }) {
+        match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| Session::open(bytes).map_err(|e| e.to_string()))
+        {
             Ok(session) => {
                 self.status = format!(
                     "{} — {}, {} page(s)",
@@ -293,7 +294,13 @@ impl App {
         )
         .split(area);
 
-        self.button("Page [p]", "show_page", Msg::ShowPane(Pane::Page), columns[0], frame);
+        self.button(
+            "Page [p]",
+            "show_page",
+            Msg::ShowPane(Pane::Page),
+            columns[0],
+            frame,
+        );
         self.button(
             "Outline [o]",
             "show_outline",
@@ -301,8 +308,20 @@ impl App {
             columns[1],
             frame,
         );
-        self.button("Search [/]", "show_search", Msg::RunSearch, columns[2], frame);
-        self.button("Prev", "previous_page", Msg::PreviousPage, columns[3], frame);
+        self.button(
+            "Search [/]",
+            "show_search",
+            Msg::RunSearch,
+            columns[2],
+            frame,
+        );
+        self.button(
+            "Prev",
+            "previous_page",
+            Msg::PreviousPage,
+            columns[3],
+            frame,
+        );
         self.button("Next", "next_page", Msg::NextPage, columns[4], frame);
 
         let position = match &self.session {
@@ -311,7 +330,11 @@ impl App {
                 session.page(),
                 session.page_count(),
                 session.zoom() * 100.0,
-                if session.is_dirty() { "   (edited)" } else { "" }
+                if session.is_dirty() {
+                    "   (edited)"
+                } else {
+                    ""
+                }
             ),
             None => String::new(),
         };
@@ -420,9 +443,11 @@ impl App {
             })
             .collect();
 
-        List::new(items)
-            .agent_id("outline")
-            .render(area, frame, &mut self.outline_state.borrow_mut());
+        List::new(items).agent_id("outline").render(
+            area,
+            frame,
+            &mut self.outline_state.borrow_mut(),
+        );
     }
 
     fn view_search(&self, area: Rect, frame: &mut Frame<'_>) {
@@ -432,9 +457,11 @@ impl App {
         )
         .split(area);
 
-        TextInput::new()
-            .agent_id("search_query")
-            .render(rows[0], frame, &mut self.input_state.borrow_mut());
+        TextInput::new().agent_id("search_query").render(
+            rows[0],
+            frame,
+            &mut self.input_state.borrow_mut(),
+        );
 
         let results: Vec<String> = self
             .hits
@@ -445,9 +472,11 @@ impl App {
             })
             .collect();
 
-        List::new(results)
-            .agent_id("search_results")
-            .render(rows[1], frame, &mut self.results_state.borrow_mut());
+        List::new(results).agent_id("search_results").render(
+            rows[1],
+            frame,
+            &mut self.results_state.borrow_mut(),
+        );
     }
 }
 

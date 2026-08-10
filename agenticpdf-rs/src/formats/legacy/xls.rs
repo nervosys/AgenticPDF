@@ -386,7 +386,12 @@ fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<Strin
                     && let Some(bytes) = record.data.get(6..14)
                 {
                     let value = f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]));
-                    place(&mut grid, row as usize, column as usize, format_number(value));
+                    place(
+                        &mut grid,
+                        row as usize,
+                        column as usize,
+                        format_number(value),
+                    );
                 }
             }
             BOOLERR => {
@@ -438,7 +443,12 @@ fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<Strin
                     continue;
                 }
                 let value = f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]));
-                place(&mut grid, row as usize, column as usize, format_number(value));
+                place(
+                    &mut grid,
+                    row as usize,
+                    column as usize,
+                    format_number(value),
+                );
             }
             // The string result of the formula immediately before it.
             STRING => {
@@ -679,7 +689,8 @@ mod tests {
     fn workbook_file(stream: &[u8]) -> Vec<u8> {
         use std::io::Write;
 
-        let mut file = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).expect("create compound file");
+        let mut file = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new()))
+            .expect("create compound file");
         file.create_stream("Workbook")
             .expect("create stream")
             .write_all(stream)

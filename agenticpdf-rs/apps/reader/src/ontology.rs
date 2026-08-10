@@ -129,7 +129,12 @@ mod tests {
         let mut registry = OntologyRegistry::new();
         register(&mut registry);
 
-        for widget in ["DocumentReader", "DocumentCanvas", "DocumentOutline", "DocumentSearch"] {
+        for widget in [
+            "DocumentReader",
+            "DocumentCanvas",
+            "DocumentOutline",
+            "DocumentSearch",
+        ] {
             assert!(
                 registry.get_schema(widget).is_some(),
                 "{widget} is not discoverable by an agent"

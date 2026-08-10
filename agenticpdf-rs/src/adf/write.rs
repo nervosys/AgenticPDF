@@ -212,11 +212,14 @@ impl AdfWriter {
         // first in the table's eyes, because every other chunk indexes into it.
         // Interning is finished by now, so this is the point it can be frozen.
         let strings = self.strings.encode();
-        self.chunks.insert(0, PendingChunk {
-            kind: ChunkKind::Strings,
-            id: 0,
-            payload: strings,
-        });
+        self.chunks.insert(
+            0,
+            PendingChunk {
+                kind: ChunkKind::Strings,
+                id: 0,
+                payload: strings,
+            },
+        );
 
         let mut out = Writer::new();
         out.bytes.resize(super::HEADER_LEN, 0);
@@ -233,8 +236,7 @@ impl AdfWriter {
             // time and adds bytes.
             let (bytes, flags) = match self.compress && chunk.payload.len() > 128 {
                 true => {
-                    let deflated =
-                        miniz_oxide::deflate::compress_to_vec(&chunk.payload, 6);
+                    let deflated = miniz_oxide::deflate::compress_to_vec(&chunk.payload, 6);
                     if deflated.len() < chunk.payload.len() {
                         (deflated, chunk_flags::COMPRESSED)
                     } else {

@@ -118,7 +118,10 @@ pub extern "system" fn Java_ai_nervosys_apdf_Reader_nativeExecute(
         let Ok(mut guard) = SESSION.lock() else {
             return error_json(&env, "the document lock is poisoned");
         };
-        to_jstring(&env, actions::execute(&mut guard, &action, &params).to_string())
+        to_jstring(
+            &env,
+            actions::execute(&mut guard, &action, &params).to_string(),
+        )
     }));
     result.unwrap_or(std::ptr::null_mut())
 }

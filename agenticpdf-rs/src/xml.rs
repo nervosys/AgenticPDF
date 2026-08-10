@@ -712,7 +712,10 @@ mod tests {
         // `xml:space="preserve"` it is a significant space. The reader reports
         // it either way; the caller decides.
         let evts = events("<a>\n  <b/>\n</a>");
-        assert!(evts.iter().any(|e| matches!(e, Event::Text(t) if t.trim().is_empty())));
+        assert!(
+            evts.iter()
+                .any(|e| matches!(e, Event::Text(t) if t.trim().is_empty()))
+        );
     }
 
     #[test]

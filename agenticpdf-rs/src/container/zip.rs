@@ -271,7 +271,9 @@ fn central_directory_location(data: &[u8], eocd: usize) -> Result<(usize, usize)
 
     let eocd64 = read_u64(data, locator + 8) as usize;
     if eocd64 + 56 > data.len() || read_u32(data, eocd64) != SIG_EOCD64 {
-        return Err(PdfError::Malformed("bad zip64 end of central directory".into()));
+        return Err(PdfError::Malformed(
+            "bad zip64 end of central directory".into(),
+        ));
     }
 
     let entries = read_u64(data, eocd64 + 32) as usize;
@@ -433,7 +435,11 @@ fn crc_table() -> &'static [u32; 256] {
         for (i, slot) in table.iter_mut().enumerate() {
             let mut c = i as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             *slot = c;
         }
@@ -448,7 +454,11 @@ mod tests {
 
     #[test]
     fn reads_stored_member() {
-        let zip = build_zip(&[("mimetype", b"application/vnd.oasis.opendocument.text", false)]);
+        let zip = build_zip(&[(
+            "mimetype",
+            b"application/vnd.oasis.opendocument.text",
+            false,
+        )]);
         let archive = ZipArchive::open(&zip).unwrap();
         assert_eq!(archive.entries().len(), 1);
         assert_eq!(

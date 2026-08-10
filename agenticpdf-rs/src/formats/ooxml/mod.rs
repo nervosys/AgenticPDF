@@ -178,10 +178,14 @@ impl Package {
             // Producers occasionally ship a package with no root relationship;
             // the conventional locations are still worth trying before failing.
             .or_else(|| {
-                ["word/document.xml", "xl/workbook.xml", "ppt/presentation.xml"]
-                    .into_iter()
-                    .find(|path| archive.contains(path))
-                    .map(str::to_string)
+                [
+                    "word/document.xml",
+                    "xl/workbook.xml",
+                    "ppt/presentation.xml",
+                ]
+                .into_iter()
+                .find(|path| archive.contains(path))
+                .map(str::to_string)
             })
             .ok_or_else(|| PdfError::MissingPart("OOXML main document part".into()))?;
 
@@ -456,8 +460,14 @@ mod tests {
     #[test]
     fn resolves_relative_and_absolute_paths() {
         assert_eq!(resolve_path("word/", "media/i.png"), "word/media/i.png");
-        assert_eq!(resolve_path("ppt/slides/", "../media/i.png"), "ppt/media/i.png");
-        assert_eq!(resolve_path("word/", "/docProps/core.xml"), "docProps/core.xml");
+        assert_eq!(
+            resolve_path("ppt/slides/", "../media/i.png"),
+            "ppt/media/i.png"
+        );
+        assert_eq!(
+            resolve_path("word/", "/docProps/core.xml"),
+            "docProps/core.xml"
+        );
         assert_eq!(resolve_path("", "word/document.xml"), "word/document.xml");
     }
 
@@ -467,7 +477,10 @@ mod tests {
             split_path("word/document.xml"),
             ("word/".to_string(), "document.xml".to_string())
         );
-        assert_eq!(split_path("top.xml"), (String::new(), "top.xml".to_string()));
+        assert_eq!(
+            split_path("top.xml"),
+            (String::new(), "top.xml".to_string())
+        );
     }
 
     #[test]

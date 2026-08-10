@@ -259,9 +259,7 @@ pub fn detect(data: &[u8], hint: Option<&str>) -> Result<Format, PdfError> {
     }
 
     if !looks_textual(data) {
-        return Err(PdfError::Unsupported(
-            "unrecognised binary format".into(),
-        ));
+        return Err(PdfError::Unsupported("unrecognised binary format".into()));
     }
 
     Ok(detect_textual(data, hint))
@@ -409,8 +407,13 @@ fn detect_textual(data: &[u8], hint: Option<&str>) -> Format {
 
     // The extension is authoritative for the text family: `.csv`, `.md` and
     // `.txt` are all valid UTF-8 prose and heuristics alone will misfile them.
-    if let Some(format) = hint.and_then(Format::from_path).or_else(|| hint.and_then(Format::from_id))
-        && matches!(format, Format::Csv | Format::Markdown | Format::Text | Format::Html)
+    if let Some(format) = hint
+        .and_then(Format::from_path)
+        .or_else(|| hint.and_then(Format::from_id))
+        && matches!(
+            format,
+            Format::Csv | Format::Markdown | Format::Text | Format::Html
+        )
     {
         return format;
     }
@@ -562,8 +565,14 @@ mod tests {
     fn detects_opendocument_and_epub_by_mimetype_member() {
         for (mime, expected) in [
             ("application/vnd.oasis.opendocument.text", Format::Odt),
-            ("application/vnd.oasis.opendocument.spreadsheet", Format::Ods),
-            ("application/vnd.oasis.opendocument.presentation", Format::Odp),
+            (
+                "application/vnd.oasis.opendocument.spreadsheet",
+                Format::Ods,
+            ),
+            (
+                "application/vnd.oasis.opendocument.presentation",
+                Format::Odp,
+            ),
             ("application/epub+zip", Format::Epub),
         ] {
             let zip = build_zip(&[
@@ -620,8 +629,14 @@ mod tests {
 
     #[test]
     fn detects_html() {
-        assert_eq!(detect(b"<!DOCTYPE html><html></html>", None).unwrap(), Format::Html);
-        assert_eq!(detect(b"<html><body>hi</body></html>", None).unwrap(), Format::Html);
+        assert_eq!(
+            detect(b"<!DOCTYPE html><html></html>", None).unwrap(),
+            Format::Html
+        );
+        assert_eq!(
+            detect(b"<html><body>hi</body></html>", None).unwrap(),
+            Format::Html
+        );
     }
 
     #[test]
@@ -641,7 +656,10 @@ mod tests {
 
     #[test]
     fn detects_markdown_by_markers() {
-        assert_eq!(detect(b"# Title\n\nSome prose.\n", None).unwrap(), Format::Markdown);
+        assert_eq!(
+            detect(b"# Title\n\nSome prose.\n", None).unwrap(),
+            Format::Markdown
+        );
         assert_eq!(detect(b"- one\n- two\n", None).unwrap(), Format::Markdown);
     }
 
@@ -664,7 +682,10 @@ mod tests {
     #[test]
     fn extension_hint_never_overrides_a_binary_signature() {
         // A renamed file is still what its bytes say it is.
-        assert_eq!(detect(b"%PDF-1.7\n", Some("report.docx")).unwrap(), Format::Pdf);
+        assert_eq!(
+            detect(b"%PDF-1.7\n", Some("report.docx")).unwrap(),
+            Format::Pdf
+        );
         let docx = build_zip(&[("word/document.xml", b"<w:document/>", true)]);
         assert_eq!(detect(&docx, Some("report.pdf")).unwrap(), Format::Docx);
     }

@@ -108,22 +108,22 @@ pub fn i16_at(bytes: &[u8], offset: usize) -> Option<i16> {
 pub fn encoding_for_lid(lid: u16) -> &'static encoding_rs::Encoding {
     use encoding_rs::*;
     match lid & 0x03FF {
-        0x11 => SHIFT_JIS,                         // Japanese, 932
-        0x12 => EUC_KR,                            // Korean, 949
+        0x11 => SHIFT_JIS, // Japanese, 932
+        0x12 => EUC_KR,    // Korean, 949
         0x04 => match lid {
             0x0404 | 0x0C04 | 0x1404 | 0x7C04 => BIG5, // Traditional, 950
             _ => GBK,                                  // Simplified, 936
         },
-        0x01 | 0x20 | 0x29 => WINDOWS_1256,        // Arabic script
+        0x01 | 0x20 | 0x29 => WINDOWS_1256, // Arabic script
         0x02 | 0x19 | 0x22 | 0x23 => WINDOWS_1251, // Cyrillic
         0x05 | 0x0E | 0x15 | 0x18 | 0x1A | 0x1B | 0x24 => WINDOWS_1250, // Central European
-        0x08 => WINDOWS_1253,                      // Greek
-        0x0D => WINDOWS_1255,                      // Hebrew
-        0x1E => WINDOWS_874,                       // Thai
-        0x1F | 0x2C => WINDOWS_1254,               // Turkic
-        0x25..=0x27 => WINDOWS_1257,               // Baltic
-        0x2A => WINDOWS_1258,                      // Vietnamese
-        _ => WINDOWS_1252,                         // Western European
+        0x08 => WINDOWS_1253,               // Greek
+        0x0D => WINDOWS_1255,               // Hebrew
+        0x1E => WINDOWS_874,                // Thai
+        0x1F | 0x2C => WINDOWS_1254,        // Turkic
+        0x25..=0x27 => WINDOWS_1257,        // Baltic
+        0x2A => WINDOWS_1258,               // Vietnamese
+        _ => WINDOWS_1252,                  // Western European
     }
 }
 
@@ -205,9 +205,7 @@ mod tests {
     #[test]
     fn decodes_utf16_including_surrogate_pairs() {
         // "hi" followed by U+1F600, which is a surrogate pair.
-        let bytes = [
-            b'h', 0, b'i', 0, 0x3D, 0xD8, 0x00, 0xDE,
-        ];
+        let bytes = [b'h', 0, b'i', 0, 0x3D, 0xD8, 0x00, 0xDE];
         assert_eq!(decode_utf16le(&bytes), "hi\u{1F600}");
         // An unpaired surrogate becomes the replacement character.
         assert_eq!(decode_utf16le(&[0x00, 0xD8]), "\u{FFFD}");

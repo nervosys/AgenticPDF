@@ -321,9 +321,9 @@ mod tests {
     #[test]
     fn walks_operands_of_every_length_class() {
         let bytes = grpprl(&[
-            (0x0835, &[1]),                    // spra 0: one byte
-            (0x4A43, &[0x18, 0x00]),           // spra 2: two bytes
-            (0x6649, &[1, 0, 0, 0]),           // spra 3: four bytes
+            (0x0835, &[1]),          // spra 0: one byte
+            (0x4A43, &[0x18, 0x00]), // spra 2: two bytes
+            (0x6649, &[1, 0, 0, 0]), // spra 3: four bytes
         ]);
         let mut seen = Vec::new();
         walk(&bytes, |sprm, operand| seen.push((sprm, operand.len())));

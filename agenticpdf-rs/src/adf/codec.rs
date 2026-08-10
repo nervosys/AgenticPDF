@@ -269,7 +269,11 @@ pub fn decode_footnotes(bytes: &[u8], heap: &StringHeap<'_>) -> Result<Vec<Footn
 }
 
 /// Encode document-level metadata.
-pub fn encode_meta(document: &SemanticDoc, source_format: &str, table: &mut StringTable) -> Vec<u8> {
+pub fn encode_meta(
+    document: &SemanticDoc,
+    source_format: &str,
+    table: &mut StringTable,
+) -> Vec<u8> {
     let mut out = Writer::new();
     for field in [
         document.title.as_deref(),

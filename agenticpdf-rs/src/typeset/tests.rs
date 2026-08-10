@@ -75,7 +75,11 @@ fn text_stays_inside_the_page_margins() {
     let output = typeset(&doc_with(vec![para(&prose)]));
 
     for block in all_text(&output) {
-        assert!(block.x >= 72.0 - 0.01, "left margin breached: x={}", block.x);
+        assert!(
+            block.x >= 72.0 - 0.01,
+            "left margin breached: x={}",
+            block.x
+        );
         assert!(
             block.x + block.width <= 612.0 - 72.0 + 0.5,
             "right margin breached: x={} width={}",
@@ -108,7 +112,9 @@ fn baselines_descend_down_the_page() {
 
 #[test]
 fn long_documents_break_across_pages() {
-    let blocks: Vec<Block> = (0..200).map(|i| para(&format!("Paragraph number {i}."))).collect();
+    let blocks: Vec<Block> = (0..200)
+        .map(|i| para(&format!("Paragraph number {i}.")))
+        .collect();
     let output = typeset(&doc_with(blocks));
     assert!(output.pages.len() > 1, "expected multiple pages");
     assert_eq!(output.pages.len(), output.display.len());
@@ -120,7 +126,11 @@ fn long_documents_break_across_pages() {
     }
     // Nothing overflows the bottom margin.
     for block in all_text(&output) {
-        assert!(block.y >= 72.0 - BODY_SIZE, "below bottom margin: {}", block.y);
+        assert!(
+            block.y >= 72.0 - BODY_SIZE,
+            "below bottom margin: {}",
+            block.y
+        );
     }
 }
 
@@ -202,7 +212,11 @@ fn wraps_prose_into_multiple_lines() {
     let prose = "word ".repeat(200);
     let output = typeset(&doc_with(vec![para(&prose)]));
     let blocks = all_text(&output);
-    assert!(blocks.len() > 5, "expected wrapping, got {} lines", blocks.len());
+    assert!(
+        blocks.len() > 5,
+        "expected wrapping, got {} lines",
+        blocks.len()
+    );
 }
 
 #[test]
@@ -277,7 +291,10 @@ fn honours_paragraph_alignment() {
     let right = make(Align::Right).pages[0].text_content[0].x;
 
     assert!(left < centre && centre < right, "{left} {centre} {right}");
-    assert!((left - 72.0).abs() < 0.01, "left-aligned text starts at the margin");
+    assert!(
+        (left - 72.0).abs() < 0.01,
+        "left-aligned text starts at the margin"
+    );
     // A right-aligned line ends at the right margin.
     let block = &make(Align::Right).pages[0].text_content[0];
     assert!((block.x + block.width - (612.0 - 72.0)).abs() < 0.5);
@@ -286,7 +303,9 @@ fn honours_paragraph_alignment() {
 #[test]
 fn justification_stretches_all_but_the_last_line() {
     let output = typeset(&doc_with(vec![Block::Paragraph {
-        content: vec![Inline::Run(Run::plain("alpha beta gamma delta ".repeat(20)))],
+        content: vec![Inline::Run(Run::plain(
+            "alpha beta gamma delta ".repeat(20),
+        ))],
         align: Align::Justify,
         indent: 0.0,
     }]));
@@ -321,8 +340,14 @@ fn list_markers_hang_to_the_left_of_their_text() {
         }],
     })]));
     let blocks = all_text(&output);
-    let marker = blocks.iter().find(|b| b.text.contains('\u{2022}')).expect("bullet");
-    let text = blocks.iter().find(|b| b.text.contains("item")).expect("text");
+    let marker = blocks
+        .iter()
+        .find(|b| b.text.contains('\u{2022}'))
+        .expect("bullet");
+    let text = blocks
+        .iter()
+        .find(|b| b.text.contains("item"))
+        .expect("text");
     assert!(marker.x < text.x, "marker is not in the margin");
     // Both sit on the same baseline.
     assert!((marker.y - text.y).abs() < 0.01);
@@ -369,15 +394,22 @@ fn nested_lists_indent_further_than_their_parent() {
     })]));
 
     let blocks = all_text(&output);
-    let parent = blocks.iter().find(|b| b.text.contains("parent")).expect("parent");
-    let child = blocks.iter().find(|b| b.text.contains("child")).expect("child");
+    let parent = blocks
+        .iter()
+        .find(|b| b.text.contains("parent"))
+        .expect("parent");
+    let child = blocks
+        .iter()
+        .find(|b| b.text.contains("child"))
+        .expect("child");
     assert!(child.x > parent.x, "nested item is not indented");
 }
 
 #[test]
 fn quotes_indent_their_content() {
     let plain = typeset(&doc_with(vec![para("text")])).pages[0].text_content[0].x;
-    let quoted = typeset(&doc_with(vec![Block::Quote(vec![para("text")])])).pages[0].text_content[0].x;
+    let quoted =
+        typeset(&doc_with(vec![Block::Quote(vec![para("text")])])).pages[0].text_content[0].x;
     assert!(quoted > plain, "quote is not indented");
 }
 
@@ -592,7 +624,12 @@ fn sample_table() -> Table {
 fn tables_place_cells_in_columns_and_rows() {
     let output = typeset(&doc_with(vec![Block::Table(sample_table())]));
     let blocks = all_text(&output);
-    let find = |needle: &str| blocks.iter().find(|b| b.text.contains(needle)).expect(needle);
+    let find = |needle: &str| {
+        blocks
+            .iter()
+            .find(|b| b.text.contains(needle))
+            .expect(needle)
+    };
 
     // Same column: same x. Same row: same baseline.
     assert!((find("Region").x - find("EMEA").x).abs() < 0.01);
@@ -621,7 +658,11 @@ fn drawn_tables_are_recovered_by_the_pdf_table_reconstructor() {
     let output = typeset(&doc_with(vec![Block::Table(sample_table())]));
     let recovered = crate::tables::detect_tables(&output.graphics, &output.pages);
 
-    assert_eq!(recovered.len(), 1, "table not recovered from its own rulings");
+    assert_eq!(
+        recovered.len(),
+        1,
+        "table not recovered from its own rulings"
+    );
     assert_eq!((recovered[0].rows, recovered[0].cols), (3, 2));
     assert_eq!(recovered[0].cells[0], vec!["Region", "Growth"]);
     assert_eq!(recovered[0].cells[2], vec!["APAC", "17%"]);
@@ -792,7 +833,10 @@ fn oversized_images_are_scaled_to_the_content_width() {
     else {
         unreachable!()
     };
-    assert!((*w - (612.0 - 144.0)).abs() < 0.01, "not scaled to fit: {w}");
+    assert!(
+        (*w - (612.0 - 144.0)).abs() < 0.01,
+        "not scaled to fit: {w}"
+    );
     assert!((w / h - 2.0).abs() < 0.01, "aspect ratio lost when scaling");
 }
 
@@ -886,13 +930,19 @@ fn text_survives_the_round_trip_through_geometry() {
 
     let from_model: Vec<String> = to_markdown(&document)
         .split_whitespace()
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|word| !word.is_empty())
         .collect();
     let from_geometry: Vec<String> = all_text(&output)
         .iter()
         .flat_map(|block| block.text.split_whitespace())
-        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|word| {
+            word.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|word| !word.is_empty())
         .collect();
 

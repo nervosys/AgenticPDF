@@ -714,9 +714,7 @@ fn struct_node(block: &Block, page: usize) -> StructNode {
     };
 
     match block {
-        Block::Heading { level, content } => {
-            leaf(&format!("H{level}"), Some(inline_text(content)))
-        }
+        Block::Heading { level, content } => leaf(&format!("H{level}"), Some(inline_text(content))),
         Block::Paragraph { content, .. } => leaf("P", Some(inline_text(content))),
         Block::Code { text, .. } => leaf("Code", Some(text.clone())),
         Block::Divider => leaf("Separator", None),
@@ -1310,10 +1308,7 @@ fn html_block(block: &Block, out: &mut String) {
     match block {
         Block::Heading { level, content } => {
             let level = (*level).clamp(1, 6);
-            out.push_str(&format!(
-                "<h{level}>{}</h{level}>\n",
-                html_inlines(content)
-            ));
+            out.push_str(&format!("<h{level}>{}</h{level}>\n", html_inlines(content)));
         }
         Block::Paragraph { content, align, .. } => {
             let style = match align {
@@ -1347,7 +1342,10 @@ fn html_block(block: &Block, out: &mut String) {
         Block::Table(table) => {
             out.push_str("<table>\n");
             if let Some(caption) = &table.caption {
-                out.push_str(&format!("<caption>{}</caption>\n", crate::xml::escape(caption)));
+                out.push_str(&format!(
+                    "<caption>{}</caption>\n",
+                    crate::xml::escape(caption)
+                ));
             }
             for (index, row) in table.rows.iter().enumerate() {
                 let header = index < table.header_rows;
@@ -1417,9 +1415,7 @@ fn html_block(block: &Block, out: &mut String) {
 /// Strip a lone `<p>...</p>` wrapper, leaving inline content.
 fn unwrap_single_paragraph(html: &str) -> &str {
     let trimmed = html.trim();
-    if trimmed.starts_with("<p>")
-        && trimmed.ends_with("</p>")
-        && trimmed.matches("<p").count() == 1
+    if trimmed.starts_with("<p>") && trimmed.ends_with("</p>") && trimmed.matches("<p").count() == 1
     {
         return &trimmed[3..trimmed.len() - 4];
     }

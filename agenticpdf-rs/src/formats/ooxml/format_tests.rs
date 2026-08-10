@@ -95,7 +95,8 @@ fn docx_preserves_significant_whitespace_between_runs() {
 
 #[test]
 fn docx_maps_heading_styles_to_levels() {
-    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    let styles =
+        br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
         <w:style w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
         <w:style w:styleId="Heading2"><w:name w:val="heading 2"/></w:style>
         <w:style w:styleId="Titel"><w:name w:val="Title"/></w:style>
@@ -413,7 +414,10 @@ fn xlsx_handles_cell_types() {
 fn xlsx_makes_one_section_per_sheet_named_after_its_tab() {
     let zip = xlsx(
         &[
-            ("Summary", r#"<row r="1"><c r="A1" t="s"><v>0</v></c></row>"#),
+            (
+                "Summary",
+                r#"<row r="1"><c r="A1" t="s"><v>0</v></c></row>"#,
+            ),
             ("Detail", r#"<row r="1"><c r="A1" t="s"><v>1</v></c></row>"#),
         ],
         &["first sheet", "second sheet"],
@@ -492,7 +496,11 @@ fn pptx(slides: &[(&str, &str)], order: &[usize]) -> Vec<u8> {
         .iter()
         .enumerate()
         .map(|(position, target)| {
-            format!(r#"<p:sldId id="{}" r:id="rId{}"/>"#, 256 + position, target + 1)
+            format!(
+                r#"<p:sldId id="{}" r:id="rId{}"/>"#,
+                256 + position,
+                target + 1
+            )
         })
         .collect();
     let presentation = format!(
@@ -628,7 +636,10 @@ fn pptx_skips_slide_number_and_footer_placeholders() {
     );
     let markdown = to_markdown(&open(&zip, Format::Pptx));
     assert!(markdown.contains("the actual point"), "{markdown}");
-    assert!(!markdown.contains("Confidential"), "footer leaked:\n{markdown}");
+    assert!(
+        !markdown.contains("Confidential"),
+        "footer leaked:\n{markdown}"
+    );
     assert!(!markdown.contains("3"), "slide number leaked:\n{markdown}");
 }
 
@@ -674,7 +685,10 @@ fn pptx_keeps_speaker_notes_separate_from_the_slide_body() {
     assert!(markdown.contains("> **Speaker notes**"), "{markdown}");
     // Notes are prose, not the bulleted list a slide body is.
     assert!(markdown.contains("> Remember the numbers."), "{markdown}");
-    assert!(!markdown.contains("> - Remember"), "notes bulleted:\n{markdown}");
+    assert!(
+        !markdown.contains("> - Remember"),
+        "notes bulleted:\n{markdown}"
+    );
 }
 
 // ============================================================================
@@ -713,7 +727,11 @@ fn the_shared_entry_point_routes_each_format_to_its_reader() {
 
 #[test]
 fn a_package_missing_its_main_part_reports_which_part() {
-    let zip = build_zip(&[("_rels/.rels", root_rels("word/document.xml").as_bytes(), true)]);
+    let zip = build_zip(&[(
+        "_rels/.rels",
+        root_rels("word/document.xml").as_bytes(),
+        true,
+    )]);
     assert!(matches!(
         parse(&zip, Format::Docx),
         Err(crate::PdfError::MissingPart(_))

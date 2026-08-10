@@ -94,7 +94,13 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
 
     let text = extract_text(&word, &pieces, total_cp, encoding);
     let chpx = Runs::new(parse_fkps(&word, &table, 0xFA, FkpKind::Chpx, &data_stream));
-    let papx = Runs::new(parse_fkps(&word, &table, 0x102, FkpKind::Papx, &data_stream));
+    let papx = Runs::new(parse_fkps(
+        &word,
+        &table,
+        0x102,
+        FkpKind::Papx,
+        &data_stream,
+    ));
     let stylesheet = stsh::parse(&word, &table);
     let lists = parse_lists(&word, &table);
 
@@ -710,7 +716,13 @@ impl Assembler {
                             Self::push_paragraph(&mut cell_blocks, inlines);
                         }
                     } else {
-                        self.flush_table(&mut blocks, &mut rows, &mut row, &mut cell_blocks, &mut header_rows);
+                        self.flush_table(
+                            &mut blocks,
+                            &mut rows,
+                            &mut row,
+                            &mut cell_blocks,
+                            &mut header_rows,
+                        );
                         self.emit_paragraph(&pap, inlines, &mut blocks);
                     }
                 }
@@ -736,7 +748,13 @@ impl Assembler {
             index += 1;
         }
 
-        self.flush_table(&mut blocks, &mut rows, &mut row, &mut cell_blocks, &mut header_rows);
+        self.flush_table(
+            &mut blocks,
+            &mut rows,
+            &mut row,
+            &mut cell_blocks,
+            &mut header_rows,
+        );
         if !inline_text(&content).trim().is_empty() {
             blocks.push(Block::Paragraph {
                 content,
@@ -793,7 +811,12 @@ impl Assembler {
     }
 
     /// File a finished paragraph as a heading, list item or paragraph.
-    fn emit_paragraph(&mut self, pap: &EffectivePap, content: Vec<Inline>, blocks: &mut Vec<Block>) {
+    fn emit_paragraph(
+        &mut self,
+        pap: &EffectivePap,
+        content: Vec<Inline>,
+        blocks: &mut Vec<Block>,
+    ) {
         if inline_text(&content).trim().is_empty() {
             return;
         }
@@ -920,7 +943,13 @@ impl Assembler {
 }
 
 /// Append a list item, merging with the run before it and nesting by level.
-fn append_list_item(blocks: &mut Vec<Block>, item: ListItem, level: usize, ordered: bool, start: u64) {
+fn append_list_item(
+    blocks: &mut Vec<Block>,
+    item: ListItem,
+    level: usize,
+    ordered: bool,
+    start: u64,
+) {
     if level > 0
         && let Some(Block::List(list)) = blocks.last_mut()
         && let Some(last) = list.items.last_mut()

@@ -261,7 +261,10 @@ impl<'a> Parser<'a> {
         }
         if self.at > digits_start {
             let text = String::from_utf8_lossy(&self.data[digits_start..self.at]);
-            parameter = text.parse::<i32>().ok().map(|v| if negative { -v } else { v });
+            parameter = text
+                .parse::<i32>()
+                .ok()
+                .map(|v| if negative { -v } else { v });
         }
         // A single space after a control word is its delimiter, not content.
         if self.data.get(self.at) == Some(&b' ') {
@@ -277,10 +280,10 @@ impl<'a> Parser<'a> {
         match word {
             // -- Destinations ------------------------------------------
             "fonttbl" | "colortbl" | "listtable" | "listoverridetable" | "pict" | "object"
-            | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles"
-            | "rsidtbl" | "header" | "footer" | "headerl" | "headerr" | "footerl"
-            | "footerr" | "footnote" | "annotation" | "bkmkstart" | "bkmkend" | "field"
-            | "fldinst" | "filetbl" | "revtbl" | "upr" => {
+            | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
+            | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr" | "footnote"
+            | "annotation" | "bkmkstart" | "bkmkend" | "field" | "fldinst" | "filetbl"
+            | "revtbl" | "upr" => {
                 self.state.destination = Destination::Discard;
             }
             // Read rather than skipped: this is where Word records which style
@@ -376,7 +379,11 @@ impl<'a> Parser<'a> {
             "u" => {
                 if let Some(value) = parameter {
                     // Values above 32767 are written as negatives.
-                    let scalar = if value < 0 { (value + 65536) as u32 } else { value as u32 };
+                    let scalar = if value < 0 {
+                        (value + 65536) as u32
+                    } else {
+                        value as u32
+                    };
                     if let Some(ch) = char::from_u32(scalar) {
                         self.push_char(ch);
                     }
@@ -432,8 +439,10 @@ impl<'a> Parser<'a> {
                     run.text.push(ch);
                     return;
                 }
-                self.runs
-                    .push(Inline::Run(Run::styled(ch.to_string(), self.state.style.clone())));
+                self.runs.push(Inline::Run(Run::styled(
+                    ch.to_string(),
+                    self.state.style.clone(),
+                )));
             }
         }
     }
@@ -490,15 +499,11 @@ impl<'a> Parser<'a> {
 
         // An inline outline level wins; otherwise the paragraph's style number
         // is resolved against the stylesheet.
-        let heading = self
-            .state
-            .outline_level
-            .map(|level| level + 1)
-            .or_else(|| {
-                self.state
-                    .style_ref
-                    .and_then(|number| self.heading_styles.get(&number).copied())
-            });
+        let heading = self.state.outline_level.map(|level| level + 1).or_else(|| {
+            self.state
+                .style_ref
+                .and_then(|number| self.heading_styles.get(&number).copied())
+        });
 
         let block = if let Some(level) = heading {
             Block::Heading { level, content }
@@ -522,7 +527,9 @@ impl<'a> Parser<'a> {
         // items before it, so consecutive markers form one list.
         let is_list = self.state.list_level.is_some() || marker.as_deref().is_some_and(is_marker);
         if is_list {
-            let ordered = marker.as_deref().is_some_and(|m| m.chars().any(|c| c.is_ascii_digit()));
+            let ordered = marker
+                .as_deref()
+                .is_some_and(|m| m.chars().any(|c| c.is_ascii_digit()));
             let item = ListItem {
                 blocks: vec![block],
                 checked: None,
@@ -659,9 +666,8 @@ mod tests {
 
     #[test]
     fn applies_character_formatting() {
-        let rtf = format!(
-            r"{HEADER} \b bold\b0  and \i italic\i0  and \strike struck\strike0 \par}}"
-        );
+        let rtf =
+            format!(r"{HEADER} \b bold\b0  and \i italic\i0  and \strike struck\strike0 \par}}");
         assert_eq!(markdown_of(&rtf), "**bold** and _italic_ and ~~struck~~\n");
     }
 
@@ -716,7 +722,10 @@ mod tests {
         // five question marks belong to the escape and two are real text.
         let rtf = format!("{HEADER}\\uc3 x\\u9731?????y\\par}}");
         let markdown = markdown_of(&rtf);
-        assert!(markdown.contains('\u{2603}'), "escape not decoded: {markdown}");
+        assert!(
+            markdown.contains('\u{2603}'),
+            "escape not decoded: {markdown}"
+        );
         assert!(markdown.contains("??y"), "wrong skip count: {markdown}");
         assert!(!markdown.contains("???y"), "skipped too few: {markdown}");
     }
@@ -760,9 +769,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_style_name_without_an_outline_level() {
-        let rtf = format!(
-            r"{HEADER}{{\stylesheet{{\s3\ql\f0 heading 3;}}}}\pard\s3 Named\par}}"
-        );
+        let rtf = format!(r"{HEADER}{{\stylesheet{{\s3\ql\f0 heading 3;}}}}\pard\s3 Named\par}}");
         assert_eq!(markdown_of(&rtf), "### Named\n");
     }
 
@@ -787,8 +794,14 @@ mod tests {
         assert_eq!(document.title.as_deref(), Some("Report"));
         let markdown = to_markdown(&document);
         assert_eq!(markdown.trim(), "Body text.");
-        assert!(!markdown.contains("A. Person"), "operator leaked: {markdown}");
-        assert!(!markdown.contains("internal note"), "doccomm leaked: {markdown}");
+        assert!(
+            !markdown.contains("A. Person"),
+            "operator leaked: {markdown}"
+        );
+        assert!(
+            !markdown.contains("internal note"),
+            "doccomm leaked: {markdown}"
+        );
     }
 
     #[test]
@@ -829,10 +842,16 @@ mod tests {
              \trowd\intbl Widget\cell 12\cell\row \pard Done.\par}}"
         );
         let markdown = markdown_of(&rtf);
-        assert!(markdown.contains("| **Name** | **Qty** |"), "got: {markdown}");
+        assert!(
+            markdown.contains("| **Name** | **Qty** |"),
+            "got: {markdown}"
+        );
         assert!(markdown.contains("| --- | --- |"), "got: {markdown}");
         assert!(markdown.contains("| Widget | 12 |"), "got: {markdown}");
-        assert!(markdown.contains("Done."), "text after table lost: {markdown}");
+        assert!(
+            markdown.contains("Done."),
+            "text after table lost: {markdown}"
+        );
     }
 
     #[test]
@@ -897,7 +916,9 @@ mod tests {
         };
         assert_eq!(*align, Align::Center);
         let text = document.text();
-        assert!(text.contains('\u{2013}') && text.contains('\u{2014}') && text.contains('\u{2022}'));
+        assert!(
+            text.contains('\u{2013}') && text.contains('\u{2014}') && text.contains('\u{2022}')
+        );
     }
 
     #[test]
@@ -945,9 +966,15 @@ mod tests {
 
         let markdown = to_markdown(&document);
         assert!(markdown.contains("# Quarterly Report"), "{markdown}");
-        assert!(markdown.contains("Revenue grew by **12%** across all regions."), "{markdown}");
+        assert!(
+            markdown.contains("Revenue grew by **12%** across all regions."),
+            "{markdown}"
+        );
         assert!(markdown.contains("## Regions"), "{markdown}");
-        assert!(markdown.contains("| **Region** | **Growth** |"), "{markdown}");
+        assert!(
+            markdown.contains("| **Region** | **Growth** |"),
+            "{markdown}"
+        );
         assert!(markdown.contains("| APAC | 17% |"), "{markdown}");
         assert!(markdown.contains("- Hiring on plan"), "{markdown}");
         assert!(markdown.contains("- Churn down"), "{markdown}");

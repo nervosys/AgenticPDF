@@ -283,7 +283,8 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
                 .get("to")
                 .and_then(|t| t.as_str())
                 .ok_or_else(|| "missing required argument: to".to_string())?;
-            let bytes = crate::agent_ops::convert(&document, path, to).map_err(|e| e.to_string())?;
+            let bytes =
+                crate::agent_ops::convert(&document, path, to).map_err(|e| e.to_string())?;
 
             match args.get("output").and_then(|o| o.as_str()) {
                 Some(out) => {

@@ -745,7 +745,9 @@ fn cmd_displaylist(file: &str, page: usize) -> Result<(), PdfError> {
 #[cfg(feature = "cli")]
 fn cmd_forms(file: &str, format: &str) -> Result<(), PdfError> {
     let document = load_document(file)?;
-    let data = document.require_pdf("form fields").map(|_| document.data())?;
+    let data = document
+        .require_pdf("form fields")
+        .map(|_| document.data())?;
     let fields = agenticpdf::engine::extract_form_fields(data)?;
     match format {
         "json" => {
@@ -1086,7 +1088,9 @@ fn cmd_search(file: &str, query: &str, json: bool) -> Result<(), PdfError> {
         for hit in &hits {
             println!(
                 "[{}:{}] {}",
-                hit["section"], hit["block"], hit["text"].as_str().unwrap_or("")
+                hit["section"],
+                hit["block"],
+                hit["text"].as_str().unwrap_or("")
             );
         }
         eprintln!("{} result(s)", hits.len());
@@ -1102,7 +1106,6 @@ fn cmd_verify(
     block: u32,
     json: bool,
 ) -> Result<(), PdfError> {
-
     let data = fs::read(file)?;
     if !agenticpdf::adf::AdfDoc::sniff(&data) {
         return Err(PdfError::Unsupported(
@@ -1144,12 +1147,7 @@ fn cmd_verify(
     Ok(())
 }
 
-fn cmd_convert(
-    file: &str,
-    to: &str,
-    sanitize: bool,
-    output: Option<&str>,
-) -> Result<(), PdfError> {
+fn cmd_convert(file: &str, to: &str, sanitize: bool, output: Option<&str>) -> Result<(), PdfError> {
     let document = load_document(file)?;
     let document = if sanitize {
         document.sanitized()
@@ -1168,9 +1166,7 @@ fn cmd_convert(
             .into_bytes(),
         "adf" => {
             let semantic = document.semantic().ok_or_else(|| {
-                PdfError::Unsupported(
-                    "this format has no semantic model to convert from".into(),
-                )
+                PdfError::Unsupported("this format has no semantic model to convert from".into())
             })?;
 
             // Provenance is recorded during import by `agent_ops::write_adf`;

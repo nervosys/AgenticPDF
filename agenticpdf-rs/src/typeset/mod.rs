@@ -41,8 +41,7 @@ mod tests;
 
 use crate::PdfAnnotation;
 use crate::doc::{
-    Align, Block, ImageRef, Inline, PageSize, Run, SectionKind, SemanticDoc, Table,
-    TextStyle,
+    Align, Block, ImageRef, Inline, PageSize, Run, SectionKind, SemanticDoc, Table, TextStyle,
 };
 use crate::engine::{DisplayList, PageGraphics, PageImage, RenderOp, Seg};
 use crate::{PdfPage, TextBlock};
@@ -517,7 +516,12 @@ impl<'a> Flow<'a> {
         let column_count = table
             .rows
             .iter()
-            .map(|row| row.cells.iter().map(|cell| cell.col_span.max(1)).sum::<usize>())
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.col_span.max(1))
+                    .sum::<usize>()
+            })
             .max()
             .unwrap_or(0)
             .max(1);
@@ -542,8 +546,9 @@ impl<'a> Flow<'a> {
                     break;
                 }
                 let span = cell.col_span.max(1).min(column_count - column);
-                let cell_width =
-                    (widths[column..column + span].iter().sum::<f64>() - CELL_PADDING * 2.0).max(12.0);
+                let cell_width = (widths[column..column + span].iter().sum::<f64>()
+                    - CELL_PADDING * 2.0)
+                    .max(12.0);
 
                 // A cell is its own flow context: its content wraps to the
                 // column, not to the page.
@@ -692,7 +697,12 @@ impl Token {
 }
 
 /// Split a styled run into tokens, measuring each.
-fn push_run_tokens(run: &Run, paragraph: &ParagraphStyle, link: Option<&str>, into: &mut Vec<Token>) {
+fn push_run_tokens(
+    run: &Run,
+    paragraph: &ParagraphStyle,
+    link: Option<&str>,
+    into: &mut Vec<Token>,
+) {
     if run.text.is_empty() {
         return;
     }
@@ -966,7 +976,11 @@ fn paginate(
         match item {
             Item::PageBreak if !single_page => {
                 if !page.is_empty() {
-                    emit_page(std::mem::replace(&mut page, Page::new(geometry)), document, output);
+                    emit_page(
+                        std::mem::replace(&mut page, Page::new(geometry)),
+                        document,
+                        output,
+                    );
                 }
                 continue;
             }
@@ -987,7 +1001,11 @@ fn paginate(
                     if matches!(item, Item::Gap(_)) {
                         continue;
                     }
-                    emit_page(std::mem::replace(&mut page, Page::new(geometry)), document, output);
+                    emit_page(
+                        std::mem::replace(&mut page, Page::new(geometry)),
+                        document,
+                        output,
+                    );
                 }
                 let top = page.cursor;
                 page.cursor += height;
@@ -1018,7 +1036,11 @@ fn place_table(
             return;
         }
         let rows = std::mem::take(pending);
-        let header_rows = if repeat { header.len() } else { table.header_rows };
+        let header_rows = if repeat {
+            header.len()
+        } else {
+            table.header_rows
+        };
         let block = TableBox {
             columns: table.columns.clone(),
             header_rows: header_rows.min(rows.len()),
@@ -1032,13 +1054,17 @@ fn place_table(
         });
     };
 
-
     for row in &table.rows {
         let pending_height: f64 = pending.iter().map(|row| row.height).sum();
-        if pending_height + row.height > page.remaining() && !(page.is_empty() && pending.is_empty())
+        if pending_height + row.height > page.remaining()
+            && !(page.is_empty() && pending.is_empty())
         {
             flush(&mut pending, page, repeat_header);
-            emit_page(std::mem::replace(page, Page::new(geometry)), document, output);
+            emit_page(
+                std::mem::replace(page, Page::new(geometry)),
+                document,
+                output,
+            );
             // Continuation pages restate the header, so a split table still
             // reads as a table.
             if !header.is_empty() {
@@ -1220,7 +1246,12 @@ fn emit_line(
             annotations.push(PdfAnnotation {
                 subtype: "Link".to_string(),
                 page_number,
-                rect: [x, baseline - piece.size * 0.25, x + piece.width, baseline + piece.size * 0.85],
+                rect: [
+                    x,
+                    baseline - piece.size * 0.25,
+                    x + piece.width,
+                    baseline + piece.size * 0.85,
+                ],
                 contents: None,
                 uri: Some(href.clone()),
                 dest: None,

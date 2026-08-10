@@ -16,7 +16,6 @@
 use crate::doc::{Block, Cell, Row, Section, SectionKind, SemanticDoc, Table};
 use crate::xml::{Element, Event, Reader, ns};
 
-
 /// Largest repeat count honoured for a cell or row carrying content.
 const MAX_REPEAT: usize = 4_096;
 /// Cap on the grid a single sheet may expand to.
@@ -128,7 +127,10 @@ fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
     }
 
     // Trim trailing empty rows and columns, then square the grid.
-    while grid.last().is_some_and(|row| row.iter().all(String::is_empty)) {
+    while grid
+        .last()
+        .is_some_and(|row| row.iter().all(String::is_empty))
+    {
         grid.pop();
     }
     let width = grid
@@ -213,7 +215,6 @@ fn read_cell(reader: &mut Reader, start: &Element) -> String {
             _ => {}
         }
     }
-
 
     if text.is_empty() { typed } else { text }
 }

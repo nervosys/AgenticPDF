@@ -389,9 +389,7 @@ fn is_table_delimiter(line: &str) -> bool {
     !body.is_empty()
         && body.split('|').all(|cell| {
             let cell = cell.trim();
-            !cell.is_empty()
-                && cell.chars().all(|c| c == '-' || c == ':')
-                && cell.contains('-')
+            !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':') && cell.contains('-')
         })
 }
 
@@ -582,8 +580,9 @@ fn indent_of(line: &str) -> usize {
 
 /// Whether `line` opens another item of the *same* list.
 fn is_sibling(line: &str, base_indent: usize, ordered: bool) -> bool {
-    list_marker(line)
-        .is_some_and(|(indent, other_ordered, _, _)| indent == base_indent && other_ordered == ordered)
+    list_marker(line).is_some_and(|(indent, other_ordered, _, _)| {
+        indent == base_indent && other_ordered == ordered
+    })
 }
 
 /// Remove up to `columns` leading spaces, plus the list marker's own width.
@@ -651,7 +650,8 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
         }
 
         // Image, then link — `![` must be tested before `[`.
-        if ch == '!' && chars.get(at + 1) == Some(&'[')
+        if ch == '!'
+            && chars.get(at + 1) == Some(&'[')
             && let Some((alt, target, next)) = link_parts(&chars, at + 1)
         {
             flush(&mut buffer, &mut out);
@@ -970,12 +970,18 @@ mod tests {
     fn markdown_lists_round_trip_including_numbering_and_tasks() {
         assert_eq!(markdown_of("- a\n- b\n"), "- a\n- b\n");
         assert_eq!(markdown_of("3. c\n4. d\n"), "3. c\n4. d\n");
-        assert_eq!(markdown_of("- [x] done\n- [ ] todo\n"), "- [x] done\n- [ ] todo\n");
+        assert_eq!(
+            markdown_of("- [x] done\n- [ ] todo\n"),
+            "- [x] done\n- [ ] todo\n"
+        );
     }
 
     #[test]
     fn markdown_nested_lists_round_trip() {
-        assert_eq!(markdown_of("- parent\n  - child\n"), "- parent\n  - child\n");
+        assert_eq!(
+            markdown_of("- parent\n  - child\n"),
+            "- parent\n  - child\n"
+        );
     }
 
     #[test]

@@ -161,12 +161,15 @@ impl OpLog {
             counter: self.next_counter(),
             actor: author,
         };
-        self.ops.insert(id, Op {
+        self.ops.insert(
             id,
-            author,
-            timestamp,
-            change,
-        });
+            Op {
+                id,
+                author,
+                timestamp,
+                change,
+            },
+        );
         id
     }
 
@@ -185,9 +188,7 @@ impl OpLog {
             self.apply(op.clone());
         }
         for actor in other.actors.values() {
-            self.actors
-                .entry(actor.id)
-                .or_insert_with(|| actor.clone());
+            self.actors.entry(actor.id).or_insert_with(|| actor.clone());
         }
     }
 
@@ -266,7 +267,9 @@ impl OpLog {
             .ops
             .values()
             .filter_map(|op| match &op.change {
-                Change::Insert { parent: p, left, .. } if *p == parent => Some((&op.id, *left)),
+                Change::Insert {
+                    parent: p, left, ..
+                } if *p == parent => Some((&op.id, *left)),
                 _ => None,
             })
             .collect();
@@ -464,11 +467,15 @@ pub fn from_blocks(blocks: &[Block], author: u64, timestamp: u64) -> OpLog {
     let mut log = OpLog::new();
     let mut left = None;
     for block in blocks {
-        left = Some(log.push(author, timestamp, Change::Insert {
-            parent: OpId::ROOT,
-            left,
-            block: block.clone(),
-        }));
+        left = Some(log.push(
+            author,
+            timestamp,
+            Change::Insert {
+                parent: OpId::ROOT,
+                left,
+                block: block.clone(),
+            },
+        ));
     }
     log
 }

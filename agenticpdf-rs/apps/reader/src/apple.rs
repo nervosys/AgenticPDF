@@ -83,10 +83,7 @@ pub unsafe extern "C" fn apdf_open(data: *const u8, len: usize) -> *mut c_char {
 /// # Safety
 /// Both arguments must be null or valid NUL-terminated UTF-8.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn apdf_execute(
-    action: *const c_char,
-    params: *const c_char,
-) -> *mut c_char {
+pub unsafe extern "C" fn apdf_execute(action: *const c_char, params: *const c_char) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
         if action.is_null() {
             return failure("action must not be null");

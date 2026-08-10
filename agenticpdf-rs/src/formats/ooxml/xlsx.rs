@@ -16,7 +16,6 @@
 //! `xl/sharedStrings.xml`", and a reader that prints the `<v>` verbatim emits
 //! a spreadsheet full of integers.
 
-
 use crate::PdfError;
 use crate::container::zip::ZipArchive;
 use crate::doc::{Block, Cell, Row, Section, SemanticDoc, Table};
@@ -104,7 +103,10 @@ fn read_sheet_list(xml: &[u8]) -> Vec<SheetRef> {
         }
         // Hidden sheets are deliberately not shown to the reader of a workbook;
         // extracting them anyway would surface content the author concealed.
-        if matches!(element.attr_local("state"), Some("hidden") | Some("veryHidden")) {
+        if matches!(
+            element.attr_local("state"),
+            Some("hidden") | Some("veryHidden")
+        ) {
             continue;
         }
         let Some(relationship) = element.attr_local("id") else {
@@ -169,7 +171,10 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings) -> Vec<Vec<String>> {
 
     // Trim wholly empty trailing rows, then square the grid so every row has
     // the same width — a GFM table has to be rectangular.
-    while grid.last().is_some_and(|row| row.iter().all(|c| c.is_empty())) {
+    while grid
+        .last()
+        .is_some_and(|row| row.iter().all(|c| c.is_empty()))
+    {
         grid.pop();
     }
     let width = grid.iter().map(Vec::len).max().unwrap_or(0);

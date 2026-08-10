@@ -269,8 +269,7 @@ impl SlideReader<'_> {
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) if element.in_ns(ns::A) => match element.local.as_str() {
                     "pPr" => {
-                        paragraph.level =
-                            attr_i64(&element, "lvl").unwrap_or(0).clamp(0, 8) as u8;
+                        paragraph.level = attr_i64(&element, "lvl").unwrap_or(0).clamp(0, 8) as u8;
                         paragraph.align = match element.attr_local("algn") {
                             Some("ctr") => Align::Center,
                             Some("r") => Align::Right,
@@ -315,9 +314,8 @@ impl SlideReader<'_> {
                             element.attr_local("strike"),
                             Some("sngStrike") | Some("dblStrike")
                         );
-                        style.underline = element
-                            .attr_local("u")
-                            .is_some_and(|value| value != "none");
+                        style.underline =
+                            element.attr_local("u").is_some_and(|value| value != "none");
                         // DrawingML sizes are in hundredths of a point.
                         style.size = attr_i64(&element, "sz").map(|v| v as f64 / 100.0);
                     }
@@ -461,7 +459,12 @@ fn push_paragraph(blocks: &mut Vec<Block>, paragraph: SlideParagraph) {
         blocks: vec![block],
         checked: None,
     };
-    append_list_item(blocks, item, paragraph.level, paragraph.bullet == Bullet::Ordered);
+    append_list_item(
+        blocks,
+        item,
+        paragraph.level,
+        paragraph.bullet == Bullet::Ordered,
+    );
 }
 
 /// Append a list item at `level`, nesting into the item above as needed.

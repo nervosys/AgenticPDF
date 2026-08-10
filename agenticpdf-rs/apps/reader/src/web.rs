@@ -58,7 +58,8 @@ impl WebReader {
     /// Strings rather than `JsValue` so the boundary stays trivially testable
     /// and has one representation instead of two.
     pub fn execute(&mut self, action: &str, params: &str) -> String {
-        let params: serde_json::Value = serde_json::from_str(params).unwrap_or(serde_json::json!({}));
+        let params: serde_json::Value =
+            serde_json::from_str(params).unwrap_or(serde_json::json!({}));
         let result = actions::execute(&mut self.session, action, &params);
         result.to_string()
     }

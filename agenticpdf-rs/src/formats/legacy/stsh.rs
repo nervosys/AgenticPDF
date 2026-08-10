@@ -203,8 +203,8 @@ fn resolve(
             break;
         };
         chain.push(current);
-        cursor = (style.istd_base != ISTD_NIL && style.istd_base != current)
-            .then_some(style.istd_base);
+        cursor =
+            (style.istd_base != ISTD_NIL && style.istd_base != current).then_some(style.istd_base);
     }
 
     // Apply root-to-leaf, memoising each step so siblings reuse the work.

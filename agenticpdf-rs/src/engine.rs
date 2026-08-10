@@ -2007,11 +2007,7 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                     ArrPart::Str(bytes) => {
                                         if let Some(f) = cur_font {
                                             let before = seg_advs.iter().sum::<f64>();
-                                            f.decode_with_advances(
-                                                bytes,
-                                                &mut seg,
-                                                &mut seg_advs,
-                                            );
+                                            f.decode_with_advances(bytes, &mut seg, &mut seg_advs);
                                             cursor += seg_advs.iter().sum::<f64>() - before;
                                         } else {
                                             for &b in bytes {
@@ -2129,7 +2125,9 @@ fn push_text_op(
     let advance: f64 = advs.iter().sum();
     let measured = font.map(|f| !f.has_widths).unwrap_or(true);
     if !s.trim().is_empty() {
-        emit_text_op(&s, font_name, font_size, &advs, measured, tm, ctm, color, ops);
+        emit_text_op(
+            &s, font_name, font_size, &advs, measured, tm, ctm, color, ops,
+        );
     }
     advance
 }
@@ -2878,7 +2876,6 @@ struct Font {
 }
 
 impl Font {
-
     /// Determine the next character code and its byte width from a composite
     /// font's byte string, using codespace ranges (or 2-byte Identity default).
     fn next_code(&self, bytes: &[u8]) -> (u32, usize) {

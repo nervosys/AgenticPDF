@@ -94,7 +94,9 @@ pub fn paint_page(
 
     for op in &list.ops {
         match op {
-            RenderOp::Fill { subpaths, color, .. } => {
+            RenderOp::Fill {
+                subpaths, color, ..
+            } => {
                 let paint = to_color(*color);
                 for subpath in subpaths {
                     let points = to_points(subpath, &transform);
@@ -140,11 +142,7 @@ pub fn paint_page(
                 // top of the line, so lift by the size to put the glyphs where
                 // the document put them.
                 let at = transform.point(*x, *y);
-                painter.text(
-                    Position::new(at.x, at.y - style.font_size),
-                    text,
-                    &style,
-                );
+                painter.text(Position::new(at.x, at.y - style.font_size), text, &style);
             }
             RenderOp::Image { x, y, w, h, name } => {
                 // y + h because the op's origin is the image's bottom-left and
@@ -305,7 +303,11 @@ impl Painter for RecordingPainter {
     fn stroke_circle(&mut self, center: Position, radius: f32, color: Color, width: f32) {
         self.push(format!(
             r#"{{"op":"stroke_circle","x":{:.2},"y":{:.2},"r":{:.2},"color":"{}","width":{:.2}}}"#,
-            center.x, center.y, radius, css_color(color), width
+            center.x,
+            center.y,
+            radius,
+            css_color(color),
+            width
         ));
     }
 
@@ -425,21 +427,24 @@ mod tests {
         let mut painter = ImagePainter::new(100, 100);
         // A square in the document's bottom-left quadrant.
         let ops = vec![RenderOp::Fill {
-            subpaths: vec![vec![
-                [10.0, 10.0],
-                [40.0, 10.0],
-                [40.0, 40.0],
-                [10.0, 40.0],
-            ]],
+            subpaths: vec![vec![[10.0, 10.0], [40.0, 10.0], [40.0, 40.0], [10.0, 40.0]]],
             color: [1.0, 0.0, 0.0, 1.0],
             even_odd: false,
         }];
-        paint_page(&mut painter, &list(ops), Transform::fit(&list(Vec::new()), area(), 1.0), &[]);
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
 
         // The page is filled white first, and white also has r > 0.9 — so red
         // is identified by the *absence* of green, not the presence of red.
         let filled = painter.get_pixel(25, 75);
-        assert!(filled.r > 0.9 && filled.g < 0.5, "fill is in the wrong place");
+        assert!(
+            filled.r > 0.9 && filled.g < 0.5,
+            "fill is in the wrong place"
+        );
 
         // Bottom-left in document space is high y on screen, so the top must
         // still be the untouched white page.
@@ -484,7 +489,12 @@ mod tests {
             h: 80.0,
             name: "absent".into(),
         }];
-        paint_page(&mut painter, &list(ops), Transform::fit(&list(Vec::new()), area(), 1.0), &[]);
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
 
         // The frame is gray on a white page, so look for a pixel that is
         // darker than the page — checking alpha would match the page itself.
@@ -510,7 +520,12 @@ mod tests {
         ];
         // The test is that this returns at all with the clip stack balanced;
         // an over-pop would corrupt the surrounding UI's clipping.
-        paint_page(&mut painter, &list(ops), Transform::fit(&list(Vec::new()), area(), 1.0), &[]);
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
         let filled = painter.get_pixel(50, 50);
         assert!(filled.r > 0.9 && filled.g < 0.5, "the fill did not survive");
     }
@@ -546,16 +561,23 @@ mod tests {
             &[],
         );
 
-        assert_eq!(painter.open_clips(), 0, "the replayer would be left clipped");
+        assert_eq!(
+            painter.open_clips(),
+            0,
+            "the replayer would be left clipped"
+        );
 
         // The whole point is that JavaScript can parse this.
-        let json: serde_json::Value = serde_json::from_str(&painter.to_json())
-            .expect("the recording is not valid JSON");
+        let json: serde_json::Value =
+            serde_json::from_str(&painter.to_json()).expect("the recording is not valid JSON");
         let recorded = json.as_array().unwrap();
         assert!(recorded.iter().any(|op| op["op"] == "fill_path"));
 
         let text = recorded.iter().find(|op| op["op"] == "text").unwrap();
-        assert_eq!(text["text"], "he said \"hi\"\\\n", "escaping corrupted the text");
+        assert_eq!(
+            text["text"], "he said \"hi\"\\\n",
+            "escaping corrupted the text"
+        );
     }
 
     #[test]

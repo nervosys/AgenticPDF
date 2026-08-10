@@ -29,11 +29,11 @@
 
 use crate::detect::{self, Format};
 use crate::doc::{self, SemanticDoc};
-use crate::typeset;
 use crate::engine::{self, DisplayList, PageImage, StructNode};
+use crate::typeset;
 use crate::{
-    FullExtraction, PdfDocument, PdfError, PdfMetadata, SemanticChunk, figures,
-    formula, layout, sanitize, tables,
+    FullExtraction, PdfDocument, PdfError, PdfMetadata, SemanticChunk, figures, formula, layout,
+    sanitize, tables,
 };
 
 /// A parsed document of any supported format.
@@ -555,7 +555,8 @@ mod tests {
 
     #[test]
     fn opens_html_and_reads_its_tables() {
-        let html = b"<h1>T</h1><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>";
+        let html =
+            b"<h1>T</h1><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>";
         let document = Document::open(html).unwrap();
         assert_eq!(document.format(), Format::Html);
         let tables = document.tables();
@@ -686,9 +687,21 @@ mod tests {
 
         for block in &page.blocks {
             let [left, bottom, right, top] = block.bbox;
-            assert!(right > left && top > bottom, "degenerate bbox: {:?}", block.bbox);
-            assert!(left >= 0.0 && right <= page.width, "off page: {:?}", block.bbox);
-            assert!(bottom >= 0.0 && top <= page.height, "off page: {:?}", block.bbox);
+            assert!(
+                right > left && top > bottom,
+                "degenerate bbox: {:?}",
+                block.bbox
+            );
+            assert!(
+                left >= 0.0 && right <= page.width,
+                "off page: {:?}",
+                block.bbox
+            );
+            assert!(
+                bottom >= 0.0 && top <= page.height,
+                "off page: {:?}",
+                block.bbox
+            );
         }
     }
 

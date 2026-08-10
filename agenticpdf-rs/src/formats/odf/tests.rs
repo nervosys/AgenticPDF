@@ -45,7 +45,12 @@ fn package(mime: &[u8], styles: &str, body: &str, extra: &[(&str, &[u8], bool)])
 }
 
 fn odt(styles: &str, body: &str) -> Vec<u8> {
-    package(MIME_ODT, styles, &format!("<office:text>{body}</office:text>"), &[])
+    package(
+        MIME_ODT,
+        styles,
+        &format!("<office:text>{body}</office:text>"),
+        &[],
+    )
 }
 
 // ============================================================================
@@ -98,7 +103,10 @@ fn odt_inherits_properties_through_the_style_parent_chain() {
           <style:text-properties fo:font-weight="bold"/></style:style>
         <style:style style:name="T2" style:family="text" style:parent-style-name="T1">
           <style:text-properties fo:font-style="italic"/></style:style>"#;
-    let zip = odt(styles, r#"<text:p><text:span text:style-name="T2">both</text:span></text:p>"#);
+    let zip = odt(
+        styles,
+        r#"<text:p><text:span text:style-name="T2">both</text:span></text:p>"#,
+    );
     let markdown = to_markdown(&parse(&zip, Format::Odt).unwrap());
     assert!(
         markdown.contains("_**both**_") || markdown.contains("**_both_**"),
@@ -111,7 +119,10 @@ fn odt_treats_a_heading_styled_paragraph_as_a_heading() {
     // ODF escapes spaces in style names, so "Heading 2" is `Heading_20_2`.
     let styles = r#"<style:style style:name="P1" style:family="paragraph"
                       style:parent-style-name="Heading_20_2"/>"#;
-    let zip = odt(styles, r#"<text:p text:style-name="P1">Styled as a heading</text:p>"#);
+    let zip = odt(
+        styles,
+        r#"<text:p text:style-name="P1">Styled as a heading</text:p>"#,
+    );
     assert_eq!(
         to_markdown(&parse(&zip, Format::Odt).unwrap()),
         "## Styled as a heading\n"
@@ -155,8 +166,7 @@ fn odt_reads_lists_and_tells_numbered_from_bulleted() {
 fn odt_merges_consecutive_single_item_lists() {
     // How Word's ODF export actually writes a bulleted run: one `<text:list>`
     // per item. Left unmerged they render as separate lists with gaps between.
-    let styles =
-        r#"<text:list-style style:name="L1"><text:list-level-style-bullet text:level="1"/></text:list-style>"#;
+    let styles = r#"<text:list-style style:name="L1"><text:list-level-style-bullet text:level="1"/></text:list-style>"#;
     let zip = odt(
         styles,
         r#"<text:list text:style-name="L1"><text:list-item><text:p>first</text:p></text:list-item></text:list>
@@ -233,10 +243,7 @@ fn odt_reads_tables_with_header_rows_and_spans() {
 fn odt_expands_explicit_space_runs_and_tabs() {
     // XML would collapse these, so ODF encodes them as elements. Dropping them
     // welds words together.
-    let zip = odt(
-        "",
-        r#"<text:p>a<text:s text:c="3"/>b<text:tab/>c</text:p>"#,
-    );
+    let zip = odt("", r#"<text:p>a<text:s text:c="3"/>b<text:tab/>c</text:p>"#);
     let document = parse(&zip, Format::Odt).unwrap();
     assert_eq!(document.text().trim(), "a   b\tc");
 }
@@ -268,7 +275,10 @@ fn odt_registers_embedded_pictures() {
     let document = parse(&zip, Format::Odt).unwrap();
     assert_eq!(document.assets.len(), 1);
     assert_eq!(document.assets[0].media_type, "image/png");
-    assert_eq!((document.assets[0].width, document.assets[0].height), (640, 480));
+    assert_eq!(
+        (document.assets[0].width, document.assets[0].height),
+        (640, 480)
+    );
 
     let markdown = to_markdown(&document);
     assert!(markdown.contains("![Chart](asset1)"), "{markdown}");
@@ -306,7 +316,10 @@ fn odt_skips_footnotes_and_annotations_in_body_text() {
     let text = document.text();
     assert!(text.contains("A claim"), "{text}");
     assert!(text.contains("stands."), "{text}");
-    assert!(!text.contains("the source"), "note leaked into body: {text}");
+    assert!(
+        !text.contains("the source"),
+        "note leaked into body: {text}"
+    );
 }
 
 #[test]
@@ -337,13 +350,17 @@ fn odt_reads_metadata_from_meta_xml() {
 // ============================================================================
 
 fn ods(body: &str) -> Vec<u8> {
-    package(MIME_ODS, "", &format!("<office:spreadsheet>{body}</office:spreadsheet>"), &[])
+    package(
+        MIME_ODS,
+        "",
+        &format!("<office:spreadsheet>{body}</office:spreadsheet>"),
+        &[],
+    )
 }
 
 #[test]
 fn ods_reads_sheets_as_sections() {
-    let zip = ods(
-        r#"<table:table table:name="Summary">
+    let zip = ods(r#"<table:table table:name="Summary">
              <table:table-row>
                <table:table-cell office:value-type="string"><text:p>Region</text:p></table:table-cell>
                <table:table-cell office:value-type="string"><text:p>Revenue</text:p></table:table-cell>
@@ -357,8 +374,7 @@ fn ods_reads_sheets_as_sections() {
              <table:table-row>
                <table:table-cell office:value-type="string"><text:p>note</text:p></table:table-cell>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     assert_eq!(document.sections.len(), 2);
     assert_eq!(document.sections[0].title.as_deref(), Some("Summary"));
@@ -374,15 +390,13 @@ fn ods_reads_sheets_as_sections() {
 
 #[test]
 fn ods_expands_repeated_cells_that_carry_a_value() {
-    let zip = ods(
-        r#"<table:table table:name="S">
+    let zip = ods(r#"<table:table table:name="S">
              <table:table-row>
                <table:table-cell office:value-type="string" table:number-columns-repeated="3">
                  <text:p>same</text:p></table:table-cell>
                <table:table-cell office:value-type="string"><text:p>end</text:p></table:table-cell>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     let Block::Table(table) = &document.sections[0].blocks[0] else {
         panic!("expected a table")
@@ -394,8 +408,7 @@ fn ods_expands_repeated_cells_that_carry_a_value() {
 fn ods_does_not_materialise_the_trailing_empty_repeat() {
     // LibreOffice pads every row to the sheet's full width and every sheet to
     // its full height. Expanding those literally produces a million cells.
-    let zip = ods(
-        r#"<table:table table:name="S">
+    let zip = ods(r#"<table:table table:name="S">
              <table:table-row>
                <table:table-cell office:value-type="string"><text:p>only</text:p></table:table-cell>
                <table:table-cell table:number-columns-repeated="16383"/>
@@ -403,8 +416,7 @@ fn ods_does_not_materialise_the_trailing_empty_repeat() {
              <table:table-row table:number-rows-repeated="1048575">
                <table:table-cell table:number-columns-repeated="16384"/>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     let Block::Table(table) = &document.sections[0].blocks[0] else {
         panic!("expected a table")
@@ -421,14 +433,12 @@ fn ods_bounds_the_product_of_the_repeat_counts() {
     // with a value repeated across the full width, on a row repeated down the
     // full height. The per-axis caps each pass, and their product is millions
     // of cells. A 1 KB package must not expand into tens of megabytes.
-    let zip = ods(
-        r#"<table:table table:name="S">
+    let zip = ods(r#"<table:table table:name="S">
              <table:table-row table:number-rows-repeated="1048576">
                <table:table-cell office:value-type="string"
                                  table:number-columns-repeated="16384"><text:p>x</text:p></table:table-cell>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     let Block::Table(table) = &document.sections[0].blocks[0] else {
         panic!("expected a table")
@@ -441,8 +451,7 @@ fn ods_bounds_the_product_of_the_repeat_counts() {
 fn ods_keeps_interior_gaps_but_drops_the_trailing_padding() {
     // A cell at C5 must stay at C5. The rows before it are part of the sheet's
     // shape; the million rows after it are padding.
-    let zip = ods(
-        r#"<table:table table:name="S">
+    let zip = ods(r#"<table:table table:name="S">
              <table:table-row table:number-rows-repeated="4">
                <table:table-cell table:number-columns-repeated="16384"/>
              </table:table-row>
@@ -453,8 +462,7 @@ fn ods_keeps_interior_gaps_but_drops_the_trailing_padding() {
              <table:table-row table:number-rows-repeated="1048571">
                <table:table-cell table:number-columns-repeated="16384"/>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     let Block::Table(table) = &document.sections[0].blocks[0] else {
         panic!("expected a table")
@@ -471,15 +479,13 @@ fn ods_keeps_interior_gaps_but_drops_the_trailing_padding() {
 
 #[test]
 fn ods_falls_back_to_the_typed_value_without_displayed_text() {
-    let zip = ods(
-        r#"<table:table table:name="S">
+    let zip = ods(r#"<table:table table:name="S">
              <table:table-row>
                <table:table-cell office:value-type="float" office:value="42"/>
                <table:table-cell office:value-type="boolean" office:boolean-value="true"/>
                <table:table-cell office:value-type="float" office:value="3.50"/>
              </table:table-row>
-           </table:table>"#,
-    );
+           </table:table>"#);
     let document = parse(&zip, Format::Ods).unwrap();
     let Block::Table(table) = &document.sections[0].blocks[0] else {
         panic!("expected a table")
@@ -504,13 +510,17 @@ fn ods_falls_back_to_the_typed_value_without_displayed_text() {
 // ============================================================================
 
 fn odp(body: &str) -> Vec<u8> {
-    package(MIME_ODP, "", &format!("<office:presentation>{body}</office:presentation>"), &[])
+    package(
+        MIME_ODP,
+        "",
+        &format!("<office:presentation>{body}</office:presentation>"),
+        &[],
+    )
 }
 
 #[test]
 fn odp_makes_a_section_per_slide_with_its_title() {
-    let zip = odp(
-        r#"<draw:page draw:name="page1">
+    let zip = odp(r#"<draw:page draw:name="page1">
              <draw:frame presentation:class="title"><draw:text-box>
                <text:p>First Slide</text:p></draw:text-box></draw:frame>
              <draw:frame presentation:class="outline"><draw:text-box>
@@ -521,8 +531,7 @@ fn odp_makes_a_section_per_slide_with_its_title() {
            <draw:page draw:name="page2">
              <draw:frame presentation:class="title"><draw:text-box>
                <text:p>Second Slide</text:p></draw:text-box></draw:frame>
-           </draw:page>"#,
-    );
+           </draw:page>"#);
     let document = parse(&zip, Format::Odp).unwrap();
     assert_eq!(document.sections.len(), 2);
     assert_eq!(document.sections[0].title.as_deref(), Some("First Slide"));
@@ -537,15 +546,13 @@ fn odp_makes_a_section_per_slide_with_its_title() {
 
 #[test]
 fn odp_keeps_speaker_notes_separate() {
-    let zip = odp(
-        r#"<draw:page draw:name="page1">
+    let zip = odp(r#"<draw:page draw:name="page1">
              <draw:frame presentation:class="title"><draw:text-box>
                <text:p>Slide</text:p></draw:text-box></draw:frame>
              <presentation:notes>
                <draw:frame><draw:text-box><text:p>Remember the numbers.</text:p></draw:text-box></draw:frame>
              </presentation:notes>
-           </draw:page>"#,
-    );
+           </draw:page>"#);
     let document = parse(&zip, Format::Odp).unwrap();
     assert!(!document.sections[0].notes.is_empty(), "notes not read");
 
@@ -556,19 +563,20 @@ fn odp_keeps_speaker_notes_separate() {
 
 #[test]
 fn odp_skips_page_number_and_footer_placeholders() {
-    let zip = odp(
-        r#"<draw:page draw:name="page1">
+    let zip = odp(r#"<draw:page draw:name="page1">
              <draw:frame presentation:class="title"><draw:text-box>
                <text:p>Content</text:p></draw:text-box></draw:frame>
              <draw:frame presentation:class="page-number"><draw:text-box>
                <text:p>7</text:p></draw:text-box></draw:frame>
              <draw:frame presentation:class="footer"><draw:text-box>
                <text:p>Confidential</text:p></draw:text-box></draw:frame>
-           </draw:page>"#,
-    );
+           </draw:page>"#);
     let markdown = to_markdown(&parse(&zip, Format::Odp).unwrap());
     assert!(markdown.contains("Content"), "{markdown}");
-    assert!(!markdown.contains("Confidential"), "footer leaked: {markdown}");
+    assert!(
+        !markdown.contains("Confidential"),
+        "footer leaked: {markdown}"
+    );
     assert!(!markdown.contains('7'), "page number leaked: {markdown}");
 }
 

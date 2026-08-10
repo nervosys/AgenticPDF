@@ -32,13 +32,16 @@ fn rich_document() -> SemanticDoc {
                 },
                 Block::Paragraph {
                     content: vec![
-                        Inline::Run(crate::doc::Run::styled("Revenue", TextStyle {
-                            bold: true,
-                            size: Some(12.5),
-                            color: Some([0.1, 0.2, 0.3]),
-                            font: Some("Helvetica".into()),
-                            ..TextStyle::default()
-                        })),
+                        Inline::Run(crate::doc::Run::styled(
+                            "Revenue",
+                            TextStyle {
+                                bold: true,
+                                size: Some(12.5),
+                                color: Some([0.1, 0.2, 0.3]),
+                                font: Some("Helvetica".into()),
+                                ..TextStyle::default()
+                            },
+                        )),
                         Inline::Break,
                         Inline::Link {
                             href: "https://example.invalid".into(),
@@ -142,7 +145,12 @@ fn opening_reads_only_the_header_and_table() {
     // decoding a single section.
     assert_eq!(document.section_count(), 1);
     assert!(document.chunks().len() >= 4);
-    assert!(document.chunks().iter().any(|c| c.kind == ChunkKind::Strings));
+    assert!(
+        document
+            .chunks()
+            .iter()
+            .any(|c| c.kind == ChunkKind::Strings)
+    );
     assert!(document.chunks().iter().any(|c| c.kind == ChunkKind::Meta));
 }
 
@@ -163,11 +171,13 @@ fn a_section_is_reachable_without_decoding_its_neighbours() {
     assert_eq!(adf.section_count(), 50);
     let section = adf.section(37).unwrap();
     assert_eq!(section.title.as_deref(), Some("Slide 37"));
-    assert!(crate::doc::to_markdown(&SemanticDoc {
-        sections: vec![section],
-        ..SemanticDoc::default()
-    })
-    .contains("content 37"));
+    assert!(
+        crate::doc::to_markdown(&SemanticDoc {
+            sections: vec![section],
+            ..SemanticDoc::default()
+        })
+        .contains("content 37")
+    );
 }
 
 #[test]
@@ -205,7 +215,10 @@ fn strings_are_interned_once_however_often_they_repeat() {
 #[test]
 fn a_non_adf_file_is_rejected_by_its_magic() {
     assert!(!AdfDoc::sniff(b"%PDF-1.7"));
-    assert_eq!(AdfDoc::open(b"%PDF-1.7 and then some").unwrap_err(), AdfError::NotAdf);
+    assert_eq!(
+        AdfDoc::open(b"%PDF-1.7 and then some").unwrap_err(),
+        AdfError::NotAdf
+    );
 }
 
 #[test]
@@ -222,10 +235,7 @@ fn a_corrupted_header_is_caught_by_its_checksum() {
     // Corrupt the chunk-table offset. Without the checksum this is read as a
     // valid-looking offset and the table is parsed out of arbitrary bytes.
     bytes[16] ^= 0xFF;
-    assert!(matches!(
-        AdfDoc::open(&bytes),
-        Err(AdfError::Malformed(_))
-    ));
+    assert!(matches!(AdfDoc::open(&bytes), Err(AdfError::Malformed(_))));
 }
 
 #[test]
@@ -338,7 +348,10 @@ fn authored_content_reports_no_source_and_no_geometry() {
         hash: 0,
     };
     assert!(row.is_authored());
-    assert!(!row.has_geometry(), "a zero box must not read as a location");
+    assert!(
+        !row.has_geometry(),
+        "a zero box must not read as a location"
+    );
 }
 
 // ============================================================================
@@ -363,7 +376,11 @@ fn a_document_is_searchable_the_moment_it_is_opened() {
     let hits = adf.search("revenue emea").unwrap();
     assert_eq!(hits.len(), 1);
     assert!(hits[0].1.contains("EMEA"));
-    assert_eq!(hits[0].0.blocks, [0, 0], "the hit names the block it came from");
+    assert_eq!(
+        hits[0].0.blocks,
+        [0, 0],
+        "the hit names the block it came from"
+    );
 
     assert!(adf.search("revenue hiring").unwrap().is_empty());
     assert_eq!(adf.search("plan").unwrap().len(), 1);
@@ -424,16 +441,24 @@ fn the_log_replays_into_the_document_it_describes() {
     let mut log = OpLog::new();
     log.register_actor(person());
 
-    let first = log.push(1, 100, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("one"),
-    });
-    log.push(1, 101, Change::Insert {
-        parent: OpId::ROOT,
-        left: Some(first),
-        block: Block::paragraph("two"),
-    });
+    let first = log.push(
+        1,
+        100,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("one"),
+        },
+    );
+    log.push(
+        1,
+        101,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: Some(first),
+            block: Block::paragraph("two"),
+        },
+    );
 
     let blocks = log.materialize(OpId::ROOT);
     assert_eq!(blocks.len(), 2);
@@ -447,25 +472,37 @@ fn concurrent_edits_converge_whatever_order_they_arrive_in() {
     let mut base = OpLog::new();
     base.register_actor(person());
     base.register_actor(agent());
-    let anchor = base.push(1, 100, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("shared"),
-    });
+    let anchor = base.push(
+        1,
+        100,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("shared"),
+        },
+    );
 
     let mut human = base.clone();
-    human.push(1, 200, Change::Insert {
-        parent: OpId::ROOT,
-        left: Some(anchor),
-        block: Block::paragraph("from the human"),
-    });
+    human.push(
+        1,
+        200,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: Some(anchor),
+            block: Block::paragraph("from the human"),
+        },
+    );
 
     let mut model = base.clone();
-    model.push(2, 201, Change::Insert {
-        parent: OpId::ROOT,
-        left: Some(anchor),
-        block: Block::paragraph("from the agent"),
-    });
+    model.push(
+        2,
+        201,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: Some(anchor),
+            block: Block::paragraph("from the agent"),
+        },
+    );
 
     // Merge each into the other, in opposite orders.
     let mut a = human.clone();
@@ -486,11 +523,15 @@ fn concurrent_edits_converge_whatever_order_they_arrive_in() {
 fn merging_is_idempotent_and_order_independent() {
     let mut log = OpLog::new();
     log.register_actor(person());
-    log.push(1, 1, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("x"),
-    });
+    log.push(
+        1,
+        1,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("x"),
+        },
+    );
 
     let snapshot = log.clone();
     let before = log.len();
@@ -505,17 +546,25 @@ fn a_replace_wins_by_lamport_clock_not_by_wall_clock() {
     log.register_actor(person());
     log.register_actor(agent());
 
-    let node = log.push(1, 5_000, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("original"),
-    });
+    let node = log.push(
+        1,
+        5_000,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("original"),
+        },
+    );
     // The later operation carries an *earlier* timestamp, as it would from a
     // machine with a slow clock. Causal order must still decide.
-    log.push(2, 1, Change::Replace {
-        target: node,
-        block: Block::paragraph("edited by the agent"),
-    });
+    log.push(
+        2,
+        1,
+        Change::Replace {
+            target: node,
+            block: Block::paragraph("edited by the agent"),
+        },
+    );
 
     let blocks = log.materialize(OpId::ROOT);
     assert_eq!(block_text(&blocks[0]), "edited by the agent");
@@ -529,11 +578,15 @@ fn a_replace_wins_by_lamport_clock_not_by_wall_clock() {
 fn deleting_removes_a_node_but_keeps_it_distinguishable_from_absent() {
     let mut log = OpLog::new();
     log.register_actor(person());
-    let node = log.push(1, 1, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("doomed"),
-    });
+    let node = log.push(
+        1,
+        1,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("doomed"),
+        },
+    );
     log.push(1, 2, Change::Delete { target: node });
 
     assert!(log.materialize(OpId::ROOT).is_empty());
@@ -545,18 +598,26 @@ fn the_log_round_trips_through_bytes() {
     let mut log = OpLog::new();
     log.register_actor(person());
     log.register_actor(agent());
-    let first = log.push(1, 100, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::Heading {
-            level: 2,
-            content: vec![Inline::Run(crate::doc::Run::plain("Heading"))],
+    let first = log.push(
+        1,
+        100,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::Heading {
+                level: 2,
+                content: vec![Inline::Run(crate::doc::Run::plain("Heading"))],
+            },
         },
-    });
-    log.push(2, 101, Change::Replace {
-        target: first,
-        block: Block::paragraph("replaced"),
-    });
+    );
+    log.push(
+        2,
+        101,
+        Change::Replace {
+            target: first,
+            block: Block::paragraph("replaced"),
+        },
+    );
     log.push(2, 102, Change::Delete { target: first });
 
     let restored = OpLog::parse(&log.encode()).unwrap();
@@ -573,11 +634,15 @@ fn the_log_round_trips_through_bytes() {
 fn a_log_stored_in_a_file_comes_back_out() {
     let mut log = OpLog::new();
     log.register_actor(agent());
-    log.push(2, 1, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("written by an agent"),
-    });
+    log.push(
+        2,
+        1,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("written by an agent"),
+        },
+    );
 
     let bytes = AdfWriter::new()
         .with_oplog(log)
@@ -597,11 +662,15 @@ fn appending_an_edit_does_not_rewrite_the_document() {
     let document = rich_document();
     let mut log = OpLog::new();
     log.register_actor(person());
-    log.push(1, 1, Change::Insert {
-        parent: OpId::ROOT,
-        left: None,
-        block: Block::paragraph("first"),
-    });
+    log.push(
+        1,
+        1,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: None,
+            block: Block::paragraph("first"),
+        },
+    );
 
     let mut bytes = AdfWriter::new()
         .with_oplog(log.clone())
@@ -609,11 +678,15 @@ fn appending_an_edit_does_not_rewrite_the_document() {
     let original_len = bytes.len();
     let mark = log.ops().next_back().map(|op| op.id);
 
-    log.push(1, 2, Change::Insert {
-        parent: OpId::ROOT,
-        left: mark,
-        block: Block::paragraph("appended later"),
-    });
+    log.push(
+        1,
+        2,
+        Change::Insert {
+            parent: OpId::ROOT,
+            left: mark,
+            block: Block::paragraph("appended later"),
+        },
+    );
     super::write::append_ops(&mut bytes, &log, mark);
 
     // The document is unchanged and the file only grew by the edit.

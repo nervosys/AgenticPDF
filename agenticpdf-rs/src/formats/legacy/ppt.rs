@@ -207,7 +207,10 @@ fn layout<'a>(stream: &'a [u8], current_user: &[u8]) -> Option<Layout<'a>> {
     }
 
     // The document container is itself addressed by persist id.
-    let document_at = persist.get(&(document_offset? as u32)).copied().or(document_offset)?;
+    let document_at = persist
+        .get(&(document_offset? as u32))
+        .copied()
+        .or(document_offset)?;
     let (document, _) = record_at(stream, document_at)?;
     if document.kind != RT_DOCUMENT {
         return None;
@@ -272,10 +275,7 @@ fn persist_ids(list: &[u8]) -> Vec<u32> {
 /// Read slides through the resolved persist directory.
 fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
     // Notes are listed alongside slides; pair them by position.
-    let notes_ids = layout
-        .notes_list
-        .map(persist_ids)
-        .unwrap_or_default();
+    let notes_ids = layout.notes_list.map(persist_ids).unwrap_or_default();
 
     let mut sections = Vec::new();
     for (index, id) in persist_ids(layout.slide_list).into_iter().enumerate() {
@@ -312,12 +312,7 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
     let mut budget = MAX_RECORDS;
 
-    fn walk(
-        data: &[u8],
-        depth: usize,
-        budget: &mut usize,
-        sections: &mut Vec<Section>,
-    ) {
+    fn walk(data: &[u8], depth: usize, budget: &mut usize, sections: &mut Vec<Section>) {
         if depth > MAX_DEPTH {
             return;
         }
@@ -431,7 +426,10 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
 /// wrote. Text type 2 is the notes body; the rest is page furniture.
 fn notes_blocks(notes: Vec<Shape>) -> Vec<Block> {
     let mut blocks = Vec::new();
-    for shape in notes.into_iter().filter(|shape| shape.kind == TEXT_TYPE_NOTES) {
+    for shape in notes
+        .into_iter()
+        .filter(|shape| shape.kind == TEXT_TYPE_NOTES)
+    {
         push_shape_blocks(&mut blocks, &shape.text, false);
     }
     blocks
@@ -562,7 +560,10 @@ mod tests {
         let notes = collect_shapes(&container(RT_NOTES, &body));
 
         let blocks = notes_blocks(notes);
-        assert!(matches!(blocks[0], Block::Paragraph { .. }), "notes bulleted");
+        assert!(
+            matches!(blocks[0], Block::Paragraph { .. }),
+            "notes bulleted"
+        );
     }
 
     #[test]
@@ -612,7 +613,11 @@ mod tests {
         };
         read_persist_fragment(&newest, &mut persist);
         read_persist_fragment(&oldest, &mut persist);
-        assert_eq!(persist.get(&7), Some(&999), "stale offset overwrote current");
+        assert_eq!(
+            persist.get(&7),
+            Some(&999),
+            "stale offset overwrote current"
+        );
     }
 
     #[test]
@@ -624,6 +629,10 @@ mod tests {
 
     #[test]
     fn cleaning_strips_control_characters_but_keeps_tabs() {
-        assert_eq!(clean("a\u{0}b\tc "), "a b\tc".replace(' ', ""), "controls dropped");
+        assert_eq!(
+            clean("a\u{0}b\tc "),
+            "a b\tc".replace(' ', ""),
+            "controls dropped"
+        );
     }
 }

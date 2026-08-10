@@ -539,15 +539,15 @@ mod tests {
                 true,
             ),
         ]);
-        assert!(matches!(
-            parse_epub(&epub),
-            Err(PdfError::MissingPart(_))
-        ));
+        assert!(matches!(parse_epub(&epub), Err(PdfError::MissingPart(_))));
     }
 
     #[test]
     fn resolves_relative_paths() {
-        assert_eq!(resolve("OEBPS/text/", "../images/a.png"), "OEBPS/images/a.png");
+        assert_eq!(
+            resolve("OEBPS/text/", "../images/a.png"),
+            "OEBPS/images/a.png"
+        );
         assert_eq!(resolve("OEBPS/", "text/ch1.xhtml"), "OEBPS/text/ch1.xhtml");
         assert_eq!(resolve("OEBPS/text/", "./b.xhtml"), "OEBPS/text/b.xhtml");
         assert_eq!(resolve("OEBPS/", "/absolute.xhtml"), "absolute.xhtml");

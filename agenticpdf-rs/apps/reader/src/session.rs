@@ -249,19 +249,26 @@ impl Session {
     pub fn insert_block(&mut self, author: u64, after: Option<OpId>, block: Block) -> OpId {
         self.ensure_actor(author);
         self.dirty = true;
-        self.log.push(author, crate::now_millis(), Change::Insert {
-            parent: OpId::ROOT,
-            left: after,
-            block,
-        })
+        self.log.push(
+            author,
+            crate::now_millis(),
+            Change::Insert {
+                parent: OpId::ROOT,
+                left: after,
+                block,
+            },
+        )
     }
 
     /// Replace a node's content.
     pub fn replace_block(&mut self, author: u64, target: OpId, block: Block) -> OpId {
         self.ensure_actor(author);
         self.dirty = true;
-        self.log
-            .push(author, crate::now_millis(), Change::Replace { target, block })
+        self.log.push(
+            author,
+            crate::now_millis(),
+            Change::Replace { target, block },
+        )
     }
 
     /// Delete a node.
@@ -370,7 +377,8 @@ fn top_level_blocks(semantic: &SemanticDoc) -> Vec<Block> {
 mod tests {
     use super::*;
 
-    const MARKDOWN: &str = "# Report\n\nRevenue grew across EMEA.\n\n- Hiring on plan\n- Churn down\n";
+    const MARKDOWN: &str =
+        "# Report\n\nRevenue grew across EMEA.\n\n- Hiring on plan\n- Churn down\n";
 
     fn session() -> Session {
         Session::open(MARKDOWN.as_bytes().to_vec()).unwrap()
@@ -413,7 +421,10 @@ mod tests {
         assert!(hits[0].text.contains("EMEA"));
 
         assert!(session.search("revenue churn").is_empty());
-        assert!(session.search("   ").is_empty(), "a blank query matches nothing");
+        assert!(
+            session.search("   ").is_empty(),
+            "a blank query matches nothing"
+        );
     }
 
     #[test]
@@ -460,7 +471,12 @@ mod tests {
 
         let reopened = Session::open(saved).unwrap();
         assert_eq!(reopened.format(), Format::Adf);
-        assert!(reopened.export("markdown").unwrap().contains("inserted first"));
+        assert!(
+            reopened
+                .export("markdown")
+                .unwrap()
+                .contains("inserted first")
+        );
         // The seeded history survives the save, so attribution is not lost.
         assert!(reopened.log().len() >= 4);
     }

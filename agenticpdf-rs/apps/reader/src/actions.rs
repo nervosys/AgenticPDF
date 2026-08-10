@@ -210,7 +210,10 @@ pub fn execute(session: &mut Option<Session>, action: &str, params: &Value) -> V
         }
 
         "export" => {
-            let to = params.get("to").and_then(Value::as_str).unwrap_or("markdown");
+            let to = params
+                .get("to")
+                .and_then(Value::as_str)
+                .unwrap_or("markdown");
             match session.export(to) {
                 Ok(text) => json!({ "format": to, "content": text }),
                 Err(why) => error(&why.to_string()),
@@ -313,10 +316,8 @@ mod tests {
 
     fn opened() -> Option<Session> {
         Some(
-            Session::open(
-                b"# Report\n\nRevenue grew across EMEA.\n\n- Hiring on plan\n".to_vec(),
-            )
-            .unwrap(),
+            Session::open(b"# Report\n\nRevenue grew across EMEA.\n\n- Hiring on plan\n".to_vec())
+                .unwrap(),
         )
     }
 
@@ -330,11 +331,13 @@ mod tests {
     #[test]
     fn a_document_can_be_opened_from_bytes_on_any_platform() {
         let mut none = None;
-        let bytes: Vec<serde_json::Value> =
-            b"# Title
+        let bytes: Vec<serde_json::Value> = b"# Title
 
 Body text.
-".iter().map(|b| json!(b)).collect();
+"
+        .iter()
+        .map(|b| json!(b))
+        .collect();
 
         let result = execute(&mut none, "open_bytes", &json!({ "bytes": bytes }));
         assert_eq!(result["title"], "Title");

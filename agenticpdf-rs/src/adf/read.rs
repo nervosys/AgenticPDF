@@ -125,10 +125,7 @@ impl<'a> AdfDoc<'a> {
     pub fn chunk(&self, kind: ChunkKind, id: u32) -> Option<&[u8]> {
         let entry = self.find(kind, id)?;
         if entry.is_compressed() {
-            return self
-                .inflated
-                .get(&(kind.to_u16(), id))
-                .map(Vec::as_slice);
+            return self.inflated.get(&(kind.to_u16(), id)).map(Vec::as_slice);
         }
         self.bytes
             .get(entry.offset as usize..(entry.offset as usize + entry.len as usize))

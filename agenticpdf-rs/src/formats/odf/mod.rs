@@ -62,7 +62,13 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
         Format::Odt => {
             // `<office:text>` is in the *office* namespace, not the text one —
             // the prefix and the local name deliberately disagree here.
-            let blocks = read_body(&content, &mut package, &mut document, ns::ODF_OFFICE, "text");
+            let blocks = read_body(
+                &content,
+                &mut package,
+                &mut document,
+                ns::ODF_OFFICE,
+                "text",
+            );
             document.sections = vec![Section {
                 blocks,
                 ..Section::default()
@@ -422,7 +428,10 @@ fn read_blocks(
                     }
                 }
                 (ns::ODF_TEXT, "p") => {
-                    let style = element.attr_local("style-name").unwrap_or_default().to_string();
+                    let style = element
+                        .attr_local("style-name")
+                        .unwrap_or_default()
+                        .to_string();
                     let content = read_inlines(reader, &element, package, document);
                     if inline_text(&content).trim().is_empty() {
                         continue;
@@ -630,7 +639,15 @@ fn read_inlines(
         .map(|name| package.styles.text_style(name))
         .unwrap_or_default();
     let mut content = Vec::new();
-    read_inline_run(reader, &start.qname, &base, package, document, &mut content, 0);
+    read_inline_run(
+        reader,
+        &start.qname,
+        &base,
+        package,
+        document,
+        &mut content,
+        0,
+    );
     content
 }
 
@@ -674,10 +691,7 @@ fn read_inline_run(
                     );
                 }
                 (ns::ODF_TEXT, "a") => {
-                    let href = element
-                        .attr_local("href")
-                        .unwrap_or_default()
-                        .to_string();
+                    let href = element.attr_local("href").unwrap_or_default().to_string();
                     let mut inner = Vec::new();
                     read_inline_run(
                         reader,
@@ -860,10 +874,7 @@ fn read_slide(
             }
             Event::Start(element) if element.is(ns::ODF_DRAW, "frame") => {
                 // `presentation:class` says what role the frame plays.
-                let class = element
-                    .attr_local("class")
-                    .unwrap_or_default()
-                    .to_string();
+                let class = element.attr_local("class").unwrap_or_default().to_string();
                 let content = read_frame_blocks(reader, &element, package, document);
 
                 match class.as_str() {

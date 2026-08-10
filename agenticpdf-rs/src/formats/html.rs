@@ -114,9 +114,7 @@ fn tokenize(source: &str) -> Vec<Token> {
 
         let self_closing = body.trim_end().ends_with('/');
         let body = body.trim_end().trim_end_matches('/');
-        let name_end = body
-            .find(|c: char| c.is_whitespace())
-            .unwrap_or(body.len());
+        let name_end = body.find(|c: char| c.is_whitespace()).unwrap_or(body.len());
         let name = body[..name_end].trim().to_ascii_lowercase();
         if name.is_empty() {
             continue;
@@ -173,14 +171,11 @@ fn find_str(chars: &[char], from: usize, needle: &str) -> Option<usize> {
 fn find_str_ci(chars: &[char], from: usize, needle: &str) -> Option<usize> {
     let lower: Vec<char> = needle.to_ascii_lowercase().chars().collect();
     (from..chars.len()).find(|&at| {
-        lower
-            .iter()
-            .enumerate()
-            .all(|(offset, expected)| {
-                chars
-                    .get(at + offset)
-                    .is_some_and(|c| c.to_ascii_lowercase() == *expected)
-            })
+        lower.iter().enumerate().all(|(offset, expected)| {
+            chars
+                .get(at + offset)
+                .is_some_and(|c| c.to_ascii_lowercase() == *expected)
+        })
     })
 }
 
@@ -217,7 +212,10 @@ fn parse_attributes(input: &str) -> Vec<(String, String)> {
         while at < chars.len() && !chars[at].is_whitespace() && chars[at] != '=' {
             at += 1;
         }
-        let name: String = chars[name_start..at].iter().collect::<String>().to_ascii_lowercase();
+        let name: String = chars[name_start..at]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
         if name.is_empty() {
             at += 1;
             continue;
@@ -929,7 +927,8 @@ mod tests {
 
     #[test]
     fn reads_the_document_title() {
-        let doc = parse_html(b"<html><head><title>My Page</title></head><body><p>x</p></body></html>");
+        let doc =
+            parse_html(b"<html><head><title>My Page</title></head><body><p>x</p></body></html>");
         assert_eq!(doc.title.as_deref(), Some("My Page"));
     }
 
@@ -1065,7 +1064,10 @@ mod tests {
     fn tolerates_unquoted_and_valueless_attributes() {
         let doc = parse_html(b"<p><a href=https://example.com>x</a></p>");
         let markdown = to_markdown(&doc);
-        assert!(markdown.contains("[x](https://example.com)"), "got {markdown}");
+        assert!(
+            markdown.contains("[x](https://example.com)"),
+            "got {markdown}"
+        );
     }
 
     #[test]
@@ -1123,9 +1125,8 @@ mod tests {
 
     #[test]
     fn hidden_style_is_inherited_by_nested_elements() {
-        let doc = parse_html(
-            br#"<div style="display:none"><p>outer <strong>inner</strong></p></div>"#,
-        );
+        let doc =
+            parse_html(br#"<div style="display:none"><p>outer <strong>inner</strong></p></div>"#);
         assert_eq!(doc.hidden_text().len(), 2);
     }
 
