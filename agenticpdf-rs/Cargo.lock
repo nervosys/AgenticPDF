@@ -948,6 +948,7 @@ dependencies = [
 [[package]]
 name = "deweygui"
 version = "1.0.0"
+source = "git+https://github.com/nervosys/Dewey.git?branch=feat%2Fpainter-images-paths-and-agent-actions#92f119ef3be12d72aa3f29f3b5c71a4aae844597"
 dependencies = [
  "compact_str",
  "eframe",

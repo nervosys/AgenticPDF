@@ -27,7 +27,10 @@ required-features = []
 
 [dependencies]
 agenticpdf = { path = "../.." }
-dewey = { package = "deweygui", path = "../../../../../desktop/Dewey", default-features = false }
+# Points at the branch carrying `Painter::fill_path` / `draw_image` and
+# `Model::execute_action`. Switch to a released version once nervosys/Dewey#1
+# lands; a path dependency here breaks every build that is not this machine.
+dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", branch = "feat/painter-images-paths-and-agent-actions", default-features = false }
 serde_json = "1"
 
 # The desktop shell. Mobile and the browser supply their own surface and only
@@ -46,4 +49,4 @@ wasm-bindgen = "0.2"
 eframe = "0.31"
 # The egui backend is the desktop shell; the portable core needs only the
 # `Painter` trait, which is in Dewey's default-feature-free core.
-dewey = { package = "deweygui", path = "../../../../../desktop/Dewey", features = ["egui-backend"] }
+dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", branch = "feat/painter-images-paths-and-agent-actions", features = ["egui-backend"] }
