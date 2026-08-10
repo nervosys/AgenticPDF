@@ -7,8 +7,15 @@
 
 #![recursion_limit = "512"]
 
+pub mod adf;
+pub mod agent_ops;
+pub mod container;
+pub mod detect;
+pub mod doc;
+pub mod document;
 pub mod engine;
 pub mod figures;
+pub mod formats;
 pub mod formula;
 pub mod layout;
 #[cfg(feature = "cli")]
@@ -17,7 +24,10 @@ pub mod ocr;
 pub mod parser;
 pub mod sanitize;
 pub mod tables;
+pub mod testing;
 pub mod text_norm;
+pub mod typeset;
+pub mod xml;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -76,6 +86,10 @@ pub struct PdfMetadata {
     pub modification_date: Option<String>,
     pub page_count: usize,
     pub file_size: usize,
+    /// Source format id (`pdf`, `docx`, `html`, …). Defaulted so existing
+    /// PDF-only JSON still deserialises.
+    #[serde(default)]
+    pub format: String,
     pub pdf_version: String,
     pub encrypted: bool,
     pub has_forms: bool,
@@ -225,64 +239,13 @@ impl PdfDocument {
 
     /// Generate semantic chunks for RAG processing.
     pub fn generate_chunks(&self, max_chunk_size: usize, overlap: usize) -> Vec<SemanticChunk> {
-        let mut chunks = Vec::new();
-        let mut current_text = String::new();
-        let mut current_pages: Vec<usize> = Vec::new();
-        let mut chunk_id = 0usize;
-
-        for page in &self.pages {
-            for block in &page.text_content {
-                let word_count = current_text.split_whitespace().count();
-
-                if word_count + block.text.split_whitespace().count() > max_chunk_size
-                    && !current_text.is_empty()
-                {
-                    // Emit chunk
-                    let token_count = current_text.split_whitespace().count();
-                    chunks.push(SemanticChunk {
-                        id: format!("chunk_{}", chunk_id),
-                        content: current_text.clone(),
-                        page_numbers: current_pages.clone(),
-                        token_count,
-                        importance: Self::calculate_importance(token_count, &current_pages),
-                    });
-                    chunk_id += 1;
-
-                    // Keep overlap
-                    if overlap > 0 {
-                        let words: Vec<&str> = current_text.split_whitespace().collect();
-                        let keep = words.len().saturating_sub(overlap);
-                        current_text = words[keep..].join(" ");
-                    } else {
-                        current_text.clear();
-                    }
-                    current_pages.clear();
-                }
-
-                if !current_text.is_empty() {
-                    current_text.push(' ');
-                }
-                current_text.push_str(&block.text);
-
-                if !current_pages.contains(&block.page_number) {
-                    current_pages.push(block.page_number);
-                }
-            }
-        }
-
-        // Final chunk
-        if !current_text.is_empty() {
-            let token_count = current_text.split_whitespace().count();
-            chunks.push(SemanticChunk {
-                id: format!("chunk_{}", chunk_id),
-                content: current_text,
-                page_numbers: current_pages,
-                token_count,
-                importance: Self::calculate_importance(token_count, &[]),
-            });
-        }
-
-        chunks
+        let fragments: Vec<(usize, &str)> = self
+            .pages
+            .iter()
+            .flat_map(|page| page.text_content.iter())
+            .map(|block| (block.page_number, block.text.as_str()))
+            .collect();
+        chunk_fragments(&fragments, max_chunk_size, overlap)
     }
 
     /// Get document metadata.
@@ -346,21 +309,150 @@ impl PdfDocument {
         serde_json::to_string_pretty(&self.pages).map_err(|e| PdfError::ExportError(e.to_string()))
     }
 
-    fn calculate_importance(token_count: usize, pages: &[usize]) -> f64 {
-        let mut score: f64 = 0.5;
-        if pages.contains(&1) {
-            score += 0.15;
+}
+
+/// Group text fragments into overlapping chunks for RAG pipelines.
+///
+/// Each fragment is `(page number, text)`. Shared by the geometric path (one
+/// fragment per positioned text block) and the semantic path (one per block of
+/// authored content), so both formats chunk identically.
+pub(crate) fn chunk_fragments(
+    fragments: &[(usize, &str)],
+    max_chunk_size: usize,
+    overlap: usize,
+) -> Vec<SemanticChunk> {
+    let mut chunks = Vec::new();
+    let mut current_text = String::new();
+    let mut current_pages: Vec<usize> = Vec::new();
+    let mut chunk_id = 0usize;
+
+    for (page_number, text) in fragments {
+        let word_count = current_text.split_whitespace().count();
+
+        if word_count + text.split_whitespace().count() > max_chunk_size && !current_text.is_empty()
+        {
+            let token_count = current_text.split_whitespace().count();
+            chunks.push(SemanticChunk {
+                id: format!("chunk_{}", chunk_id),
+                content: current_text.clone(),
+                page_numbers: current_pages.clone(),
+                token_count,
+                importance: calculate_importance(token_count, &current_pages),
+            });
+            chunk_id += 1;
+
+            // Carry the tail of the previous chunk forward so a passage split
+            // across a boundary is still retrievable from either side.
+            if overlap > 0 {
+                let words: Vec<&str> = current_text.split_whitespace().collect();
+                let keep = words.len().saturating_sub(overlap);
+                current_text = words[keep..].join(" ");
+            } else {
+                current_text.clear();
+            }
+            current_pages.clear();
         }
-        if token_count > 200 {
-            score += 0.1;
+
+        if !current_text.is_empty() {
+            current_text.push(' ');
         }
-        score.min(1.0)
+        current_text.push_str(text);
+
+        if !current_pages.contains(page_number) {
+            current_pages.push(*page_number);
+        }
     }
+
+    if !current_text.is_empty() {
+        let token_count = current_text.split_whitespace().count();
+        chunks.push(SemanticChunk {
+            id: format!("chunk_{}", chunk_id),
+            content: current_text,
+            page_numbers: current_pages,
+            token_count,
+            importance: calculate_importance(token_count, &[]),
+        });
+    }
+
+    chunks
+}
+
+fn calculate_importance(token_count: usize, pages: &[usize]) -> f64 {
+    let mut score: f64 = 0.5;
+    if pages.contains(&1) {
+        score += 0.15;
+    }
+    if token_count > 200 {
+        score += 0.1;
+    }
+    score.min(1.0)
 }
 
 // ============================================================================
 // Ontology — Machine-readable self-description for agentic LLM discovery
 // ============================================================================
+
+/// Describe every format the engine can open, for agent capability discovery.
+///
+/// `paginated` says whether the format carries author-defined page geometry;
+/// `capabilities` lists what actually works on it today, so an agent can plan
+/// without probing. Generated from [`detect::Format`] rather than hand-written,
+/// so it cannot drift from what the code supports.
+pub fn describe_formats() -> serde_json::Value {
+    use detect::Format;
+
+    let entries: Vec<serde_json::Value> = Format::all()
+        .iter()
+        .map(|format| {
+            // A format the engine can name but not yet read offers nothing but
+            // an honest error, so it advertises no capabilities.
+            let mut capabilities: Vec<&str> = Vec::new();
+            if format.is_supported() {
+                capabilities.extend([
+                    "text",
+                    "markdown",
+                    "html",
+                    "structure",
+                    "table",
+                    "chunk",
+                    "scan",
+                    "meta",
+                    "convert",
+                    "search",
+                    "all",
+                    // Geometry: read from the file for PDF, computed by the
+                    // typesetter for everything else.
+                    "layout",
+                    "displaylist",
+                    "figures",
+                    "formula",
+                    "annotations",
+                ]);
+            }
+            // These read PDF structures that a typeset page has no equivalent
+            // of: an outline, AcroForm fields, embedded image XObjects, and the
+            // scanned-page heuristic that looks for them.
+            if *format == Format::Pdf {
+                capabilities.extend(["outline", "images", "forms", "scanned"]);
+            }
+            serde_json::json!({
+                "id": format.id(),
+                "name": format.label(),
+                "mediaType": format.media_type(),
+                "extensions": format.extensions(),
+                "supported": format.is_supported(),
+                "paginated": format.is_paginated(),
+                // Whether the source carries its own page geometry. When false,
+                // the coordinates in `layout` and `displaylist` are computed by
+                // the typesetter rather than read from the file.
+                "authoredGeometry": *format == Format::Pdf,
+                "capabilities": capabilities,
+            })
+        })
+        .collect();
+
+    serde_json::json!(entries)
+}
 
 /// Returns the full CLI ontology as a JSON string.
 /// This allows agentic LLMs (ChatGPT, Claude, Gemini, etc.) to programmatically
@@ -390,6 +482,56 @@ pub fn build_ontology() -> serde_json::Value {
             "version": "apdf --version"
         },
         "commands": [
+            {
+                "name": "convert",
+                "description": "Convert a document to another format. 'adf' writes the engine's own binary format — chunk-indexed, carrying a retrieval index and per-block provenance recorded during import — and is the only target that can later be searched by index or checked with `verify`. Reading is far wider than writing: there are no OOXML or ODF writers.",
+                "usage": "apdf convert <FILE> --to adf|markdown|html|text|json [--sanitize] [--output path]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the document" },
+                    { "name": "--to", "type": "enum", "values": ["adf", "markdown", "html", "text", "json"], "default": "markdown", "description": "Target format" },
+                    { "name": "--sanitize", "type": "boolean", "required": false, "description": "Drop hidden text (prompt-injection defense)" },
+                    { "name": "--output", "type": "string", "required": false, "description": "Write to a file. Required for 'adf', which is binary." }
+                ]
+            },
+            {
+                "name": "displaylist",
+                "description": "Emit one page's device-space display list (fills, strokes, text runs, images) as JSON, for GPU rendering. Available for every format: PDF geometry is read from the file, and everything else is laid out by the typesetter.",
+                "usage": "apdf displaylist <FILE> [--page N]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the document" },
+                    { "name": "--page", "type": "integer", "required": false, "default": 1, "description": "Page number (1-based)" }
+                ]
+            },
+            {
+                "name": "formats",
+                "description": "List every format the engine reads, with the capabilities each supports. Use this to discover what can be done with a file before opening it.",
+                "usage": "apdf formats [--format text|json]",
+                "parameters": [
+                    { "name": "--format", "type": "enum", "values": ["text", "json"], "default": "text", "description": "Output format" }
+                ]
+            },
+            {
+                "name": "search",
+                "description": "Find blocks matching every term in a query. An ADF document answers from the retrieval index stored inside the file; every other format is scanned. Each hit names its section and block, so a result can be cited and then checked with `verify`.",
+                "usage": "apdf search <FILE> <QUERY> [--json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the document" },
+                    { "name": "query", "type": "string", "required": true, "description": "Terms to find; every term must match" },
+                    { "name": "--json", "type": "boolean", "required": false, "description": "Emit {section, block, text} hits as JSON" }
+                ]
+            },
+            {
+                "name": "verify",
+                "description": "Check a quotation against a document's recorded provenance. Answers 'matched' (the text is exactly what was imported), 'drifted' (the block exists but its text changed since), or 'unrecorded' (no provenance stored). Exits non-zero unless matched, so it can gate a pipeline without parsing output. ADF only — import other formats with `convert --to adf` first.",
+                "usage": "apdf verify <FILE> <TEXT> [--section N] [--block N] [--json]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to an ADF document" },
+                    { "name": "text", "type": "string", "required": true, "description": "The text being attributed to the document" },
+                    { "name": "--section", "type": "integer", "required": false, "default": 0, "description": "Section index the text is claimed to come from" },
+                    { "name": "--block", "type": "integer", "required": false, "default": 0, "description": "Block index within that section" },
+                    { "name": "--json", "type": "boolean", "required": false, "description": "Emit the verdict as JSON" }
+                ]
+            },
             {
                 "name": "text",
                 "description": "Extract text content from a PDF with positioning, font metadata, and page structure.",
@@ -1081,6 +1223,8 @@ pub fn build_ontology() -> serde_json::Value {
             "wasm_compilation"
         ],
         "outputFormats": ["text", "json", "markdown"],
+        "supportedFormats": describe_formats(),
+        "formatDetection": "by content, not file extension; the extension is a hint only for the plain-text family",
         "supportedPdfVersions": ["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "2.0"],
         "limits": {
             "maxXRefEntries": 1000000,
@@ -1096,7 +1240,13 @@ pub fn build_ontology() -> serde_json::Value {
 // Error types
 // ============================================================================
 
-/// Errors that can occur during PDF processing.
+/// Errors that can occur during document processing.
+///
+/// The first group is PDF-specific and predates multi-format support; the
+/// second group applies to any format and mirrors the vocabulary that document
+/// converters converge on (unsupported / malformed / encrypted / missing part /
+/// resource limit), so callers can react to *why* a conversion failed rather
+/// than string-matching a message.
 #[derive(Debug)]
 pub enum PdfError {
     InvalidHeader,
@@ -1107,6 +1257,18 @@ pub enum PdfError {
     DecompressError(String),
     ExportError(String),
     IoError(std::io::Error),
+    /// The input is a recognised format the engine cannot process (or an
+    /// unrecognised format entirely).
+    Unsupported(String),
+    /// The input is the right format but structurally broken.
+    Malformed(String),
+    /// The document is encrypted or password-protected.
+    Encrypted,
+    /// A required part of a container document is absent (e.g. a `.docx` with
+    /// no `word/document.xml`).
+    MissingPart(String),
+    /// Processing would exceed a safety limit (size, entry count, nesting).
+    ResourceLimit(String),
 }
 
 impl std::fmt::Display for PdfError {
@@ -1120,6 +1282,11 @@ impl std::fmt::Display for PdfError {
             PdfError::DecompressError(msg) => write!(f, "Decompression error: {}", msg),
             PdfError::ExportError(msg) => write!(f, "Export error: {}", msg),
             PdfError::IoError(e) => write!(f, "I/O error: {}", e),
+            PdfError::Unsupported(msg) => write!(f, "Unsupported: {}", msg),
+            PdfError::Malformed(msg) => write!(f, "Malformed document: {}", msg),
+            PdfError::Encrypted => write!(f, "Document is encrypted"),
+            PdfError::MissingPart(name) => write!(f, "Missing required part: {}", name),
+            PdfError::ResourceLimit(msg) => write!(f, "Resource limit exceeded: {}", msg),
         }
     }
 }

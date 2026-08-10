@@ -1,0 +1,231 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit=cover so the page reaches under a phone's notch; the toolbar
+     pads itself back out with safe-area insets below. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>AgenticPDF Reader</title>
+<style>
+  :root { color-scheme: light dark; --bg: #1b1b1f; --fg: #e8e8ea; --panel: #26262b; --accent: #4a9eff; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  #toolbar { display: flex; gap: 6px; padding: 8px; padding-top: calc(8px + env(safe-area-inset-top));
+    background: var(--panel); align-items: center; flex-wrap: wrap; }
+  /* 44px is the smallest reliably tappable target on a phone. */
+  button, label.file { min-height: 44px; min-width: 44px; padding: 0 12px;
+    border: 0; border-radius: 8px; background: #35353c; color: var(--fg);
+    font-size: 15px; cursor: pointer; }
+  button:active { background: var(--accent); }
+  #query { flex: 1; min-width: 120px; min-height: 44px; padding: 0 10px;
+    border: 0; border-radius: 8px; background: #35353c; color: var(--fg); font-size: 16px; }
+  #position { opacity: .75; padding: 0 4px; font-variant-numeric: tabular-nums; }
+
+  #stage { flex: 1; position: relative; overflow: hidden; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  #results { position: absolute; inset: 0; overflow-y: auto; display: none;
+    background: var(--bg); padding: 8px; -webkit-overflow-scrolling: touch; }
+  #results.visible { display: block; }
+  .hit { padding: 12px; margin-bottom: 8px; border-radius: 8px; background: var(--panel); }
+  .hit small { opacity: .6; }
+
+  #status { padding: 8px; padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    background: var(--panel); font-size: 13px; opacity: .85;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <label class="file">Open<input id="file" type="file" hidden /></label>
+    <button id="prev" aria-label="Previous page">‹</button>
+    <span id="position">—</span>
+    <button id="next" aria-label="Next page">›</button>
+    <button id="zoomOut" aria-label="Zoom out">−</button>
+    <button id="zoomIn" aria-label="Zoom in">+</button>
+    <input id="query" placeholder="Search…" enterkeyhint="search" />
+    <button id="save">Save</button>
+  </div>
+  <div id="stage">
+    <canvas id="page"></canvas>
+    <div id="results"></div>
+  </div>
+  <div id="status">Loading…</div>
+</div>
+
+<script type="module">
+import init, { WebReader } from "./pkg/apdf_reader.js";
+
+const canvas   = document.getElementById("page");
+const ctx      = canvas.getContext("2d");
+const status   = document.getElementById("status");
+const results  = document.getElementById("results");
+const position = document.getElementById("position");
+
+let reader, zoom = 1;
+
+await init();
+reader = new WebReader();
+status.textContent = "Open a document to begin.";
+
+// --- rendering -------------------------------------------------------------
+
+// The canvas is sized in device pixels but laid out in CSS pixels, so the
+// backing store is scaled by devicePixelRatio. Without this a page is soft on
+// every phone made in the last decade.
+function resize() {
+  const ratio = window.devicePixelRatio || 1;
+  const { width, height } = canvas.getBoundingClientRect();
+  canvas.width  = Math.round(width  * ratio);
+  canvas.height = Math.round(height * ratio);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return { width, height };
+}
+
+function render() {
+  const { width, height } = resize();
+  ctx.clearRect(0, 0, width, height);
+  if (!reader.page_count()) return;
+
+  const ops = JSON.parse(reader.render_page(width, height, zoom));
+  for (const op of ops) {
+    switch (op.op) {
+      case "fill_rect":
+        ctx.fillStyle = op.color;
+        ctx.fillRect(op.x, op.y, op.w, op.h);
+        break;
+      case "stroke_rect":
+        ctx.strokeStyle = op.color; ctx.lineWidth = op.width;
+        ctx.strokeRect(op.x, op.y, op.w, op.h);
+        break;
+      case "fill_path":
+      case "stroke_path": {
+        if (op.points.length < 2) break;
+        ctx.beginPath();
+        ctx.moveTo(op.points[0][0], op.points[0][1]);
+        for (let i = 1; i < op.points.length; i++) ctx.lineTo(op.points[i][0], op.points[i][1]);
+        if (op.op === "fill_path") { ctx.closePath(); ctx.fillStyle = op.color; ctx.fill(); }
+        else { ctx.strokeStyle = op.color; ctx.lineWidth = op.width; ctx.stroke(); }
+        break;
+      }
+      case "line":
+        ctx.beginPath(); ctx.moveTo(op.x1, op.y1); ctx.lineTo(op.x2, op.y2);
+        ctx.strokeStyle = op.color; ctx.lineWidth = op.width; ctx.stroke();
+        break;
+      case "fill_circle":
+        ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2);
+        ctx.fillStyle = op.color; ctx.fill();
+        break;
+      case "stroke_circle":
+        ctx.beginPath(); ctx.arc(op.x, op.y, op.r, 0, Math.PI * 2);
+        ctx.strokeStyle = op.color; ctx.lineWidth = op.width; ctx.stroke();
+        break;
+      case "text":
+        // The recording anchors text at its top-left, matching the desktop
+        // painter, so the baseline must be set to match or lines drift up.
+        ctx.textBaseline = "top";
+        ctx.font = `${op.size}px system-ui, sans-serif`;
+        ctx.fillStyle = op.color;
+        ctx.fillText(op.text, op.x, op.y);
+        break;
+      case "image":
+        // Assets are not inlined in the recording; show the frame until the
+        // host resolves them, rather than leaving an invisible gap.
+        ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
+        ctx.strokeRect(op.x, op.y, op.w, op.h);
+        break;
+      case "push_clip":
+        ctx.save();
+        ctx.beginPath(); ctx.rect(op.x, op.y, op.w, op.h); ctx.clip();
+        break;
+      case "pop_clip":
+        ctx.restore();
+        break;
+      case "no_geometry":
+        status.textContent = "This format carries no page geometry.";
+        break;
+    }
+  }
+  position.textContent = `${reader.page()} / ${reader.page_count()}`;
+}
+
+// --- actions ---------------------------------------------------------------
+
+// One vocabulary: the browser calls the same action names the desktop app and
+// any agent use.
+const act = (action, params = {}) => JSON.parse(reader.execute(action, JSON.stringify(params)));
+
+document.getElementById("file").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  const info = JSON.parse(reader.open(new Uint8Array(await file.arrayBuffer())));
+  status.textContent = info.ok
+    ? `${info.title} — ${info.format}, ${info.pages} page(s)`
+    : `Could not open: ${info.error}`;
+  results.classList.remove("visible");
+  render();
+});
+
+const go = (delta) => { act("goto_page", { page: reader.page() + delta }); render(); };
+document.getElementById("prev").onclick = () => go(-1);
+document.getElementById("next").onclick = () => go(1);
+document.getElementById("zoomIn").onclick  = () => { zoom = Math.min(zoom * 1.25, 8); render(); };
+document.getElementById("zoomOut").onclick = () => { zoom = Math.max(zoom / 1.25, 0.1); render(); };
+
+document.getElementById("query").addEventListener("change", (event) => {
+  const query = event.target.value.trim();
+  if (!query) { results.classList.remove("visible"); return; }
+
+  const { hits = [] } = act("search", { query });
+  results.innerHTML = hits.length
+    ? hits.map((hit) => `<div class="hit">${escapeHtml(hit.text)}<br><small>page ${hit.page}</small></div>`).join("")
+    : `<div class="hit">No results for “${escapeHtml(query)}”.</div>`;
+  results.classList.add("visible");
+  status.textContent = `${hits.length} result(s)`;
+});
+
+document.getElementById("save").onclick = () => {
+  const bytes = reader.save();
+  if (!bytes.length) { status.textContent = "Nothing to save."; return; }
+  const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.nervosys.adf" }));
+  const link = Object.assign(document.createElement("a"), { href: url, download: "document.adf" });
+  link.click();
+  URL.revokeObjectURL(url);
+  status.textContent = `Saved ${bytes.length} bytes.`;
+};
+
+// --- touch -----------------------------------------------------------------
+
+// Horizontal swipe turns the page; the threshold keeps a scroll or a stray
+// tap from counting.
+let touchStart = null;
+canvas.addEventListener("touchstart", (e) => { touchStart = e.touches[0]; }, { passive: true });
+canvas.addEventListener("touchend", (e) => {
+  if (!touchStart) return;
+  const dx = e.changedTouches[0].clientX - touchStart.clientX;
+  const dy = e.changedTouches[0].clientY - touchStart.clientY;
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) go(dx < 0 ? 1 : -1);
+  touchStart = null;
+}, { passive: true });
+
+window.addEventListener("resize", render);
+window.addEventListener("beforeunload", (event) => {
+  if (reader.is_dirty()) event.preventDefault();
+});
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Expose the action surface so an agent driving the page has the same
+// vocabulary as one driving the desktop app.
+window.apdf = { act, render, capabilities: () => JSON.parse(reader.capabilities()) };
+</script>
+</body>
+</html>

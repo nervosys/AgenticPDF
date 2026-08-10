@@ -1,0 +1,49 @@
+[package]
+name = "apdf-reader"
+version = "1.0.0"
+edition = "2024"
+authors = ["NERVOSYS, LLC"]
+license = "AGPL-3.0-or-later"
+description = "Agentic-first document reader and editor"
+
+# wasm-opt is not reliably available on every machine and the build does not
+# depend on it; the engine crate makes the same call.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+name = "apdf_reader"
+path = "src/lib.rs"
+# rlib for the desktop binary, cdylib for the wasm build.
+# rlib for the desktop binary, cdylib for wasm and Android, staticlib for iOS
+# (Xcode links a .a into the app bundle).
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "apdf-reader"
+path = "src/main.rs"
+# The binary is the desktop shell; mobile and web build the library only.
+required-features = []
+
+[dependencies]
+agenticpdf = { path = "../.." }
+dewey = { package = "deweygui", path = "../../../../../desktop/Dewey", default-features = false }
+serde_json = "1"
+
+# The desktop shell. Mobile and the browser supply their own surface and only
+# need the portable core, so eframe is excluded there rather than failing to
+# link against an NDK that a desktop checkout has no reason to install.
+[target.'cfg(target_os = "android")'.dependencies]
+# JNI string and array marshalling. Hand-rolling it would mean reimplementing
+# the JVM's calling convention, which is not the kind of thing this project
+# hand-rolls on principle.
+jni = "0.21"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))'.dependencies]
+eframe = "0.31"
+# The egui backend is the desktop shell; the portable core needs only the
+# `Painter` trait, which is in Dewey's default-feature-free core.
+dewey = { package = "deweygui", path = "../../../../../desktop/Dewey", features = ["egui-backend"] }

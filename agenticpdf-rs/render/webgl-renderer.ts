@@ -40,7 +40,8 @@ export interface PageImage {
   y: number;
   w: number;
   h: number;
-  format: "jpeg" | "rgba";
+  /** `rgba` is raw pixels; anything else is an encoded image the browser decodes. */
+  format: "jpeg" | "png" | "gif" | "rgba";
   width: number;
   height: number;
   data: string; // base64
@@ -108,10 +109,13 @@ async function loadTextures(
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    if (im.format === "jpeg") {
+    if (im.format !== "rgba") {
+      // Anything that is not raw RGBA is an encoded image the browser can
+      // decode for us. PDFs only ever yield JPEG here, but a typeset .docx or
+      // .pptx carries whatever the author embedded — usually PNG.
       // `.slice(0)` yields a concrete ArrayBuffer (satisfies BlobPart strictly).
       const buf = b64ToBytes(im.data).buffer.slice(0) as ArrayBuffer;
-      const blob = new Blob([buf], { type: "image/jpeg" });
+      const blob = new Blob([buf], { type: `image/${im.format}` });
       const bitmap = await createImageBitmap(blob);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
     } else {

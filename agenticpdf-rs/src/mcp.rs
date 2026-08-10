@@ -6,7 +6,7 @@
 //! PDF capabilities as MCP tools so an agent (Claude Desktop, etc.) can call
 //! them directly. Run with `apdf mcp`.
 
-use crate::PdfDocument;
+use crate::document::Document;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
 
@@ -95,7 +95,7 @@ fn err(id: &Value, code: i64, message: &str) -> Value {
 /// A schema with a required `path` plus any extra properties.
 fn path_schema(extra: Value, required_extra: &[&str]) -> Value {
     let mut props = json!({
-        "path": { "type": "string", "description": "Path to the PDF file" }
+        "path": { "type": "string", "description": "Path to the document (PDF, HTML, Markdown, CSV or text; format is detected from content)" }
     });
     if let (Some(p), Some(e)) = (props.as_object_mut(), extra.as_object()) {
         for (k, v) in e {
@@ -107,18 +107,60 @@ fn path_schema(extra: Value, required_extra: &[&str]) -> Value {
     json!({ "type": "object", "properties": props, "required": required })
 }
 
-fn tool_defs() -> Vec<Value> {
+pub fn tool_defs() -> Vec<Value> {
     vec![
         json!({
+            "name": "formats",
+            "description": "List every document format this engine can read, with each one's capabilities. Takes no arguments. Call this first if unsure whether a file is supported.",
+            "inputSchema": { "type": "object", "properties": {}, "required": [] }
+        }),
+        json!({
             "name": "extract_text",
-            "description": "Extract plain text from a PDF.",
+            "description": "Extract plain text from any supported document (PDF, HTML, Markdown, CSV, plain text).",
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
             "name": "markdown",
-            "description": "Render the PDF as reading-order Markdown (headings, paragraphs, lists). Set sanitize=true to drop hidden/off-page text.",
+            "description": "Render any supported document as reading-order Markdown (headings, paragraphs, lists, tables). Set sanitize=true to drop hidden text. This is usually the best way to put a document into a context window.",
             "inputSchema": path_schema(json!({
                 "sanitize": { "type": "boolean", "description": "Drop hidden / off-page text (prompt-injection defense)" }
+            }), &[])
+        }),
+        json!({
+            "name": "search",
+            "description": "Find blocks matching every term in a query. An ADF document answers from the retrieval index stored inside the file; every other format is scanned. Returns each hit's section and block, so results can be cited and verified.",
+            "inputSchema": path_schema(json!({
+                "query": { "type": "string", "description": "Terms to find; every term must match" }
+            }), &["query"])
+        }),
+        json!({
+            "name": "verify",
+            "description": "Check a quotation against a document's recorded provenance. Returns matched (the text is exactly what was imported), drifted (the block exists but its text has changed since), or unrecorded (no provenance was stored). ADF only — import other formats with convert first.",
+            "inputSchema": path_schema(json!({
+                "text": { "type": "string", "description": "The text being attributed to the document" },
+                "section": { "type": "integer", "description": "Section index the text is claimed to come from" },
+                "block": { "type": "integer", "description": "Block index within that section" }
+            }), &["text"])
+        }),
+        json!({
+            "name": "convert",
+            "description": "Convert a document to another format. 'adf' writes the engine's own binary format — chunk-indexed, with a retrieval index and per-block provenance recorded during import — and is the only target that can later be searched by index or verified. Others are markdown, html and text.",
+            "inputSchema": path_schema(json!({
+                "to": { "type": "string", "description": "adf | markdown | html | text" },
+                "output": { "type": "string", "description": "Path to write to. Required for adf, which is binary." }
+            }), &["to"])
+        }),
+        json!({
+            "name": "html",
+            "description": "Render any supported document as an HTML fragment with semantic elements.",
+            "inputSchema": path_schema(json!({}), &[])
+        }),
+        json!({
+            "name": "extract_all",
+            "description": "Everything in one call: metadata, Markdown, tables, semantic chunks, and a prompt-injection scan, as JSON.",
+            "inputSchema": path_schema(json!({
+                "size": { "type": "integer", "description": "Max chunk size in words (default 500)" },
+                "overlap": { "type": "integer", "description": "Word overlap (default 50)" }
             }), &[])
         }),
         json!({
@@ -128,7 +170,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "tables",
-            "description": "Reconstruct tables (bordered, booktabs, borderless) as JSON with cells and bounding boxes.",
+            "description": "Extract tables as JSON. Authored tables (HTML, Office) are read directly with merged cells intact; PDF tables are reconstructed from ruling lines and text alignment.",
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
@@ -148,7 +190,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "structure",
-            "description": "Extract the tagged-PDF logical structure tree (author-provided headings/lists/tables), as JSON.",
+            "description": "Extract the logical structure tree (headings, lists, tables) as JSON. Read from authored markup where the format has it, or from a tagged PDF's StructTreeRoot.",
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
@@ -158,12 +200,12 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "scan_injection",
-            "description": "Scan for hidden / off-page text used in prompt-injection attacks. Returns a report; use before trusting untrusted PDFs.",
+            "description": "Scan for hidden text used in prompt-injection attacks — off-page or zero-size in PDF, display:none or white-on-white in HTML and Office. Run this before trusting any untrusted document.",
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
             "name": "metadata",
-            "description": "Document metadata (title, author, dates, page count, features) as JSON.",
+            "description": "Document metadata (format, title, author, dates, page count, features) as JSON.",
             "inputSchema": path_schema(json!({}), &[])
         }),
         json!({
@@ -193,96 +235,119 @@ fn tool_defs() -> Vec<Value> {
 }
 
 fn run_tool(name: &str, args: &Value) -> Result<String, String> {
+    // `formats` is the one tool that describes the engine rather than a file,
+    // so it is answered before the path argument is required.
+    if name == "formats" {
+        return to_json(&crate::describe_formats());
+    }
+
     let path = args
         .get("path")
         .and_then(|p| p.as_str())
         .ok_or_else(|| "missing required argument: path".to_string())?;
     let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path, e))?;
+    let document = Document::open_with_hint(&data, Some(path)).map_err(|e| e.to_string())?;
+
+    // Capabilities that need page geometry; the facade explains which formats
+    // have it rather than failing with a parse error.
+    // Capabilities that read PDF-specific structures rather than coordinates.
+    let pdf_only = || document.require_pdf(name).map_err(|e| e.to_string());
 
     match name {
-        "extract_text" => {
-            let doc = parse(&data)?;
-            Ok(doc.extract_text())
+        "extract_text" => Ok(document.extract_text()),
+
+        // The three below route through the same code the CLI calls, so an
+        // agent over MCP and a person at a shell cannot get different answers.
+        "search" => {
+            let query = args
+                .get("query")
+                .and_then(|q| q.as_str())
+                .ok_or_else(|| "missing required argument: query".to_string())?;
+            crate::agent_ops::search(&data, &document, query)
+                .map(|hits| hits.to_string())
+                .map_err(|e| e.to_string())
+        }
+        "verify" => {
+            let text = args
+                .get("text")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| "missing required argument: text".to_string())?;
+            let section = args.get("section").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let block = args.get("block").and_then(Value::as_u64).unwrap_or(0) as u32;
+            crate::agent_ops::verify(&data, text, section, block)
+                .map(|verdict| verdict.to_string())
+                .map_err(|e| e.to_string())
+        }
+        "convert" => {
+            let to = args
+                .get("to")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| "missing required argument: to".to_string())?;
+            let bytes = crate::agent_ops::convert(&document, path, to).map_err(|e| e.to_string())?;
+
+            match args.get("output").and_then(|o| o.as_str()) {
+                Some(out) => {
+                    std::fs::write(out, &bytes).map_err(|e| format!("cannot write {out}: {e}"))?;
+                    Ok(json!({ "path": out, "bytes": bytes.len() }).to_string())
+                }
+                // ADF is binary; returning it as lossy text would hand back a
+                // corrupted document that looks like it worked.
+                None if to.eq_ignore_ascii_case("adf") => {
+                    Err("converting to adf requires an 'output' path".to_string())
+                }
+                None => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            }
         }
         "markdown" => {
-            let doc = parse(&data)?;
-            let doc = if args
+            let sanitize = args
                 .get("sanitize")
                 .and_then(|s| s.as_bool())
-                .unwrap_or(false)
-            {
-                crate::sanitize::sanitized(&doc)
+                .unwrap_or(false);
+            Ok(if sanitize {
+                document.sanitized().to_markdown()
             } else {
-                doc
-            };
-            Ok(doc.to_markdown())
+                document.to_markdown()
+            })
         }
-        "layout" => {
-            let doc = parse(&data)?;
-            to_json(&doc.to_structured())
-        }
-        "tables" => {
-            let doc = parse(&data)?;
-            let graphics = crate::engine::extract_graphics(&data).map_err(|e| e.to_string())?;
-            to_json(&crate::tables::detect_tables(&graphics, &doc.pages))
-        }
-        "figures" => {
-            let doc = parse(&data)?;
-            let figs = crate::figures::extract_figures(&data, &doc).map_err(|e| e.to_string())?;
-            to_json(&figs)
-        }
-        "formula" => {
-            let doc = parse(&data)?;
-            let graphics = crate::engine::extract_graphics(&data).map_err(|e| e.to_string())?;
-            to_json(&crate::formula::extract_formulas(&doc, &graphics))
-        }
+        "html" => Ok(document.to_html()),
+        "layout" => to_json(&document.to_structured().map_err(|e| e.to_string())?),
+        "tables" => to_json(&document.tables()),
+        "figures" => to_json(&document.figures().map_err(|e| e.to_string())?),
+        "formula" => to_json(&document.formulas()),
         "scanned" => {
-            let doc = parse(&data)?;
-            let report = crate::ocr::detect_scanned(&data, &doc).map_err(|e| e.to_string())?;
+            let doc = pdf_only()?;
+            let report = crate::ocr::detect_scanned(&data, doc).map_err(|e| e.to_string())?;
             to_json(&report)
         }
-        "structure" => {
-            let tree = crate::engine::extract_structure(&data).map_err(|e| e.to_string())?;
-            to_json(&tree)
-        }
+        "structure" => to_json(&document.structure().map_err(|e| e.to_string())?),
         "forms" => {
+            pdf_only()?;
             let fields = crate::engine::extract_form_fields(&data).map_err(|e| e.to_string())?;
             to_json(&fields)
         }
-        "scan_injection" => {
-            let doc = parse(&data)?;
-            to_json(&crate::sanitize::scan(&doc))
-        }
-        "metadata" => {
-            let doc = parse(&data)?;
-            to_json(doc.get_metadata())
-        }
-        "outline" => {
-            let doc = parse(&data)?;
-            to_json(doc.get_outline())
-        }
-        "annotations" => {
-            let doc = parse(&data)?;
-            to_json(doc.get_annotations())
-        }
+        "scan_injection" => to_json(&document.scan()),
+        "metadata" => to_json(document.metadata()),
+        "outline" => to_json(document.geometric().get_outline()),
+        "annotations" => to_json(document.geometric().get_annotations()),
         "images" => {
-            let imgs = crate::engine::extract_images(&data).map_err(|e| e.to_string())?;
-            to_json(&imgs)
+            pdf_only()?;
+            let images = crate::engine::extract_images(&data).map_err(|e| e.to_string())?;
+            to_json(&images)
         }
         "chunk" => {
-            let doc = parse(&data)?;
             let size = args.get("size").and_then(|s| s.as_u64()).unwrap_or(500) as usize;
             let overlap = args.get("overlap").and_then(|s| s.as_u64()).unwrap_or(50) as usize;
             let size = size.clamp(50, 10_000);
             let overlap = overlap.clamp(0, size / 2);
-            to_json(&doc.generate_chunks(size, overlap))
+            to_json(&document.generate_chunks(size, overlap))
+        }
+        "extract_all" => {
+            let size = args.get("size").and_then(|s| s.as_u64()).unwrap_or(500) as usize;
+            let overlap = args.get("overlap").and_then(|s| s.as_u64()).unwrap_or(50) as usize;
+            to_json(&document.extract_all(size.clamp(50, 10_000), overlap))
         }
         other => Err(format!("unknown tool: {}", other)),
     }
-}
-
-fn parse(data: &[u8]) -> Result<PdfDocument, String> {
-    PdfDocument::from_bytes(data).map_err(|e| e.to_string())
 }
 
 fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String, String> {
