@@ -1072,6 +1072,7 @@ fn cmd_all(
 ///
 /// The implementation lives in `agent_ops` so that the CLI, the MCP server and
 /// the reader app cannot answer the same question differently.
+#[cfg(feature = "cli")]
 fn cmd_search(file: &str, query: &str, json: bool) -> Result<(), PdfError> {
     let data = fs::read(file)?;
     let document = load_document(file)?;
@@ -1099,6 +1100,7 @@ fn cmd_search(file: &str, query: &str, json: bool) -> Result<(), PdfError> {
 }
 
 /// Check a quotation against recorded provenance.
+#[cfg(feature = "cli")]
 fn cmd_verify(
     file: &str,
     text: &str,
@@ -1147,6 +1149,7 @@ fn cmd_verify(
     Ok(())
 }
 
+#[cfg(feature = "cli")]
 fn cmd_convert(file: &str, to: &str, sanitize: bool, output: Option<&str>) -> Result<(), PdfError> {
     let document = load_document(file)?;
     let document = if sanitize {
