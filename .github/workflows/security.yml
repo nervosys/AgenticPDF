@@ -58,7 +58,7 @@ jobs:
         category: "/language:typescript"
       
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
         scan-type: 'fs'
         scan-ref: '.'
@@ -111,12 +111,16 @@ jobs:
         fetch-depth: 0
         
     - name: Run TruffleHog OSS
-      uses: trufflesecurity/trufflehog@main
+      uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
       with:
         path: ./
-        base: ${{ github.event.repository.default_branch }}
-        head: HEAD
-        extra_args: --debug --only-verified
+        # Only diff-scan on pull requests. On a push to master or the nightly
+        # schedule, base and head resolve to the same commit and TruffleHog
+        # exits 1 with "BASE and HEAD commits are the same" -- which is what
+        # failed every run of this workflow. Empty base scans the whole repo.
+        base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+        head: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
+        extra_args: --only-verified
         
     - name: Run GitLeaks
       uses: gitleaks/gitleaks-action@v2

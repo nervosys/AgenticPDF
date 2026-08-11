@@ -22,6 +22,7 @@ pub mod layout;
 pub mod mcp;
 pub mod ocr;
 pub mod parser;
+pub mod sandbox;
 pub mod sanitize;
 pub mod tables;
 pub mod testing;

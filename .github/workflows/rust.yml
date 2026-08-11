@@ -11,6 +11,11 @@ on:
       - "agenticpdf-rs/**"
       - ".github/workflows/rust.yml"
 
+# Least privilege: build and test only read the tree. Without this block the
+# token takes the repository default, which can include write.
+permissions:
+  contents: read
+
 defaults:
   run:
     working-directory: agenticpdf-rs

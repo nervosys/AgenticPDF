@@ -235,6 +235,14 @@ pub fn tool_defs() -> Vec<Value> {
 }
 
 fn run_tool(name: &str, args: &Value) -> Result<String, String> {
+    run_tool_in(name, args, &crate::sandbox::Sandbox::from_env())
+}
+
+fn run_tool_in(
+    name: &str,
+    args: &Value,
+    sandbox: &crate::sandbox::Sandbox,
+) -> Result<String, String> {
     // `formats` is the one tool that describes the engine rather than a file,
     // so it is answered before the path argument is required.
     if name == "formats" {
@@ -245,7 +253,10 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
         .get("path")
         .and_then(|p| p.as_str())
         .ok_or_else(|| "missing required argument: path".to_string())?;
-    let data = std::fs::read(path).map_err(|e| format!("cannot read {}: {}", path, e))?;
+    // The model chose this path, and a document can argue for a particular
+    // one. Confine before touching the filesystem.
+    let resolved = sandbox.resolve_read(path)?;
+    let data = std::fs::read(&resolved).map_err(|e| format!("cannot read {}: {}", path, e))?;
     let document = Document::open_with_hint(&data, Some(path)).map_err(|e| e.to_string())?;
 
     // Capabilities that need page geometry; the facade explains which formats
@@ -288,7 +299,12 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
 
             match args.get("output").and_then(|o| o.as_str()) {
                 Some(out) => {
-                    std::fs::write(out, &bytes).map_err(|e| format!("cannot write {out}: {e}"))?;
+                    // Same confinement as the read side: an unconstrained
+                    // output path lets an agent overwrite anything the server
+                    // can write.
+                    let target = sandbox.resolve_write(out)?;
+                    std::fs::write(&target, &bytes)
+                        .map_err(|e| format!("cannot write {out}: {e}"))?;
                     Ok(json!({ "path": out, "bytes": bytes.len() }).to_string())
                 }
                 // ADF is binary; returning it as lossy text would hand back a
@@ -353,4 +369,109 @@ fn run_tool(name: &str, args: &Value) -> Result<String, String> {
 
 fn to_json<T: serde::Serialize + ?Sized>(v: &T) -> Result<String, String> {
     serde_json::to_string_pretty(v).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+    use crate::sandbox::Sandbox;
+    use std::fs;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            let base = std::env::temp_dir().join(format!("apdf-mcp-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base).expect("create temp dir");
+            TempDir(base.canonicalize().expect("canonicalize"))
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The finding this guards: `extract_text` on a non-document returned the
+    /// file's bytes verbatim, so an agent could read any file the server
+    /// could. Tests the dispatch, not just the helper -- a sandbox that is
+    /// correct but unwired protects nothing.
+    #[test]
+    fn extract_text_cannot_read_outside_the_root() {
+        let served = TempDir::new("served");
+        let elsewhere = TempDir::new("elsewhere");
+        let secret = elsewhere.path().join("secret.env");
+        fs::write(&secret, b"AWS_SECRET_ACCESS_KEY=not-a-real-key").unwrap();
+
+        let sandbox = Sandbox::with_root(served.path());
+        let args = json!({ "path": secret.to_str().unwrap() });
+        let err = run_tool_in("extract_text", &args, &sandbox)
+            .expect_err("reading outside the root must fail");
+
+        assert!(err.contains("outside the permitted roots"), "{err}");
+        // The point is the secret does not come back in the error either.
+        assert!(!err.contains("not-a-real-key"), "leaked contents: {err}");
+    }
+
+    #[test]
+    fn extract_text_still_works_inside_the_root() {
+        let served = TempDir::new("served-ok");
+        let doc = served.path().join("notes.txt");
+        fs::write(&doc, b"the quick brown fox").unwrap();
+
+        let sandbox = Sandbox::with_root(served.path());
+        let args = json!({ "path": doc.to_str().unwrap() });
+        let text = run_tool_in("extract_text", &args, &sandbox).expect("in-root read works");
+        assert!(text.contains("quick brown fox"), "{text}");
+    }
+
+    /// The other half of the finding: `convert --output` silently overwrote
+    /// any existing file.
+    #[test]
+    fn convert_cannot_overwrite_outside_the_root() {
+        let served = TempDir::new("conv-served");
+        let elsewhere = TempDir::new("conv-elsewhere");
+        let source = served.path().join("in.txt");
+        fs::write(&source, b"hello").unwrap();
+        let victim = elsewhere.path().join("victim.txt");
+        fs::write(&victim, b"ORIGINAL").unwrap();
+
+        let sandbox = Sandbox::with_root(served.path());
+        let args = json!({
+            "path": source.to_str().unwrap(),
+            "to": "markdown",
+            "output": victim.to_str().unwrap(),
+        });
+        let err = run_tool_in("convert", &args, &sandbox)
+            .expect_err("writing outside the root must fail");
+
+        assert!(err.contains("outside the permitted roots"), "{err}");
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"ORIGINAL",
+            "the refusal must leave the file untouched"
+        );
+    }
+
+    #[test]
+    fn convert_still_writes_inside_the_root() {
+        let served = TempDir::new("conv-ok");
+        let source = served.path().join("in.txt");
+        fs::write(&source, b"hello").unwrap();
+        let out = served.path().join("out.md");
+
+        let sandbox = Sandbox::with_root(served.path());
+        let args = json!({
+            "path": source.to_str().unwrap(),
+            "to": "markdown",
+            "output": out.to_str().unwrap(),
+        });
+        run_tool_in("convert", &args, &sandbox).expect("in-root write works");
+        assert!(out.exists(), "output file should have been written");
+    }
 }

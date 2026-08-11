@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ master, main, develop ]
 
+# Least privilege: these jobs only read the tree and upload coverage. Without
+# this block the token takes the repository default, which can include write.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
