@@ -83,6 +83,9 @@
       "url": "https://github.com/sponsors/nervosys"
     }
   ],
+  "dependencies": {
+    "tsx": "^4.20.5"
+  },
   "optionalDependencies": {
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-metrics-otlp-proto": "^0.57.0",
