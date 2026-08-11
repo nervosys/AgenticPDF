@@ -27,10 +27,12 @@ required-features = []
 
 [dependencies]
 agenticpdf = { path = "../.." }
-# Points at the branch carrying `Painter::fill_path` / `draw_image` and
-# `Model::execute_action`. Switch to a released version once nervosys/Dewey#1
-# lands; a path dependency here breaks every build that is not this machine.
-dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", branch = "feat/painter-images-paths-and-agent-actions", default-features = false }
+# Pinned to the master commit carrying `Painter::fill_path` / `draw_image` and
+# `Model::execute_action` (nervosys/Dewey#1). A rev rather than a branch: Dewey
+# publishes no release with these APIs, and a moving branch would silently
+# change what this builds against. A path dependency would break every build
+# that is not this machine.
+dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", rev = "a24b5c781d4f293ead586c9c401ee251e1045d1e", default-features = false }
 serde_json = "1"
 
 # The desktop shell. Mobile and the browser supply their own surface and only
@@ -49,4 +51,4 @@ wasm-bindgen = "0.2"
 eframe = "0.31"
 # The egui backend is the desktop shell; the portable core needs only the
 # `Painter` trait, which is in Dewey's default-feature-free core.
-dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", branch = "feat/painter-images-paths-and-agent-actions", features = ["egui-backend"] }
+dewey = { package = "deweygui", git = "https://github.com/nervosys/Dewey.git", rev = "a24b5c781d4f293ead586c9c401ee251e1045d1e", features = ["egui-backend"] }
