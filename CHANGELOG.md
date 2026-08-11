@@ -55,6 +55,23 @@ An agentic-first document reader and editor built on
 - `agenticpdf-rs` is now a Cargo workspace, with the library as its root
   package and the app as a member.
 
+### Fixed
+
+- **The `apdf` / `agenticpdf` CLI could not start when installed.** `cli.js`
+  launches `cli.ts` through `tsx`, but `tsx` was declared nowhere in
+  `package.json` — it worked only where an extraneous copy happened to be
+  present. It is now a real dependency. `cli.js` also resolves it through
+  Node's module resolution instead of a hardcoded
+  `<pkg>/node_modules/tsx/dist/cli.mjs`, which missed whenever npm hoisted the
+  dependency to the top level, i.e. in every real installation.
+- The CLI integration suites had failed on CI since 2026-06-04 with
+  `spawn tsx ENOENT` for the same reason: `npm ci` installs from the manifest,
+  so it pruned the undeclared tsx.
+- Two tests failed on Node 18, which the above had masked. `File` only became
+  a global in Node 20, so the test mock now takes it from `node:buffer`
+  (exported there since 18.13) when the global is absent. The library is
+  unaffected — it uses `File` only as a type.
+
 ### Upstream (Dewey)
 
 Three additions, all as default trait methods so existing backends are

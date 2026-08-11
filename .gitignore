@@ -97,6 +97,10 @@ _temp_*
 # Test output dumps
 test-output.txt
 test-ontology-output.txt
+# The CLI integration suites write scratch files here; cli.test.ts removes its
+# directory on teardown but cli-security.test.ts leaves its own behind.
+tests/integration/cli-test-output/
+tests/integration/cli-security-test-output/
 
 # Root-level build artifacts (real outputs are in dist/)
 agenticpdf.d.ts

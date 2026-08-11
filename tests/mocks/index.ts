@@ -3,7 +3,16 @@
  * Provides mock implementations for external dependencies
  */
 
+import { File as NodeFile } from 'node:buffer';
+
 import { EmbeddingProvider, StreamOptions, ProgressInfo } from '../../agenticpdf';
+
+// `File` only became a global in Node 20; package.json supports >=18, and the
+// CI matrix still covers 18.x. node:buffer has exported the same class since
+// 18.13, so prefer the global where it exists and fall back otherwise. Only
+// the tests construct a File -- the library takes `File | Blob` as a type and
+// never calls the constructor -- so this stays out of the shipped code.
+const FileCtor: typeof File = globalThis.File ?? (NodeFile as unknown as typeof File);
 
 /**
  * Mock embedding provider for testing AI features
@@ -813,7 +822,7 @@ export class TestUtils {
         const buffer = new ArrayBuffer(content.byteLength);
         const view = new Uint8Array(buffer);
         view.set(content);
-        return new File([buffer], name, { type });
+        return new FileCtor([buffer], name, { type });
     }
 
     static async streamToArray<T>(stream: ReadableStream<T>): Promise<T[]> {
