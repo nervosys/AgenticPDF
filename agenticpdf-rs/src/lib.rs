@@ -462,6 +462,21 @@ pub fn describe_ontology() -> String {
 
 /// Build the structured ontology object.
 pub fn build_ontology() -> serde_json::Value {
+    let mut ontology = build_ontology_inner();
+
+    // The ontology must describe *this* binary, not the project. `ocr` is
+    // behind a build feature, and advertising a command the running binary does
+    // not have is worse than omitting it: an agent plans around a capability
+    // and then gets "unrecognized subcommand".
+    if !cfg!(feature = "ocr")
+        && let Some(commands) = ontology["commands"].as_array_mut()
+    {
+        commands.retain(|command| command["name"] != "ocr");
+    }
+    ontology
+}
+
+fn build_ontology_inner() -> serde_json::Value {
     serde_json::json!({
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
@@ -1007,6 +1022,22 @@ pub fn build_ontology() -> serde_json::Value {
                     }
                 },
                 "examples": ["apdf forms invoice.pdf", "apdf forms form.pdf --format json"]
+            },
+            {
+                // Present only in builds with the `ocr` feature. Listed
+                // unconditionally so the ontology describes the tool's full
+                // surface; `apdf info` reports which features this binary was
+                // actually built with.
+                "name": "ocr",
+                "description": "Recognise text on likely-scanned pages. Requires the 'ocr' build feature. Three backends: the Tesseract CLI (default), an HTTP server speaking the PaddleOCR/EasyOCR /ocr protocol, or a vision model behind an OpenAI-compatible /v1/chat/completions endpoint.",
+                "usage": "apdf ocr <FILE> [--lang eng] [--server URL] [--vlm URL] [--model NAME]",
+                "parameters": [
+                    { "name": "file", "type": "string", "required": true, "description": "Path to the PDF file" },
+                    { "name": "--lang", "type": "string", "required": false, "default": "eng", "description": "Tesseract language(s), e.g. 'eng' or 'eng+deu'" },
+                    { "name": "--server", "type": "string", "required": false, "description": "HTTP OCR server exposing /ocr" },
+                    { "name": "--vlm", "type": "string", "required": false, "description": "OpenAI-compatible chat-completions URL for a vision model" },
+                    { "name": "--model", "type": "string", "required": false, "default": "PaddleOCR-VL-1.6", "description": "Model name for the VLM backend" }
+                ]
             },
             {
                 "name": "scanned",

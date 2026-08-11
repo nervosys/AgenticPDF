@@ -715,9 +715,9 @@ fn cmd_ocr(
     let doc = document.require_pdf("OCR")?;
     let data = document.data();
     let results = match (vlm, server) {
-        (Some(url), _) => agenticpdf::ocr::recognize_scanned_vlm(&data, &doc, url, model)?,
-        (None, Some(url)) => agenticpdf::ocr::recognize_scanned_http(&data, &doc, url)?,
-        (None, None) => agenticpdf::ocr::recognize_scanned(&data, &doc, lang)?,
+        (Some(url), _) => agenticpdf::ocr::recognize_scanned_vlm(data, doc, url, model)?,
+        (None, Some(url)) => agenticpdf::ocr::recognize_scanned_http(data, doc, url)?,
+        (None, None) => agenticpdf::ocr::recognize_scanned(data, doc, lang)?,
     };
     if results.is_empty() {
         eprintln!("No likely-scanned pages to OCR.");
