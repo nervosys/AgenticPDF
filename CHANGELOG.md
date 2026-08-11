@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### ADF — the Agentic Document Format (`agenticpdf-rs/src/adf/`)
+
+The engine's own binary format, and the only one it writes as well as reads.
+Designed for retrieval and agent editing rather than for a printer:
+
+- **Seek, don't scan.** A 64-byte header and a fixed-stride chunk table; a
+  section, page, asset or embedding is found by offset. Opening a large
+  document to answer a question about one page touches three chunks.
+- **The index travels with the document.** Retrieval chunks, an inverted term
+  index and optional embeddings live *in* the file, so a document is
+  searchable the moment it opens and the index cannot drift from its content.
+- **Provenance.** Every imported block keeps a content hash and its source
+  document, page and bounding box. A quotation is reported as matching,
+  drifted, or unrecorded — never guessed.
+- **Append-only CRDT edit log.** Concurrent human and agent edits merge by set
+  union (block granularity, RGA ordering, last-writer-wins by Lamport clock).
+  Every operation records its author, including whether it was a model.
+  Appending an edit to a large document writes the edit, not the document.
+
+Detection, `formats::parse` and the CLI all accept `.adf`; `apdf convert <file>
+--to adf --output out.adf` writes it.
+
+#### The reader app (`agenticpdf-rs/apps/reader/`)
+
+An agentic-first document reader and editor built on
+[Dewey](https://github.com/nervosys/Dewey), NERVOSYS's Rust GUI framework.
+
+- Reads all 17 formats; edits and round-trips ADF; exports Markdown, HTML, text.
+- **One command vocabulary.** The desktop UI, the browser, Android and any agent
+  all call the same 12 actions through one `Session`. A capability cannot exist
+  for one caller and not the others.
+- **Agent surface is an ontology**, not a chat box: Dewey's `OntologyRegistry`
+  plus `execute_action`, discoverable with `apdf-reader --capabilities`.
+- **Platforms.** Desktop (egui) and Android (JNI, three ABIs) run; mobile web
+  runs as a wasm bundle; iOS compiles but has not been built or run — that
+  needs macOS.
+- Page painting is shared: `paint_page` emits through Dewey's `Painter`, and
+  each platform either rasterises it directly or replays a recorded form of it.
+
+### Changed
+
+- `Format` gained an `Adf` variant; `apdf convert` gained an `adf` target and
+  now writes bytes rather than text.
+- `agenticpdf-rs` is now a Cargo workspace, with the library as its root
+  package and the app as a member.
+
+### Upstream (Dewey)
+
+Three additions, all as default trait methods so existing backends are
+unaffected: `Painter::fill_path` / `stroke_path` / `draw_image` (with an
+`ImageData` type), and `Model::execute_action`, which lets an agent *act* on an
+application rather than only inspect it.
+
+
+
 ## [1.0.0] - 2026-04-01
 
 ### Added

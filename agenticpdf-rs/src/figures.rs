@@ -36,9 +36,22 @@ struct Caption {
     used: bool,
 }
 
-/// Detect figures across the document and link captions.
+/// Detect figures in a PDF and link them to their captions.
+///
+/// Convenience wrapper that recovers image placements from the raw bytes; see
+/// [`extract_figures_from`] for the format-neutral form.
 pub fn extract_figures(data: &[u8], doc: &PdfDocument) -> Result<Vec<Figure>, PdfError> {
     let images = engine::extract_placed_images(data)?;
+    Ok(extract_figures_from(&images, doc))
+}
+
+/// Detect figures from already-recovered image placements and link captions.
+///
+/// Only the placements are PDF-derived; caption matching is pure geometry over
+/// [`TextBlock`]s, so any format that can say where its images and text sit —
+/// including a typeset `.docx` — gets figure detection through this entry
+/// point.
+pub fn extract_figures_from(images: &[PlacedImage], doc: &PdfDocument) -> Vec<Figure> {
     let mut figures = Vec::new();
     let mut counter = 0usize;
 
@@ -88,7 +101,7 @@ pub fn extract_figures(data: &[u8], doc: &PdfDocument) -> Result<Vec<Figure>, Pd
         }
     }
 
-    Ok(figures)
+    figures
 }
 
 /// Find the index of the caption nearest an image (x-overlap, small vertical

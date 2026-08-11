@@ -25,6 +25,10 @@ wasm-bindgen = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 miniz_oxide = "0.8"
+# Legacy Office (.doc/.xls/.ppt) live in OLE2 compound files and predate
+# Unicode, so they need a container reader and the Windows code pages.
+cfb = "0.14"
+encoding_rs = "0.8"
 # Optional: only pulled in by the `ocr` feature, for decoding embedded scanned
 # images (JPEG/PNG) into pixels for an OCR backend. Keeps the default lean.
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
@@ -56,3 +60,6 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+[workspace]
+members = ["apps/reader"]

@@ -8,9 +8,11 @@
     import init, { displayList, pageImages } from "/agenticpdf-rs/pkg/agenticpdf.js";
     import { renderPage } from "/agenticpdf-rs/render/dist/webgl-renderer.js";
 
-    window.runDemo = async (page = 1, scale = 1.5) => {
+    // `src` is any document the engine can open — the renderer sees only the
+    // display list, so a .docx or .md goes through exactly the path a PDF does.
+    window.runDemo = async (page = 1, scale = 1.5, src = "/demos/sample.pdf") => {
       await init();
-      const bytes = new Uint8Array(await (await fetch("/demos/sample.pdf")).arrayBuffer());
+      const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer());
       const gl = document.getElementById("gl");
       // Pre-create the context with preserveDrawingBuffer so readPixels works
       // after rendering (renderPage reuses this same context).
@@ -18,15 +20,30 @@
         stencil: true, antialias: true, preserveDrawingBuffer: true,
       });
       if (!ctx) throw new Error("WebGL2 not available");
-      const dl = await renderPage(gl, document.getElementById("text"), bytes, page, { displayList, pageImages }, scale);
+      const text = document.getElementById("text");
+      const dl = await renderPage(gl, text, bytes, page, { displayList, pageImages }, scale);
       const w = gl.width, h = gl.height;
+
+      // The renderer draws vectors and images into WebGL but glyphs with
+      // `fillText` on the 2D overlay, so `readPixels` alone is blind to text —
+      // a page of pure text reads as an empty canvas. Both surfaces have to be
+      // counted or the check silently passes on documents that drew nothing.
       const px = new Uint8Array(w * h * 4);
       ctx.readPixels(0, 0, w, h, ctx.RGBA, ctx.UNSIGNED_BYTE, px);
-      let nonwhite = 0;
+      let vector = 0;
       for (let i = 0; i < px.length; i += 4) {
-        if (px[i] < 250 || px[i + 1] < 250 || px[i + 2] < 250) nonwhite++;
+        if (px[i] < 250 || px[i + 1] < 250 || px[i + 2] < 250) vector++;
       }
-      return { ops: dl.ops.length, width: w, height: h, nonwhite };
+
+      // The overlay is transparent where nothing was drawn, so alpha is the
+      // signal here, not brightness.
+      let glyphs = 0;
+      const overlay = text.getContext("2d").getImageData(0, 0, text.width, text.height).data;
+      for (let i = 3; i < overlay.length; i += 4) {
+        if (overlay[i] > 8) glyphs++;
+      }
+
+      return { ops: dl.ops.length, width: w, height: h, vector, glyphs, nonwhite: vector + glyphs };
     };
     window.__ready = true;
   </script>

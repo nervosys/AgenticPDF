@@ -203,3 +203,15 @@ test-ontology-output.txt
 # Utility scripts (keep in repo for team use)
 # validate-workflows.cjs_temp_agenticpdf.js
 _temp_agenticpdf.js
+
+# Optional real-producer fixtures for agenticpdf-rs tests. Office stamps the
+# author's name into every file it writes, so these stay local.
+agenticpdf-rs/tests/fixtures/
+
+# Build artifacts from the reader app's wasm bundle.
+agenticpdf-rs/apps/reader/web/pkg/
+agenticpdf-rs/apps/reader/android/app/src/main/jniLibs/
+agenticpdf-rs/apps/reader/android/.gradle/
+agenticpdf-rs/apps/reader/android/build/
+agenticpdf-rs/apps/reader/android/app/build/
+agenticpdf-rs/apps/reader/ios/libs/

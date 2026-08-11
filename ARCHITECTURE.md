@@ -4,6 +4,37 @@
 
 This is a **complete, native TypeScript implementation** of a PDF processing pipeline, written entirely from scratch with zero dependencies. It follows a modular component architecture optimized for streaming, AI integration, and browser-based rendering.
 
+> **Scope of this document.** It describes the **TypeScript PDF core** only.
+> That core is no longer the whole project, and for most purposes no longer the
+> interesting part of it — see below.
+
+## The Rust engine, the format, and the app
+
+The project's centre of gravity is `agenticpdf-rs/`. It is a separate,
+self-contained implementation, not a binding to the TypeScript above.
+
+| Layer | Location | What it is |
+| --- | --- | --- |
+| **Engine** | `agenticpdf-rs/src/` | Reads **17 formats** — PDF, OOXML, OpenDocument, legacy binary Office, EPUB, RTF, HTML, Markdown, CSV, text — into one semantic model, plus a typesetter that gives non-PDF formats real page geometry. |
+| **ADF** | `agenticpdf-rs/src/adf/` | The engine's own binary format, and the only one it *writes*: chunk-indexed random access, a retrieval index stored inside the file, per-block provenance, and an append-only CRDT edit log. |
+| **App** | `agenticpdf-rs/apps/reader/` | An agentic-first reader and editor on [Dewey](https://github.com/nervosys/Dewey). Desktop, Android and mobile web run today; iOS compiles but is unbuilt (needs macOS). |
+
+Two properties are worth knowing before reading any of that code, because they
+explain most of its structure:
+
+- **One page-painting implementation.** `canvas::paint_page` emits through
+  Dewey's `Painter`. Desktop rasterises it directly; the browser, Android and
+  iOS replay a recorded JSON form of the same calls. The platforms cannot drift
+  apart in how a page looks.
+- **One command vocabulary.** The desktop UI, the web shell, the Android shell
+  and any driving agent all go through the same `Session` and the same 12
+  actions. A capability cannot exist for one caller and not the others — which
+  is what keeps the agent ontology an accurate description of the program.
+
+`agenticpdf-rs/README.md` covers the engine and format; `apps/reader/android/`
+and `apps/reader/ios/` have their own READMEs, including what is and is not
+verified on each platform.
+
 ## Architecture Components
 
 ### 1. **Stream** (`Stream` class)

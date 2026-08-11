@@ -1,9 +1,149 @@
 # AgenticPDF — Rust CLI & WASM
 
-A self-contained, **zero-runtime** PDF engine for agentic AI workloads: text,
-metadata, reading-order Markdown, structured layout with bounding boxes,
-semantic chunks, images, annotations, and outlines — as a single static binary
-or a WASM module. No JVM, no Python, no model server.
+A self-contained, **zero-runtime** document engine for agentic AI workloads:
+text, metadata, reading-order Markdown, structured layout with bounding boxes,
+semantic chunks, tables, images, annotations, and outlines — as a single static
+binary or a WASM module. No JVM, no Python, no model server.
+
+PDF is where it goes deepest, but it is not PDF-only: the same commands read
+Word, Excel, PowerPoint, EPUB, RTF, HTML, Markdown and CSV — including
+**rendering them**, since formats that carry no geometry of their own get it
+computed by the built-in typesetter.
+
+## Supported formats
+
+Format is identified from **content, not file extension** — a `.docx` renamed to
+`.pdf` is still read as a `.docx`. The extension is consulted only to break ties
+inside the plain-text family, where the bytes genuinely are ambiguous.
+
+| Format | Extensions | Status |
+| --- | --- | --- |
+| **Agentic Document Format** | `.adf` | ✅ **read *and written*** — chunk-indexed random access, embedded retrieval index, per-block provenance, CRDT edit log. [See below](#adf--the-agentic-document-format). |
+| PDF | `.pdf` | ✅ full — authored geometry, rendering, tables, figures, formulas, forms, OCR |
+| Word (OOXML) | `.docx` `.docm` | ✅ styles, headings, numbering, tables, hyperlinks, images, hidden text; typeset + rendered |
+| Excel (OOXML) | `.xlsx` `.xlsm` | ✅ sheets, shared strings, sparse cells, cell types, formula results; typeset + rendered |
+| PowerPoint (OOXML) | `.pptx` `.pptm` | ✅ slides in presentation order, titles, bullets, speaker notes, images; one page per slide |
+| EPUB | `.epub` | ✅ spine order, Dublin Core metadata, per-chapter sections, images |
+| Rich Text Format | `.rtf` | ✅ stylesheet headings, tables, lists, cp1252 + `\u`, hidden text |
+| HTML / XHTML | `.html` `.htm` `.xhtml` | ✅ structure, tables, links, images, hidden-text scan |
+| Markdown | `.md` `.markdown` | ✅ round-trips through the model |
+| Delimited text | `.csv` `.tsv` | ✅ RFC 4180 quoting, inferred delimiter |
+| Plain text | `.txt` | ✅ |
+| OpenDocument Text | `.odt` | ✅ named styles + parent chains, headings, lists, tables, hidden text |
+| OpenDocument Sheet | `.ods` | ✅ sheets, repeat-count expansion, typed and displayed values |
+| OpenDocument Slides | `.odp` | ✅ slides, title placeholders, notes, one page per slide |
+| Word 97-2003 | `.doc` | ✅ piece table, style chains, SPRM deltas, lists, tables, hidden text |
+| Excel 97-2003 | `.xls` | ✅ BIFF8 records, shared strings, RK values, formula results |
+| PowerPoint 97-2003 | `.ppt` | ✅ persist-resolved slide order, titles, bullets, notes |
+
+`apdf formats` prints this table with each format's capabilities;
+`apdf describe` includes the same data as JSON for agent discovery.
+
+**Every format the engine detects, it can also parse** — the compiler enforces
+that, since the format dispatch has no catch-all arm. Writing is deliberately
+narrower: ADF, Markdown, HTML, text and JSON. There are no OOXML or ODF writers,
+and the ontology says so rather than letting an agent attempt a save that cannot
+work.
+
+### Two models, one API
+
+A PDF carries *geometry* and no structure, so its structure is inferred from
+where the glyphs sit. HTML, Markdown and Office carry *structure* and no
+geometry, so their pages are computed by the typesetter. Every format ends up
+with both models, and `Document` uses whichever is authoritative per capability:
+
+- Where a format states its own structure, that is used — heading levels, list
+  numbering, merged table cells and hidden-text flags come from the source
+  rather than from font-size heuristics, which makes their Markdown strictly
+  better than a PDF's.
+- Where a format states its own geometry, that is used. Where it does not, the
+  typesetter computes it — so `layout` bounding boxes, `displaylist` and GPU
+  rendering work for a `.docx` exactly as they do for a PDF.
+
+Computed coordinates are the typesetter's own: a `.docx` has no single correct
+pagination, and Word would place the same text differently. They are, however,
+*internally consistent* — the same font metrics that choose the line breaks
+position the glyphs, so the box a citation reports is the box a renderer draws.
+
+A handful of capabilities remain PDF-only because they read PDF structures that
+a computed page has no equivalent of: `forms` (AcroForm fields), `outline`,
+`images` (embedded XObjects) and `scanned`. Those name the format rather than
+returning an empty result.
+
+## ADF — the Agentic Document Format
+
+Every format above was designed for a word processor, a printer or a browser.
+ADF is the one this engine writes, and it is designed for an agent. Four
+differences follow from that:
+
+- **Seek, don't scan.** A 64-byte header and a fixed-stride chunk table.
+  Sections, pages, assets and embeddings are found by offset, so answering a
+  question about page 400 of a large document touches three chunks rather than
+  reading the file. Chunk lookup, strings, assets, provenance rows and
+  embeddings are copy-free views into the bytes; block content is decoded on
+  access, per section, because the semantic model is a recursive Rust enum
+  rather than a flat record.
+- **The index travels with the document.** Retrieval chunks, an inverted term
+  index, and optionally their embeddings, live *inside* the file. A document is
+  searchable the moment it is opened — no embedding pass, no side database —
+  and the index cannot go stale relative to its content, because changing the
+  content rewrites it.
+- **Citations can be checked.** Each imported block keeps a content hash and
+  the source document, page and bounding box it came from. A quotation is
+  reported as **matching**, **drifted** or **unrecorded** — never guessed.
+- **Edits are an append-only log.** Concurrent human and agent edits merge by
+  set union, so the result does not depend on arrival order. Ordering is RGA;
+  content conflicts resolve last-writer-wins by **Lamport clock**, never the
+  wall clock. Granularity is the block: edits to different paragraphs always
+  merge, two edits to the same paragraph discard one. Every operation records
+  its author, including whether it was a model. Saving an edit appends the
+  edit, not the document.
+
+```bash
+# Import anything. Provenance is recorded per block as it is imported.
+apdf convert report.docx --to adf --output report.adf
+apdf markdown report.adf                       # read it back
+
+# Search. ADF answers from the index inside the file; every other format is
+# scanned — deliberately the same command, because an agent should not have to
+# know what it is holding before it can look something up.
+apdf search report.adf "revenue emea"
+apdf search report.adf "revenue emea" --json   # [{section, block, text}, …]
+
+# Check a quotation. Exits 0 on a match, 1 otherwise, so a script or an agent
+# can gate on it without parsing anything.
+apdf verify report.adf "Revenue grew by 12% across EMEA." --section 0 --block 1
+#   matched   — the text is exactly what was imported
+#   drifted   — the block exists, its text has changed since
+#   unrecorded — no provenance was stored for that block
+```
+
+## The reader app
+
+`apps/reader/` is an agentic-first document reader and editor built on
+[Dewey](https://github.com/nervosys/Dewey), NERVOSYS's Rust GUI framework, whose
+ontology makes a running program discoverable by agents.
+
+It reads all 17 formats, edits and round-trips ADF, and exports Markdown, HTML
+and text. **Desktop and Android run; mobile web runs as a wasm bundle; iOS
+compiles but has not been built or run — that needs macOS.**
+
+The two properties that shape it:
+
+- **One page-painting implementation.** `canvas::paint_page` emits through
+  Dewey's `Painter`. Desktop rasterises directly; the browser, Android and iOS
+  replay a recorded JSON form of the same calls, so no platform can drift in how
+  a page looks.
+- **One command vocabulary.** The desktop UI, the web shell, the Android shell
+  and any agent all go through the same `Session` and the same 12 actions. A
+  capability cannot exist for one caller and not the others — which is what
+  keeps the ontology an accurate description of the program rather than a
+  parallel document that rots.
+
+```bash
+cargo run --release -p apdf-reader -- report.pdf
+apdf-reader --capabilities        # the agent-facing ontology, no window opened
+```
 
 ## Why this over a JVM/Python pipeline
 
@@ -84,6 +224,21 @@ apdf ocr scanned.pdf --vlm http://localhost:8000/v1/chat/completions  # PaddleOC
 
 # Run as an MCP server for agent clients (Claude Desktop, etc.)
 apdf mcp
+
+# Any supported format, same commands
+apdf markdown report.docx
+apdf table budget.xlsx
+apdf layout deck.pptx
+apdf displaylist notes.md --page 1   # GPU display list for a typeset document
+
+# Convert to another representation
+apdf convert report.html --to markdown
+apdf convert report.html --to json --output report.json
+apdf convert untrusted.html --to markdown --sanitize
+
+# What can this build read?
+apdf formats
+apdf formats --format json
 
 # Plain or positioned text
 apdf text document.pdf
@@ -167,6 +322,39 @@ JSON-RPC 2.0), exposing tools `extract_text`, `markdown`, `layout`, `tables`,
 Each tool takes a `path` argument (plus options like `sanitize`, `size`,
 `overlap`); results come back as text/JSON content.
 
+## vs. anydoc
+
+[`anydoc`](https://github.com/firecrawl/anydoc) is a fast pure-Rust converter
+covering 14 formats. It is a *parser*: every input becomes GitHub-Flavored
+Markdown and stops there. AgenticPDF overlaps on that surface and keeps going —
+the same document also yields geometry, citable bounding boxes, GPU rendering,
+an injection scan and an MCP server.
+
+| | AgenticPDF | anydoc |
+| --- | --- | --- |
+| Format coverage | 16 formats: PDF, Office (OOXML + legacy binary), OpenDocument, EPUB, RTF, HTML, Markdown, CSV, text | 14 formats |
+| Content-based format detection | ✅ | ✅ |
+| → GitHub-Flavored Markdown | ✅ | ✅ |
+| → HTML, JSON, plain text | ✅ | ✗ (Markdown only) |
+| Bounding boxes for citations | ✅ | ✗ |
+| Page **rendering** (WebGL2 / GPU) | ✅ | ✗ |
+| Tables from ruling lines (untagged PDF) | ✅ | ✗ |
+| Formula → LaTeX, figure ↔ caption linking | ✅ | ✗ |
+| Prompt-injection / hidden-text scan | ✅ | ✗ |
+| Semantic chunking for RAG | ✅ | ✗ |
+| MCP server + JSON-LD agent ontology | ✅ | ✗ |
+| Runtime | none (static binary / WASM) | none (static binary / WASM) |
+
+Coverage is now comparable; where this goes deeper is everything an agent does
+*after* it has the text.
+
+The hidden-text scan is worth singling out, because it is the one capability
+that changes what an agent can safely be handed. Word's `<w:vanish/>`, RTF's
+`\v`, HTML's `display:none` and a PDF's off-page text all render invisible to a
+human reviewer while remaining perfectly readable to a model. `apdf scan`
+reports them and `--sanitize` strips them, across every format, through one
+command.
+
 ## vs. liteparse / LlamaParse
 
 [`liteparse`](https://github.com/run-llama/liteparse) is a fast local Rust PDF
@@ -219,8 +407,19 @@ rasterizes vector fills/strokes on the **GPU** (see Rendering, below).
 
 The engine emits a device-space **display list** of draw primitives — flattened
 fill/stroke subpaths (RGBA, even-odd/width), text runs (position/size/colour),
-and image placements — via `engine::extract_display_list` (CLI: `apdf
-displaylist <file> --page N`; WASM: `displayList(bytes, page)`).
+and image placements — for **any supported format** (CLI: `apdf displaylist
+<file> --page N`; WASM: `displayList(bytes, page)`).
+
+For a PDF the list comes from the file's own content streams. For a `.docx`,
+`.pptx`, `.xlsx`, `.epub`, `.rtf`, HTML or Markdown it comes from the
+typesetter (`typeset/`), which flows the document's authored structure into
+pages: greedy line breaking against standard-14 metrics, CJK per-character
+wrapping, alignment and justification, hanging list markers with real counters,
+tables with rulings that split across pages repeating their header, and images
+scaled to the content width.
+
+Because both paths emit the *same* `RenderOp`s, the renderer is unchanged
+either way — it never learns which kind of document it is drawing.
 
 `render/webgl-renderer.ts` rasterizes that list on the **GPU with WebGL2**:
 vector fills via the stencil even-odd technique (concave paths + holes, no CPU
@@ -231,9 +430,11 @@ clip paths** (a two-bit stencil: bit 0 = clip mask, bit 1 = fill even-odd, so
 arbitrary clip shapes and fills coexist; a scissor box pre-clips), and crisp
 text on a 2D overlay layer.
 
-Validated in a real browser: a headless Playwright (Firefox, WebGL2) harness
-(`render/test-render.mjs`) renders `demos/sample.pdf`, reads back GL pixels, and
-confirms vector content (page 1) and a decoded image texture (page 6) draw.
+Validated in a real browser: a headless Playwright harness
+(`render/test-render.mjs`, Firefox then Chromium/SwiftShader) reads back GL
+pixels and confirms three things draw — vector content from `demos/sample.pdf`
+(page 1), a decoded image texture (page 6), and a **reflowable Markdown
+document** that has pixels only because the typesetter gave it some.
 
 ```bash
 # Build the WASM engine and the renderer, then serve the demo:
@@ -251,7 +452,24 @@ browser code (validate in a WebGL2-capable browser).
 ```shell
 src/
 ├── lib.rs       # Public types (PdfDocument, PdfPage, TextBlock, …) + JSON-LD ontology
-├── engine.rs    # Object model, lexer, xref (table+stream), object streams,
+├── document.rs  # Document facade — detect, dispatch, cache; one API per format
+├── detect.rs    # Content-based format identification (magic bytes, container parts)
+├── doc.rs       # Format-neutral semantic model + GFM and HTML serialisers
+├── typeset/     # Semantic structure → page geometry (line breaking, pagination,
+│             #   tables, images) → PdfPage + PageGraphics + DisplayList
+├── formats/     # Per-format parsers → semantic model
+│   ├── text.rs  #   plain text, CSV/TSV (RFC 4180), Markdown
+│   ├── html.rs  #   HTML/XHTML tokenizer + tree builder, hidden-text detection
+│   ├── rtf.rs   #   RTF control words, destinations, cp1252/\u, stylesheet headings
+│   ├── epub.rs  #   EPUB container → OPF package → XHTML chapters
+│   ├── ooxml/   #   OPC relationships + docx / xlsx / pptx readers
+│   ├── odf/     #   ODF styles + odt / ods / odp readers
+│   └── legacy/  #   OLE2 binaries: doc (piece table, SPRM, STSH), xls (BIFF8), ppt
+├── container/   # Packaging layers the formats arrive in
+│   ├── zip.rs   #   read-only ZIP (OOXML, OpenDocument, EPUB)
+│   └── ole.rs   #   OLE2 compound file + code pages (legacy Office)
+├── xml.rs       # Namespace-aware pull XML parser (no entity expansion — no XXE)
+├── engine.rs    # PDF object model, lexer, xref (table+stream), object streams,
 │                # page tree, fonts/encoding, content-stream text extraction
 │                # plus tagged-PDF /StructTreeRoot logical structure extraction
 ├── layout.rs    # Reading order, XY-cut columns, block classification, Markdown
@@ -319,6 +537,27 @@ shipped unverified): a model-weighted OCR engine bundled with weights; JBIG2
 (arithmetic-coded symbol dictionaries); and CID→Unicode fallback tables for the
 character-collection CMaps (Adobe-Japan1, GB1, …) of CJK fonts that ship no
 ToUnicode.
+
+## Third-party code
+
+The Word 97-2003 (`.doc`) and PowerPoint 97-2003 (`.ppt`) readers, and the SPRM
+and style-sheet machinery they share, are derived from
+[anydoc](https://github.com/firecrawl/anydoc) — MIT licensed, Copyright (c) 2026
+Sideguide Technologies Inc. The full notice is in
+[LICENSE-MIT-anydoc.txt](LICENSE-MIT-anydoc.txt), and each derived file carries
+it in its header. The `.xls` reader is not derived from anydoc, which delegates
+that format to the `calamine` crate.
+
+## Dependencies
+
+Five, all pure Rust: `serde`, `serde_json`, `miniz_oxide` (deflate, for the ZIP
+container), `cfb` (OLE2 compound files) and `encoding_rs` (the legacy code
+pages). ZIP, XML, RTF and BIFF8 are read by this crate directly rather than
+through further dependencies.
+
+`encoding_rs` carries the code-page tables and is the largest contributor to the
+WASM blob. A build that will never see a legacy binary Office file can drop both
+it and `cfb`; open an issue if you want that behind a feature flag.
 
 ## License
 

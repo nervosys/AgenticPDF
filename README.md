@@ -509,23 +509,68 @@ apdf describe                      # JSON-LD ontology
 apdf generate -i paper.pdf -o paper.apdf  # aPDF format
 ```
 
-## Rust CLI
+## Rust CLI — multi-format document engine
 
-A native Rust CLI (`apdf`) is available in `agenticpdf-rs/` for fast PDF extraction without a Node.js runtime:
+A native Rust CLI (`apdf`) is available in `agenticpdf-rs/` for fast extraction
+without a Node.js runtime. It is not PDF-only: the same commands read Word,
+Excel, PowerPoint, EPUB, RTF, HTML, Markdown, CSV and plain text.
 
 ```bash
 # Build the Rust CLI
 cd agenticpdf-rs && cargo build --release
 
-# Extract text
+# The same commands work across formats
+apdf markdown report.docx
+apdf table budget.xlsx
+apdf markdown deck.pptx
+apdf scan untrusted.rtf
+apdf layout report.docx            # bounding boxes for citations
+apdf displaylist deck.pptx --page 1 # GPU display list, typeset from structure
 apdf text document.pdf
 
-# Get metadata
-apdf meta document.pdf
+# Convert anything to Markdown, HTML, JSON or text
+apdf convert report.html --to markdown
+apdf convert untrusted.html --to markdown --sanitize
 
-# Full JSON-LD ontology
-apdf describe
+# Discovery
+apdf formats            # what this build can read
+apdf describe           # full JSON-LD ontology
 ```
+
+Format is identified from **content, not file extension** — a `.docx` renamed
+to `.pdf` is still read as a `.docx`.
+
+| Format | Extensions | Status |
+| --- | --- | --- |
+| PDF | `.pdf` | ✅ full — authored geometry, rendering, tables, figures, formulas, forms, OCR |
+| Word (OOXML) | `.docx` `.docm` | ✅ styles, headings, numbering, tables, hyperlinks, images, hidden text |
+| Excel (OOXML) | `.xlsx` `.xlsm` | ✅ sheets, shared strings, sparse cells, formula results |
+| PowerPoint (OOXML) | `.pptx` `.pptm` | ✅ slides in order, titles, bullets, speaker notes |
+| EPUB | `.epub` | ✅ spine order, metadata, per-chapter sections, images |
+| Rich Text Format | `.rtf` | ✅ stylesheet headings, tables, lists, hidden text |
+| HTML / XHTML | `.html` `.htm` `.xhtml` | ✅ structure, tables, links, hidden-text scan |
+| Markdown | `.md` `.markdown` | ✅ |
+| Delimited text | `.csv` `.tsv` | ✅ RFC 4180 quoting |
+| Plain text | `.txt` | ✅ |
+| OpenDocument | `.odt` `.ods` `.odp` | ✅ named styles, sheets with repeat counts, slides with notes |
+| Legacy Office | `.doc` `.xls` `.ppt` | ✅ piece table + SPRM deltas, BIFF8 records, persist-resolved slides |
+
+**Every format the engine detects, it can also parse.**
+
+**Every supported format has page geometry**, so `layout` bounding boxes,
+`displaylist` and GPU rendering work across the board. A PDF's coordinates are
+read from the file; the reflowable formats get theirs from a built-in
+typesetter that flows their authored structure into pages — line breaking,
+pagination, tables with rulings, images. Both paths emit the same display list,
+so the WebGL2 renderer draws a `.docx` without knowing it isn't a PDF.
+
+A few capabilities stay PDF-only because they read PDF structures nothing else
+has: `forms`, `outline`, `images` and `scanned`.
+
+**Hidden-text scanning works across every format.** Word's `<w:vanish/>`, RTF's
+`\v`, HTML's `display:none` and a PDF's off-page text are all invisible to a
+human reviewer but fully readable by a model — a prompt-injection vector.
+`apdf scan` reports them and `--sanitize` strips them.
 
 See [agenticpdf-rs/README.md](agenticpdf-rs/README.md) for details.
 

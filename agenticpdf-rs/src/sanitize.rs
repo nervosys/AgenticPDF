@@ -18,6 +18,13 @@ pub enum Reason {
     OffPage,
     /// Rendered at a sub-perceptible font size.
     TinyText,
+    /// Marked invisible by the author while remaining machine-readable —
+    /// `display:none`, `visibility:hidden`, Word's `w:vanish`, white-on-white.
+    ///
+    /// This is the signal the geometric checks above cannot see: the text sits
+    /// on the page at a normal size and is simply not painted. It is reported
+    /// by the semantic formats, which state their own visibility.
+    Hidden,
 }
 
 /// A single suspicious fragment.
