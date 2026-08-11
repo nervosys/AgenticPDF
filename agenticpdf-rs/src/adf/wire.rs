@@ -183,6 +183,15 @@ impl<'a> Reader<'a> {
         Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// A 32-byte SHA-256 digest. Stored as bytes rather than as words, so
+    /// there is no endianness to get wrong.
+    pub fn digest(&mut self) -> Result<[u8; 32], AdfError> {
+        let bytes = self.take(32)?;
+        let mut array = [0u8; 32];
+        array.copy_from_slice(bytes);
+        Ok(array)
+    }
+
     pub fn f64(&mut self) -> Result<f64, AdfError> {
         Ok(f64::from_bits(self.u64()?))
     }
@@ -232,23 +241,11 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// FNV-1a, 64-bit.
-///
-/// Used for content addressing within a file — deduplicating identical assets
-/// and giving each node a stable identity across saves. It is not a security
-/// hash and nothing authenticates with it; it is chosen because it is a dozen
-/// lines with no dependency, which matters more here than collision margin.
-pub fn hash64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01B3;
-
-    let mut hash = OFFSET;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
+// FNV-1a used to live here, for content addressing and for the provenance
+// hash. It was removed rather than kept for the cheap cases: the comment said
+// "nothing authenticates with it", and then provenance did. Leaving a fast
+// non-cryptographic hash in a module about file integrity is an invitation to
+// make that mistake again. Everything now goes through `super::sha256`.
 
 #[cfg(test)]
 mod tests {

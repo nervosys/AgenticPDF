@@ -60,6 +60,7 @@ pub mod index;
 pub mod oplog;
 pub mod provenance;
 pub mod read;
+pub mod sha256;
 pub mod wire;
 pub mod write;
 
@@ -77,7 +78,7 @@ pub const MAGIC: [u8; 4] = [0x89, b'A', b'D', b'F'];
 
 /// Format version written by this build.
 pub const VERSION_MAJOR: u16 = 1;
-pub const VERSION_MINOR: u16 = 0;
+pub const VERSION_MINOR: u16 = 1;
 
 /// Size of the fixed header, in bytes.
 pub const HEADER_LEN: usize = 64;
@@ -236,7 +237,7 @@ impl Header {
         out.raw(&self.doc_id);
         // Checksum of everything above, so a header damaged in transit is
         // caught at open rather than misread as valid offsets.
-        let checksum = wire::hash64(&out.bytes[start..]) as u32;
+        let checksum = sha256::sha256_u64(&out.bytes[start..]) as u32;
         out.u32(checksum);
         out.u32(0); // reserved
         debug_assert_eq!(out.len() - start, HEADER_LEN);
@@ -268,7 +269,7 @@ impl Header {
             },
         };
 
-        let expected = wire::hash64(&head[..HEADER_LEN - 8]) as u32;
+        let expected = sha256::sha256_u64(&head[..HEADER_LEN - 8]) as u32;
         if reader.u32()? != expected {
             return Err(AdfError::Malformed("header checksum mismatch"));
         }

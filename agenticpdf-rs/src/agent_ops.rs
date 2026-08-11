@@ -139,7 +139,7 @@ pub fn write_adf(semantic: &doc::SemanticDoc, source: &str, format: Format) -> V
                 // No geometry: the semantic model does not carry it, and an
                 // invented bounding box is worse than an absent one.
                 bbox: [0.0; 4],
-                hash: crate::adf::wire::hash64(text.trim().as_bytes()),
+                hash: crate::adf::provenance::Provenance::hash_text(text.trim()),
             });
         }
     }

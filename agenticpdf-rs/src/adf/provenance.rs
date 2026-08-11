@@ -12,7 +12,13 @@
 //! is still accurate, one that has been edited since, and one that never
 //! existed.
 //!
-//! Rows are a fixed 48-byte stride so the table is an array: finding the
+//! The content hash is SHA-256. It was FNV-1a, which was wrong for the job:
+//! FNV is a hash-table function with no collision or preimage resistance, so
+//! "matches" could be forged by anyone able to choose the text. Detecting
+//! accidental drift only needed a checksum; withstanding a forged citation
+//! needs a cryptographic hash.
+//!
+//! Rows are a fixed 64-byte stride so the table is an array: finding the
 //! provenance of block *n* is an index, not a scan, and the table can be
 //! searched without decoding any content at all.
 
@@ -20,7 +26,7 @@ use super::AdfError;
 use super::wire::{Reader, Writer};
 
 /// Bytes per row. Fixed so the table is randomly addressable.
-pub const ROW_LEN: usize = 48;
+pub const ROW_LEN: usize = 64;
 
 /// Where one node's content came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,8 +43,10 @@ pub struct Provenance {
     /// Bounding box in the source, as `[left, bottom, right, top]` in points.
     /// All zero when the source carried no geometry — a Markdown file, say.
     pub bbox: [f32; 4],
-    /// Hash of the node's text at import.
-    pub hash: u64,
+    /// SHA-256 of the node's text at import. A full digest, not a truncation:
+    /// this is the field a citation is checked against, so it has to resist an
+    /// adversary choosing text to match it.
+    pub hash: [u8; 32],
 }
 
 impl Provenance {
@@ -67,23 +75,23 @@ impl Provenance {
         for value in self.bbox {
             out.f32(value);
         }
-        out.u64(self.hash);
-        // Pad to the fixed stride. Reserved for a span offset within the block,
-        // which is the obvious next refinement.
-        out.u64(0);
+        out.raw(&self.hash);
     }
 
     fn read(reader: &mut Reader<'_>) -> Result<Provenance, AdfError> {
-        let row = Provenance {
+        Ok(Provenance {
             section: reader.u32()?,
             block: reader.u32()?,
             source: reader.u32()?,
             page: reader.u32()?,
             bbox: [reader.f32()?, reader.f32()?, reader.f32()?, reader.f32()?],
-            hash: reader.u64()?,
-        };
-        reader.u64()?; // reserved
-        Ok(row)
+            hash: reader.digest()?,
+        })
+    }
+
+    /// The digest of a node's text, as recorded at import.
+    pub fn hash_text(text: &str) -> [u8; 32] {
+        super::sha256::sha256(text.as_bytes())
     }
 }
 
@@ -141,9 +149,7 @@ impl<'a> ProvenanceTable<'a> {
     pub fn verify(&self, section: u32, block: u32, text: &str) -> Verification {
         match self.find(section, block) {
             None => Verification::Unrecorded,
-            Some(row) if row.hash == super::wire::hash64(text.as_bytes()) => {
-                Verification::Matches(row)
-            }
+            Some(row) if row.hash == Provenance::hash_text(text) => Verification::Matches(row),
             Some(row) => Verification::Drifted(row),
         }
     }

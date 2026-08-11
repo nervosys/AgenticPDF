@@ -8,7 +8,6 @@ use crate::doc::{
 
 use super::oplog::{Actor, Change, OpId, OpLog};
 use super::provenance::{Provenance, Verification};
-use super::wire::hash64;
 use super::{AdfDoc, AdfError, AdfWriter, ChunkKind, Header};
 
 /// A document exercising every block and inline variant, so a round-trip test
@@ -307,7 +306,7 @@ fn provenance_distinguishes_a_match_from_drift_from_no_record() {
         source,
         page: 4,
         bbox: [72.0, 700.0, 540.0, 720.0],
-        hash: hash64(b"Revenue grew 12%"),
+        hash: Provenance::hash_text("Revenue grew 12%"),
     });
 
     let mut document = SemanticDoc::default();
@@ -345,7 +344,7 @@ fn authored_content_reports_no_source_and_no_geometry() {
         source: Provenance::AUTHORED,
         page: 0,
         bbox: [0.0; 4],
-        hash: 0,
+        hash: [0u8; 32],
     };
     assert!(row.is_authored());
     assert!(
@@ -719,4 +718,75 @@ fn block_text(block: &Block) -> String {
     let mut text = String::new();
     crate::doc::block_text_into(block, &mut text);
     text.trim().to_string()
+}
+
+/// Provenance must be a cryptographic commitment, not a checksum.
+///
+/// The point of the SHA-256 change: with FNV-1a an adversary who could choose
+/// the text could find a second string hashing to a recorded value and have a
+/// fabricated quotation reported as `Matches`. This asserts the properties
+/// that make that infeasible -- full 32-byte digest, and a digest that
+/// actually depends on the whole input.
+#[test]
+fn provenance_hash_is_a_full_sha256_commitment() {
+    let recorded = Provenance::hash_text("Revenue grew 12%");
+
+    // A full digest, not a truncation: 64-bit fields fall to a birthday
+    // search regardless of the strength of the function feeding them.
+    assert_eq!(recorded.len(), 32);
+    assert_eq!(
+        super::sha256::hex(&recorded),
+        super::sha256::hex(&super::sha256::sha256(b"Revenue grew 12%")),
+        "the recorded hash must be the plain SHA-256 of the text"
+    );
+
+    // A minimal edit -- one digit -- must not collide.
+    assert_ne!(recorded, Provenance::hash_text("Revenue grew 13%"));
+
+    // Trailing content cannot be appended without changing the digest, which
+    // is what stops a quotation being extended after the fact.
+    assert_ne!(
+        recorded,
+        Provenance::hash_text("Revenue grew 12% (restated)")
+    );
+}
+
+/// A forged citation must be reported as drift, not as a match.
+#[test]
+fn altered_text_never_verifies_as_a_match() {
+    let mut writer = AdfWriter::new();
+    let source = writer.intern_source("report.pdf");
+    writer.add_provenance(Provenance {
+        section: 0,
+        block: 0,
+        source,
+        page: 4,
+        bbox: [72.0, 700.0, 540.0, 720.0],
+        hash: Provenance::hash_text("Revenue grew 12%"),
+    });
+
+    let mut document = SemanticDoc::default();
+    document.sections.push(Section {
+        blocks: vec![Block::paragraph("Revenue grew 12%")],
+        ..Section::default()
+    });
+    let bytes = writer.write(&document, "pdf");
+    let doc = AdfDoc::open(&bytes).expect("open");
+    let table = doc.provenance();
+
+    assert!(
+        table.verify(0, 0, "Revenue grew 12%").is_match(),
+        "the true text must still verify"
+    );
+    for forged in [
+        "Revenue grew 92%",
+        "Revenue shrank 12%",
+        "Revenue grew 12%.",
+        "",
+    ] {
+        assert!(
+            !table.verify(0, 0, forged).is_match(),
+            "forged text {forged:?} must not verify as a match"
+        );
+    }
 }

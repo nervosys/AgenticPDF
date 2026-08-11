@@ -14,7 +14,7 @@ use super::codec::{self, StringTable};
 use super::index::{self, RetrievalChunk, TermIndexBuilder};
 use super::oplog::OpLog;
 use super::provenance::{self, Provenance};
-use super::wire::{self, Writer, hash64};
+use super::wire::{self, Writer};
 use super::{ChunkEntry, ChunkKind, Header, VERSION_MAJOR, VERSION_MINOR, chunk_flags};
 
 /// Builds an ADF file.
@@ -229,7 +229,7 @@ impl AdfWriter {
             out.pad_to_align();
             let offset = out.len() as u64;
             let raw_len = chunk.payload.len() as u32;
-            let hash = hash64(&chunk.payload);
+            let hash = super::sha256::sha256_u64(&chunk.payload);
 
             // Compression is per chunk and only kept when it wins. Asset bytes
             // are usually already-compressed JPEG or PNG, where deflate costs
@@ -279,9 +279,7 @@ impl AdfWriter {
         // content, so the same input twice is the same document rather than
         // two that merely look alike.
         if self.doc_id == [0u8; 16] {
-            let content = hash64(&out.bytes[super::HEADER_LEN..]);
-            self.doc_id[..8].copy_from_slice(&content.to_le_bytes());
-            self.doc_id[8..].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+            self.doc_id = super::sha256::sha256_16(&out.bytes[super::HEADER_LEN..]);
         }
 
         let header = Header {
