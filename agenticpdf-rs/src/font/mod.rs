@@ -12,6 +12,7 @@
 //! polygons rather than curves.
 
 pub mod cff;
+pub mod substitute;
 pub mod truetype;
 pub mod type1;
 

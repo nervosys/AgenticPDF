@@ -62,6 +62,20 @@ impl Transform {
     }
 }
 
+/// The letters a ligature stands for, for a face that lacks the ligature
+/// itself. Only the Latin f-ligatures, which are the ones documents actually
+/// use and the ones system faces commonly omit.
+fn decompose(code: u32) -> Vec<u32> {
+    match char::from_u32(code) {
+        Some('\u{FB00}') => vec!['f' as u32, 'f' as u32],
+        Some('\u{FB01}') => vec!['f' as u32, 'i' as u32],
+        Some('\u{FB02}') => vec!['f' as u32, 'l' as u32],
+        Some('\u{FB03}') => vec!['f' as u32, 'f' as u32, 'i' as u32],
+        Some('\u{FB04}') => vec!['f' as u32, 'f' as u32, 'l' as u32],
+        _ => vec![code],
+    }
+}
+
 /// Fill the document's own glyphs for one text run.
 ///
 /// Returns false when the run cannot be drawn this way -- no embedded font
@@ -97,6 +111,61 @@ fn draw_embedded_glyphs(
         return false;
     }
 
+    // A stand-in face was not drawn for this document's advances. Placing its
+    // glyphs at them scatters letters inside words -- Times set to Computer
+    // Modern's metrics reads as "Communi cat i on". So a stand-in is spaced by
+    // its own advances, and the whole run is then scaled to the width the
+    // document reserved, which keeps runs in their slots without disturbing
+    // the spacing within a word.
+    let substituted = fonts.is_substituted(font);
+
+    // A stand-in is addressed by the decoded character rather than the
+    // document's code. The two agree for ordinary text and part company
+    // exactly where it matters: a Computer Modern document puts its "fi"
+    // ligature at code 2, which Times has nothing at, so the ligature
+    // vanished and "intensified" rendered as "intensied". The engine has
+    // already decoded the character; use it.
+    let lookup: Vec<u32> = match substituted {
+        true => chars.iter().map(|glyph| *glyph as u32).collect(),
+        false => codes.to_vec(),
+    };
+
+    // A stand-in may not have every character. Times New Roman, for one, has
+    // no "fi" ligature, so a document that uses one lost it and "intensified"
+    // rendered as "intensied". Drawing the letters the ligature stands for is
+    // closer to the document than dropping them.
+    let expanded: Vec<Vec<u32>> = match substituted {
+        false => lookup.iter().map(|code| vec![*code]).collect(),
+        true => lookup
+            .iter()
+            .map(|code| match fonts.own_advance(font, *code).is_some() {
+                true => vec![*code],
+                false => decompose(*code),
+            })
+            .collect(),
+    };
+
+    let mut own: Vec<f64> = Vec::new();
+    let mut fit = 1.0f64;
+    if substituted {
+        own = expanded
+            .iter()
+            .map(|codes| {
+                codes
+                    .iter()
+                    .map(|code| fonts.own_advance(font, *code).unwrap_or(0.0) * size)
+                    .sum()
+            })
+            .collect();
+        let natural: f64 = own.iter().sum();
+        let target: f64 = advances.iter().sum();
+        if natural > 0.0 && target > 0.0 {
+            // Bounded: a run whose recorded width bears no relation to this
+            // face should be left legible rather than squeezed to nothing.
+            fit = (target / natural).clamp(0.5, 2.0);
+        }
+    }
+
     let (cos, sin) = (rot.cos(), rot.sin());
     let ink = [
         (style.color.r * 255.0).clamp(0.0, 255.0) as u8,
@@ -114,27 +183,39 @@ fn draw_embedded_glyphs(
             // The document's code, not the Unicode it decodes to. A subset
             // font remaps freely: drawing by Unicode picks a neighbouring
             // glyph, which is how "LLMs" came out as "hhMs".
-            if let Some(raster) = fonts.raster(font, codes[index], size, rot, ink) {
-                // The mask is placed by its own offset from the glyph origin,
-                // which is where the outline actually sits -- a letter with a
-                // descender starts above the baseline and drops below it.
-                let origin_x = x + pen * cos;
-                let origin_y = y + pen * sin;
-                let at = transform.point(origin_x, origin_y);
-                let rect = Rect::new(
-                    at.x + raster.left,
-                    at.y + raster.top,
-                    raster.width as f32,
-                    raster.height as f32,
-                );
-                painter.draw_image(
-                    rect,
-                    &ImageData::new(raster.width, raster.height, &raster.pixels),
-                );
-                drew = true;
+            let mut sub_pen = pen;
+            for code in &expanded[index] {
+                if let Some(raster) = fonts.raster(font, *code, size, rot, ink) {
+                    // The mask is placed by its own offset from the glyph origin,
+                    // which is where the outline actually sits -- a letter with a
+                    // descender starts above the baseline and drops below it.
+                    let origin_x = x + sub_pen * cos;
+                    let origin_y = y + sub_pen * sin;
+                    let at = transform.point(origin_x, origin_y);
+                    let rect = Rect::new(
+                        at.x + raster.left,
+                        at.y + raster.top,
+                        raster.width as f32,
+                        raster.height as f32,
+                    );
+                    painter.draw_image(
+                        rect,
+                        &ImageData::new(raster.width, raster.height, &raster.pixels),
+                    );
+                    drew = true;
+                }
+                // Within an expansion the pen moves by each component's own
+                // advance, so "fi" occupies the space f and i do.
+                sub_pen += match substituted {
+                    true => fonts.own_advance(font, *code).unwrap_or(0.0) * size * fit,
+                    false => 0.0,
+                };
             }
         }
-        pen += advances[index];
+        pen += match substituted {
+            true => own.get(index).copied().unwrap_or(0.0) * fit,
+            false => advances[index],
+        };
     }
     drew
 }
@@ -568,7 +649,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
 
         // The page is filled white first, and white also has r > 0.9 — so red
@@ -606,7 +687,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             std::slice::from_ref(&texture),
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
         // Green, not the white page: check red is gone rather than green present.
         let drawn = painter.get_pixel(50, 50);
@@ -628,7 +709,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
 
         // The frame is gray on a white page, so look for a pixel that is
@@ -660,7 +741,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
         let filled = painter.get_pixel(50, 50);
         assert!(filled.r > 0.9 && filled.g < 0.5, "the fill did not survive");
@@ -696,7 +777,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
 
         assert_eq!(
@@ -772,7 +853,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
         let json = painter.to_json();
         let drawn: Vec<&str> = json.matches(r#""op":"text""#).collect();
@@ -801,7 +882,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
         assert!(
             painter.to_json().contains(r#""size":12.00"#),
@@ -823,7 +904,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
-            &crate::glyphs::FontSet::default(),
+            &crate::glyphs::FontSet::without_substitution(b""),
         );
         let json = painter.to_json();
         assert_eq!(
@@ -856,6 +937,62 @@ mod tests {
         assert!(
             glyphs[0].1 > glyphs[1].1,
             "y must advance up the page: {json}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod substitution_render {
+    use super::*;
+
+    /// A document that embeds no fonts at all must still draw glyphs, by
+    /// standing in a system face. Without that it can only be laid out with
+    /// the UI font, which is the approximation this work exists to remove.
+    #[test]
+    fn a_document_with_no_embedded_fonts_still_draws_glyphs() {
+        let Ok(pdf) = std::fs::read("../../../website/public/shannon1948.pdf")
+            .or_else(|_| std::fs::read("../../website/public/shannon1948.pdf"))
+            .or_else(|_| std::fs::read("../website/public/shannon1948.pdf"))
+            .or_else(|_| std::fs::read("website/public/shannon1948.pdf"))
+        else {
+            eprintln!("skipping: shannon1948.pdf not present");
+            return;
+        };
+        let Ok(session) = crate::session::Session::open(pdf) else {
+            panic!("the document should open");
+        };
+        assert!(
+            session.fonts().is_empty(),
+            "this document embeds nothing; that is the point of the test"
+        );
+
+        let list = session.display_list().expect("page geometry");
+        let area = Rect::new(0.0, 0.0, 612.0, 792.0);
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, 1.0),
+            &[],
+            session.fonts(),
+        );
+        let json = painter.to_json();
+
+        // Glyphs are drawn as image masks; text laid out by the painter's own
+        // font would appear as `text` operations instead.
+        let glyphs = json.matches(r#""op":"image""#).count();
+        let laid_out = json.matches(r#""op":"text""#).count();
+        if glyphs == 0 {
+            eprintln!("skipping: no system face available to substitute");
+            return;
+        }
+        assert!(
+            glyphs > 200,
+            "a page of prose should be hundreds of glyphs, got {glyphs}"
+        );
+        assert_eq!(
+            laid_out, 0,
+            "nothing should fall back once a face is available"
         );
     }
 }

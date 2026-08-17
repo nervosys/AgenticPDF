@@ -16,75 +16,128 @@ use std::sync::{Arc, Mutex};
 
 use agenticpdf::font::{self, EmbeddedFont, Glyph};
 
-/// Outline cache: `(font index, character code)`.
-type OutlineCache = Mutex<HashMap<(usize, u32), Option<Arc<Glyph>>>>;
-/// Raster cache: `(font index, code, size in quarter-pixels, degrees, colour)`.
-type RasterCache = Mutex<HashMap<(usize, u32, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
+/// Outline cache, keyed by font name and character code.
+type OutlineCache = Mutex<HashMap<(String, u32), Option<Arc<Glyph>>>>;
+/// Raster cache: font name, code, size in quarter-pixels, degrees, colour.
+type RasterCache = Mutex<HashMap<(String, u32, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
+/// Stand-ins resolved by name. `None` is cached so a face the system lacks is
+/// looked for once rather than per glyph.
+type SubstituteCache = Mutex<HashMap<String, Option<Arc<EmbeddedFont>>>>;
 
-/// Every embedded font in one document, with its glyphs cached.
+/// The fonts one document draws with, and their glyphs, cached.
 ///
-/// Shared behind a lock rather than a cell because the mobile shells keep the
+/// Shared behind locks rather than cells because the mobile shells keep the
 /// session in a `static Mutex`, which requires everything in it to be `Send`.
 #[derive(Default)]
 pub struct FontSet {
-    fonts: Vec<EmbeddedFont>,
-    /// `/BaseFont` name to index in `fonts`.
-    by_name: HashMap<String, usize>,
-    /// `(font index, character code)` to outline. `None` is cached too: a code
-    /// with no glyph is a lookup that would otherwise be repeated every frame.
+    /// Fonts the document embeds, by `/BaseFont` name.
+    embedded: HashMap<String, Arc<EmbeddedFont>>,
+    /// Stand-ins for fonts it names but does not embed.
+    substitutes: SubstituteCache,
     cache: OutlineCache,
-    /// `(font index, code, size in 1/4 px, angle in degrees, colour)` to mask.
-    /// Rasterising is the expensive half, and a page reuses the same letters at
-    /// the same size constantly, so this is what keeps a redraw cheap.
+    /// Rasterising is the expensive half, and a page reuses the same letters
+    /// at the same size constantly, so this is what keeps a redraw cheap.
     rasters: RasterCache,
+    /// Whether a font the document does not embed may be stood in for from
+    /// the system. False in the browser, which has no filesystem to read, and
+    /// in tests that need the fallback path to be the one taken.
+    substitution: bool,
 }
 
 impl FontSet {
     /// Read every embedded font from a document.
-    ///
-    /// A file with none -- a Word document laid out by the typesetter, or a
-    /// PDF that references fonts without embedding them -- yields an empty set,
-    /// and the caller falls back to laying text out with its own font.
     pub fn load(data: &[u8]) -> FontSet {
-        let fonts = font::embedded_fonts(data);
-        let by_name = fonts
-            .iter()
-            .enumerate()
-            .map(|(index, font)| (font.base_font.clone(), index))
+        let embedded = font::embedded_fonts(data)
+            .into_iter()
+            .map(|font| (font.base_font.clone(), Arc::new(font)))
             .collect();
         FontSet {
-            fonts,
-            by_name,
-            cache: Mutex::new(HashMap::new()),
-            rasters: Mutex::new(HashMap::new()),
+            embedded,
+            substitution: true,
+            ..FontSet::default()
+        }
+    }
+
+    /// A set that will not stand in for a missing font.
+    ///
+    /// This is the browser's situation -- there is no filesystem to read a
+    /// system face from -- so it is a real configuration rather than a test
+    /// affordance, and the fit-to-width fallback exists to serve it.
+    pub fn without_substitution(data: &[u8]) -> FontSet {
+        FontSet {
+            substitution: false,
+            ..FontSet::load(data)
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.fonts.is_empty()
+        self.embedded.is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.fonts.len()
+        self.embedded.len()
+    }
+
+    /// The face to draw a named font with: the document's own where it
+    /// embedded one, otherwise whatever the system has that stands in.
+    ///
+    /// The standard fourteen are the case that matters. A document may name
+    /// Times without embedding it, because every reader is expected to have
+    /// it; Poppler, and so Okular, substitutes a system face there. The
+    /// document still supplies the advances, so only the letterforms differ.
+    fn face(&self, base_font: &str) -> Option<Arc<EmbeddedFont>> {
+        if let Some(font) = self.embedded.get(base_font) {
+            return Some(font.clone());
+        }
+        if !self.substitution {
+            return None;
+        }
+        if let Ok(cache) = self.substitutes.lock()
+            && let Some(hit) = cache.get(base_font)
+        {
+            return hit.clone();
+        }
+        let found = font::substitute::load(base_font).map(Arc::new);
+        if let Ok(mut cache) = self.substitutes.lock() {
+            cache.insert(base_font.to_string(), found.clone());
+        }
+        found
+    }
+
+    /// Whether the face used for a name is a stand-in rather than the
+    /// document's own.
+    ///
+    /// It matters for placement: an embedded face's glyphs were drawn for the
+    /// advances the document records, so each glyph belongs exactly where the
+    /// document puts it. A stand-in's were not, and placing its glyphs at
+    /// another font's advances scatters letters inside words.
+    pub fn is_substituted(&self, base_font: &str) -> bool {
+        !self.embedded.contains_key(base_font) && self.face(base_font).is_some()
+    }
+
+    /// The advance the face itself gives a code, in text-space ems.
+    pub fn own_advance(&self, base_font: &str, code: u32) -> Option<f64> {
+        let matrix = self.font_matrix(base_font)?;
+        let glyph = self.face(base_font)?.outline(code)?;
+        Some(glyph.advance as f64 * matrix[0])
     }
 
     /// The em-space scale for a font's outlines: its `/FontMatrix` reduces
     /// font units to text space, and is very nearly always 1/1000.
     pub fn font_matrix(&self, base_font: &str) -> Option<[f64; 6]> {
-        let index = *self.by_name.get(base_font)?;
-        Some(self.fonts[index].font_matrix())
+        Some(self.face(base_font)?.font_matrix())
     }
 
     /// The outline a character code selects in a named font.
     pub fn glyph(&self, base_font: &str, code: u32) -> Option<Arc<Glyph>> {
-        let index = *self.by_name.get(base_font)?;
-        let key = (index, code);
+        let key = (base_font.to_string(), code);
         if let Ok(cache) = self.cache.lock()
             && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
-        let outline = self.fonts[index]
+        let outline = self
+            .face(base_font)?
             .outline(code)
             .filter(|glyph| !glyph.contours.is_empty())
             .map(Arc::new);
@@ -93,9 +146,7 @@ impl FontSet {
         }
         outline
     }
-}
 
-impl FontSet {
     /// A rasterised glyph, cached.
     ///
     /// Size is quantised to a quarter pixel so that a zoom animation reuses
@@ -108,18 +159,17 @@ impl FontSet {
         rot: f64,
         color: [u8; 3],
     ) -> Option<Arc<RasterGlyph>> {
-        let index = *self.by_name.get(base_font)?;
         let quantised = (size * 4.0).round().max(0.0) as u32;
         // Angle quantised to a degree: a run shares one angle, so this costs a
         // cache entry per angle actually used rather than per glyph.
         let angle = (rot.to_degrees().round() as i32).rem_euclid(360);
-        let key = (index, code, quantised, angle, color);
+        let key = (base_font.to_string(), code, quantised, angle, color);
         if let Ok(cache) = self.rasters.lock()
             && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
-        let matrix = self.fonts[index].font_matrix();
+        let matrix = self.font_matrix(base_font)?;
         let raster = self
             .glyph(base_font, code)
             .and_then(|glyph| {
@@ -142,7 +192,7 @@ impl FontSet {
 impl std::fmt::Debug for FontSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FontSet")
-            .field("fonts", &self.fonts.len())
+            .field("embedded", &self.embedded.len())
             .field("cached", &self.cache.lock().map(|c| c.len()).unwrap_or(0))
             .finish()
     }
@@ -305,10 +355,29 @@ mod tests {
     }
 
     #[test]
-    fn a_document_without_fonts_yields_an_empty_set() {
+    fn a_document_without_fonts_embeds_nothing() {
         let set = FontSet::load(b"not a pdf");
-        assert!(set.is_empty());
-        assert!(set.glyph("anything", 65).is_none());
+        assert!(set.is_empty(), "nothing was embedded");
+    }
+
+    /// Without substitution there is no face at all, which is the browser's
+    /// situation and the reason the fit-to-width fallback exists.
+    #[test]
+    fn substitution_can_be_turned_off() {
+        let set = FontSet::without_substitution(b"not a pdf");
+        assert!(set.glyph("Times-Roman", b'A' as u32).is_none());
+        assert!(set.font_matrix("Times-Roman").is_none());
+    }
+
+    /// A font the document names but does not embed is stood in for, which is
+    /// what Okular does and what the standard fourteen require.
+    #[test]
+    fn a_named_but_unembedded_font_is_stood_in_for() {
+        let set = FontSet::load(b"not a pdf");
+        match set.glyph("Times-Roman", b'A' as u32) {
+            Some(glyph) => assert!(!glyph.contours.is_empty()),
+            None => eprintln!("skipping: no system face to substitute"),
+        }
     }
 
     #[test]
@@ -353,7 +422,13 @@ mod tests {
         let set = FontSet::load(&pdf);
         assert!(set.glyph("MGMJCW+NimbusRomNo9L-Regu", 1).is_none());
         assert!(set.glyph("MGMJCW+NimbusRomNo9L-Regu", 1).is_none());
-        assert!(set.glyph("no such font", 65).is_none());
+        // A name the document never embedded is stood in for rather than
+        // refused, so the miss to check is a code the face has no glyph for.
+        assert!(
+            FontSet::without_substitution(&pdf)
+                .glyph("no such font", 65)
+                .is_none()
+        );
     }
 }
 
