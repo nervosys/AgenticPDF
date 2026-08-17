@@ -123,6 +123,29 @@ impl Document {
         self.semantic.as_ref()
     }
 
+    /// A semantic view of the document, derived from page geometry when the
+    /// format carries no authored structure.
+    ///
+    /// PDF is the case that matters: it has no authored structure, so
+    /// [`Document::semantic`] is `None` for it, and every caller that took
+    /// that option and gave up silently excluded the format the project is
+    /// named after — `convert --to adf` refused it, and the reader's block
+    /// view came up empty. The heuristics in [`layout`] are exactly what
+    /// recovers a reading order from coordinates, so run them rather than
+    /// report a document with no content.
+    ///
+    /// Borrowed where the structure was authored, derived only where it must
+    /// be, so formats that carry real structure never pay for the inference
+    /// and never have it silently substituted for what the author wrote.
+    pub fn semantic_view(&self) -> std::borrow::Cow<'_, SemanticDoc> {
+        match &self.semantic {
+            Some(semantic) => std::borrow::Cow::Borrowed(semantic),
+            None => {
+                std::borrow::Cow::Owned(structured_to_semantic(&self.geometric.to_structured()))
+            }
+        }
+    }
+
     /// The geometric view. Empty for non-PDF formats until they are typeset.
     pub fn geometric(&self) -> &PdfDocument {
         &self.geometric

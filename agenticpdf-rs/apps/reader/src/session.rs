@@ -61,10 +61,10 @@ impl Session {
                 .and_then(|adf| adf.oplog())
                 .unwrap_or_default(),
             _ => {
-                let blocks = document
-                    .semantic()
-                    .map(top_level_blocks)
-                    .unwrap_or_default();
+                // Derived from geometry when the format carries no authored
+                // structure, so a PDF is editable and searchable here rather
+                // than opening as an empty document.
+                let blocks = top_level_blocks(&document.semantic_view());
                 let mut log = agenticpdf::adf::oplog::from_blocks(&blocks, ACTOR_USER, 0);
                 log.register_actor(Actor {
                     id: ACTOR_USER,
@@ -112,9 +112,21 @@ impl Session {
     }
 
     pub fn title(&self) -> String {
+        // Authored title first, then whatever the container recorded. A PDF
+        // has no semantic title but usually has one in its metadata, and
+        // showing "Untitled" for a document that names itself is a bug the
+        // user sees every time they open one.
         self.document
             .semantic()
             .and_then(|semantic| semantic.title.clone())
+            .or_else(|| {
+                self.document
+                    .metadata()
+                    .title
+                    .as_ref()
+                    .map(|title| title.trim().to_string())
+                    .filter(|title| !title.is_empty())
+            })
             .unwrap_or_else(|| "Untitled".to_string())
     }
 
@@ -216,9 +228,7 @@ impl Session {
 
     /// Linear fallback: every block whose text contains all the query's terms.
     fn scan(&self, query: &str) -> Vec<Hit> {
-        let Some(semantic) = self.document.semantic() else {
-            return Vec::new();
-        };
+        let semantic = self.document.semantic_view();
         let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
 
         let mut hits = Vec::new();
@@ -330,7 +340,7 @@ impl Session {
     /// Metadata and assets come from what was opened; the block content comes
     /// from the log, because the log is the authority once editing starts.
     pub fn materialized(&self) -> SemanticDoc {
-        let mut semantic = self.document.semantic().cloned().unwrap_or_default();
+        let mut semantic = self.document.semantic_view().into_owned();
         let blocks = self.log.materialize(OpId::ROOT);
 
         match semantic.sections.first_mut() {

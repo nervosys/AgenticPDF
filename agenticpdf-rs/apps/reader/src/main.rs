@@ -206,7 +206,14 @@ impl Model for App {
 
     fn handle_event(&self, event: Event) -> Option<Msg> {
         match event {
-            Event::Key(KeyEvent { code, .. }) => match code {
+            // Press only. The backend reports a key twice, once pressed and
+            // once released, so matching on the code alone ran every shortcut
+            // twice -- one press of Right advanced two pages.
+            Event::Key(KeyEvent {
+                code,
+                kind: dewey::event::KeyEventKind::Press,
+                ..
+            }) => match code {
                 KeyCode::Right | KeyCode::PageDown => Some(Msg::NextPage),
                 KeyCode::Left | KeyCode::PageUp => Some(Msg::PreviousPage),
                 KeyCode::Char('+') | KeyCode::Char('=') => Some(Msg::ZoomIn),
@@ -510,4 +517,66 @@ fn main() -> std::result::Result<(), eframe::Error> {
             ..Default::default()
         })
         .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dewey::event::{KeyEventKind, KeyModifiers};
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind,
+        })
+    }
+
+    /// A key is reported twice by the backend, pressed and released. Acting on
+    /// both ran every shortcut twice: one press of Right advanced two pages,
+    /// which is what running the app actually looked like.
+    #[test]
+    fn a_key_release_does_not_repeat_the_action() {
+        let app = App::new();
+
+        assert_eq!(
+            app.handle_event(key(KeyCode::Right, KeyEventKind::Press)),
+            Some(Msg::NextPage),
+            "a press must act"
+        );
+        assert_eq!(
+            app.handle_event(key(KeyCode::Right, KeyEventKind::Release)),
+            None,
+            "a release must not act, or every shortcut fires twice"
+        );
+    }
+
+    /// The same for every other binding, so a future one cannot regress alone.
+    #[test]
+    fn no_shortcut_acts_on_release() {
+        let app = App::new();
+        for code in [
+            KeyCode::Right,
+            KeyCode::Left,
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+            KeyCode::Char('+'),
+            KeyCode::Char('='),
+            KeyCode::Char('-'),
+            KeyCode::Char('/'),
+            KeyCode::Char('o'),
+            KeyCode::Char('p'),
+            KeyCode::Char('s'),
+        ] {
+            assert!(
+                app.handle_event(key(code, KeyEventKind::Press)).is_some(),
+                "{code:?} should act on press"
+            );
+            assert_eq!(
+                app.handle_event(key(code, KeyEventKind::Release)),
+                None,
+                "{code:?} must not act on release"
+            );
+        }
+    }
 }

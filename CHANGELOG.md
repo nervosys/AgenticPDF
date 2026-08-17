@@ -90,6 +90,21 @@ CMMC 2.0 Level 2).
 
 ### Fixed
 
+- **PDFs could not be converted to ADF, and opened as an empty document in the
+  reader.** `Document::semantic()` is `None` for PDF by design — it carries
+  geometry, not authored structure — and every caller that took that option and
+  gave up silently excluded the format the project is named after. `convert
+  --to adf` refused it outright, the reader's block view came up empty, and
+  in-app search found nothing. `Document::semantic_view()` now derives a
+  semantic view from page geometry via the existing `layout` heuristics,
+  borrowing where the structure was authored so formats that carry real
+  structure never have inference substituted for what the author wrote.
+- **Every keyboard shortcut in the reader fired twice.** The backend reports a
+  key pressed and released; `handle_event` matched on the code alone, so one
+  press of Right advanced two pages.
+- The reader showed "Untitled" for documents that name themselves in container
+  metadata, such as most PDFs.
+
 - **The `apdf` / `agenticpdf` CLI could not start when installed.** `cli.js`
   launches `cli.ts` through `tsx`, but `tsx` was declared nowhere in
   `package.json` — it worked only where an extraneous copy happened to be

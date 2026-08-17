@@ -103,12 +103,10 @@ pub fn convert(document: &Document, source: &str, to: &str) -> Result<Vec<u8>, P
         "markdown" | "md" | "gfm" => document.to_markdown().into_bytes(),
         "html" => document.to_html().into_bytes(),
         "text" | "txt" => document.extract_text().into_bytes(),
-        "adf" => {
-            let semantic = document.semantic().ok_or_else(|| {
-                PdfError::Unsupported("this format has no semantic model to convert from".into())
-            })?;
-            write_adf(semantic, source, document.format())
-        }
+        // Derived where the format has no authored structure, so a PDF -- the
+        // format most likely to be imported for retrieval -- converts rather
+        // than being refused for lacking a model it never had.
+        "adf" => write_adf(&document.semantic_view(), source, document.format()),
         other => {
             return Err(PdfError::Unsupported(format!(
                 "target format '{other}' (expected adf, markdown, html or text)"

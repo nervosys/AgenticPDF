@@ -1167,14 +1167,12 @@ fn cmd_convert(file: &str, to: &str, sanitize: bool, output: Option<&str>) -> Re
         "json" => serde_json::to_string_pretty(&document.extract_all(500, 50))
             .map_err(|e| PdfError::ExportError(e.to_string()))?
             .into_bytes(),
+        // Provenance is recorded during import by `agent_ops::write_adf`;
+        // without it every later citation reports as "unrecorded". The view is
+        // derived from geometry for formats with no authored structure, so a
+        // PDF converts instead of being refused.
         "adf" => {
-            let semantic = document.semantic().ok_or_else(|| {
-                PdfError::Unsupported("this format has no semantic model to convert from".into())
-            })?;
-
-            // Provenance is recorded during import by `agent_ops::write_adf`;
-            // without it every later citation reports as "unrecorded".
-            agenticpdf::agent_ops::write_adf(semantic, file, document.format())
+            agenticpdf::agent_ops::write_adf(&document.semantic_view(), file, document.format())
         }
         other => {
             return Err(PdfError::Unsupported(format!(
