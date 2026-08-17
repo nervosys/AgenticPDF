@@ -55,6 +55,12 @@ pub struct EmbeddedFont {
     /// `/Differences`: character code to glyph name, which overrides whatever
     /// encoding the font program itself ships with.
     pub differences: HashMap<u8, String>,
+    /// Set for a composite (`/Type0`) font, whose codes are character ids
+    /// addressing glyphs directly rather than single bytes naming them.
+    pub composite: bool,
+    /// `/CIDToGIDMap` as a stream: character id to glyph index. `None` means
+    /// `/Identity`, where the two are the same.
+    pub cid_to_gid: Option<Vec<u16>>,
 }
 
 impl EmbeddedFont {
@@ -84,8 +90,33 @@ impl EmbeddedFont {
         }
     }
 
+    /// The glyph index a character id maps to in a composite font.
+    fn glyph_for_cid(&self, cid: u32) -> u16 {
+        match &self.cid_to_gid {
+            // A map shorter than the id space leaves the rest at zero, which
+            // is `.notdef` -- the same answer the specification gives.
+            Some(map) => map.get(cid as usize).copied().unwrap_or(0),
+            None => cid as u16,
+        }
+    }
+
     /// The outline a character code selects.
-    pub fn outline(&self, code: u8) -> Option<Glyph> {
+    ///
+    /// A composite font's codes are character ids, which can exceed a byte and
+    /// address glyphs directly. A simple font's codes are bytes that name a
+    /// glyph through an encoding.
+    pub fn outline(&self, code: u32) -> Option<Glyph> {
+        if self.composite {
+            let gid = self.glyph_for_cid(code);
+            return match &self.program {
+                FontProgram::TrueType(font) => font.outline(gid),
+                FontProgram::Cff(font) => font.outline(gid),
+                // A Type 1 program is never the descendant of a composite
+                // font, but answering by index keeps this total.
+                FontProgram::Type1(_) => None,
+            };
+        }
+        let code = u8::try_from(code).ok()?;
         match &self.program {
             FontProgram::Type1(font) => font.outline(self.glyph_name(code)?),
             FontProgram::TrueType(font) => {
@@ -220,7 +251,33 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
             continue;
         }
 
-        let Some(descriptor) = doc.get(dict, "FontDescriptor") else {
+        // A composite (`/Type0`) font keeps its descriptor on a descendant,
+        // and addresses glyphs by character id rather than by name. Looking
+        // only at the outer dictionary finds no descriptor and skips the font
+        // entirely, which is what used to happen to every CJK document.
+        let composite = doc
+            .get(dict, "Subtype")
+            .and_then(|o| o.as_name().map(String::from))
+            .as_deref()
+            == Some("Type0");
+
+        let owner = match composite {
+            false => dict.clone(),
+            true => {
+                let Some(descendants) = doc.get(dict, "DescendantFonts") else {
+                    continue;
+                };
+                let Object::Array(items) = doc.resolve(&descendants) else {
+                    continue;
+                };
+                let Some(Object::Dict(first)) = items.first().map(|item| doc.resolve(item)) else {
+                    continue;
+                };
+                first
+            }
+        };
+
+        let Some(descriptor) = doc.get(&owner, "FontDescriptor") else {
             continue;
         };
         let descriptor = doc.resolve(&descriptor);
@@ -228,10 +285,14 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
             continue;
         };
 
-        // `/FontFile` is Type 1, `/FontFile2` is TrueType. `/FontFile3` is
-        // CFF, which this reader cannot draw yet; a caller falls back there.
+        // `/FontFile` is Type 1, `/FontFile2` TrueType, `/FontFile3` CFF.
         let Some(program) = read_program(&doc, &descriptor) else {
             continue;
+        };
+
+        let cid_to_gid = match composite {
+            false => None,
+            true => read_cid_to_gid(&doc, &owner),
         };
 
         seen.push(base_font.clone());
@@ -239,6 +300,8 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
             base_font,
             program,
             differences: differences(&doc, dict),
+            composite,
+            cid_to_gid,
         });
     }
     out
@@ -302,6 +365,24 @@ fn read_program(doc: &engine::Document<'_>, descriptor: &engine::Dict) -> Option
         }
     }
     None
+}
+
+/// `/CIDToGIDMap`: a stream of big-endian glyph indices, one per character id.
+///
+/// `/Identity`, or an absent entry, means the two are the same and no table is
+/// needed.
+fn read_cid_to_gid(doc: &engine::Document<'_>, descendant: &engine::Dict) -> Option<Vec<u16>> {
+    let entry = doc.get(descendant, "CIDToGIDMap")?;
+    let Object::Stream(stream_dict, raw) = doc.resolve(&entry) else {
+        return None;
+    };
+    let bytes = engine::decode_stream(&stream_dict, &raw).ok()?;
+    Some(
+        bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .collect(),
+    )
 }
 
 /// The `CFF ` table inside an OpenType file.
@@ -505,7 +586,7 @@ mod truetype_document {
         assert!(matches!(font.program, FontProgram::Cff(_)));
 
         // The built font names its one glyph "A" and draws a known rectangle.
-        let glyph = font.outline(b'A').expect("A should have an outline");
+        let glyph = font.outline(b'A' as u32).expect("A should have an outline");
         let points: Vec<[f32; 2]> = glyph.contours.iter().flatten().copied().collect();
         let min_x = points.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
         let max_x = points.iter().map(|p| p[0]).fold(f32::MIN, f32::max);
@@ -528,7 +609,7 @@ mod truetype_document {
         assert_eq!(font.base_font, "TestTT");
 
         // A 'A' must come back with an outline, reached by character code.
-        let glyph = font.outline(b'A').expect("A should have an outline");
+        let glyph = font.outline(b'A' as u32).expect("A should have an outline");
         assert!(!glyph.contours.is_empty());
 
         // The matrix must reflect the font's own design grid, or every glyph
@@ -538,5 +619,318 @@ mod truetype_document {
             matrix[0] > 0.0 && matrix[0] <= 0.002,
             "font matrix scale looks wrong: {matrix:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fixture_writer {
+    /// Write a PDF that embeds a real TrueType font and draws text with it,
+    /// so the whole pipeline can be looked at rather than only unit-tested.
+    ///
+    /// Ignored by default: it writes a file and depends on a system font. Run
+    /// with `cargo test -- --ignored write_truetype_sample`.
+    #[test]
+    #[ignore = "writes a file; run deliberately"]
+    fn write_truetype_sample() {
+        let Ok(font_bytes) = std::fs::read("C:/Windows/Fonts/Candara.ttf")
+            .or_else(|_| std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+        else {
+            eprintln!("skipping: no system TrueType font");
+            return;
+        };
+        let font = super::TrueTypeFont::parse(&font_bytes).expect("system font parses");
+
+        // Real advances from the font's own metrics, as a producer would
+        // write them: text laid out with the wrong widths would not exercise
+        // the renderer honestly.
+        let scale = 1000.0 / font.units_per_em;
+        let widths: Vec<String> = (32..127u8)
+            .map(|code| {
+                let advance = font
+                    .glyph_index(code as u32, char::from_u32(code as u32))
+                    .and_then(|index| font.outline(index))
+                    .map(|glyph| glyph.advance as f64 * scale)
+                    .unwrap_or(500.0);
+                format!("{}", advance.round() as i64)
+            })
+            .collect();
+
+        let lines = [
+            "TrueType rendering check",
+            "The quick brown fox jumps over the lazy dog.",
+            "Waltz, bad nymph, for quick jigs vex! 0123456789",
+            "Kerning pairs: AV To Ta We Yo P. r, y.",
+            "Punctuation: (parentheses) [brackets] {braces} @ # $ % &",
+        ];
+        let mut content = String::from("BT\n/F1 18 Tf\n72 700 Td\n");
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                content.push_str("0 -28 Td\n");
+            }
+            let escaped = line
+                .replace('\\', "\\\\")
+                .replace('(', "\\(")
+                .replace(')', "\\)");
+            content.push_str(&format!("({escaped}) Tj\n"));
+        }
+        content.push_str("ET\n");
+
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(b"%PDF-1.4\n");
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        };
+
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+              /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!(
+                "<< /Type /Font /Subtype /TrueType /BaseFont /Candara /FirstChar 32 \
+                 /LastChar 126 /Widths [{}] /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>",
+                widths.join(" ")
+            )
+            .as_bytes(),
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /FontDescriptor /FontName /Candara /Flags 32 /ItalicAngle 0 \
+              /Ascent 750 /Descent -250 /CapHeight 700 /StemV 80 \
+              /FontBBox [-500 -300 1500 1000] /FontFile2 6 0 R >>",
+        );
+
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"6 0 obj\n");
+        pdf.extend_from_slice(
+            format!(
+                "<< /Length {} /Length1 {} >>\nstream\n",
+                font_bytes.len(),
+                font_bytes.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&font_bytes);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            )
+            .as_bytes(),
+        );
+
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+
+        let out =
+            std::env::var("APDF_FIXTURE_OUT").unwrap_or_else(|_| "truetype-sample.pdf".to_string());
+        std::fs::write(&out, &pdf).expect("write the fixture");
+        eprintln!("wrote {out} ({} bytes)", pdf.len());
+    }
+}
+
+#[cfg(test)]
+mod composite_fonts {
+    use super::*;
+
+    fn system_font() -> Option<Vec<u8>> {
+        for path in [
+            "C:/Windows/Fonts/Candara.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    /// A `/Type0` font keeps its descriptor on a descendant dictionary. Looking
+    /// only at the outer font finds no descriptor at all, which is how every
+    /// composite font -- most CJK documents, and plenty of subset Latin ones --
+    /// used to be skipped entirely.
+    #[test]
+    fn a_composite_font_is_found_through_its_descendant() {
+        let Some(font_bytes) = system_font() else {
+            eprintln!("skipping: no system TrueType font");
+            return;
+        };
+        let program = TrueTypeFont::parse(&font_bytes).expect("parses");
+        // Address a glyph the font really has, by index.
+        let gid = program
+            .glyph_index(b'A' as u32, Some('A'))
+            .expect("a font should map A");
+
+        let pdf = composite_pdf(&font_bytes, None);
+        let fonts = embedded_fonts(&pdf);
+        assert_eq!(fonts.len(), 1, "the composite font should be found");
+        let font = &fonts[0];
+        assert!(font.composite, "it should be marked composite");
+
+        // Identity: the character id is the glyph index.
+        let glyph = font.outline(gid as u32).expect("the glyph draws");
+        assert!(!glyph.contours.is_empty());
+    }
+
+    /// With a `/CIDToGIDMap` stream the id is an index into that table, not a
+    /// glyph index. Ignoring the map draws the wrong letter for every code.
+    #[test]
+    fn a_cid_to_gid_map_is_honoured() {
+        let Some(font_bytes) = system_font() else {
+            eprintln!("skipping: no system TrueType font");
+            return;
+        };
+        let program = TrueTypeFont::parse(&font_bytes).expect("parses");
+        let gid = program
+            .glyph_index(b'A' as u32, Some('A'))
+            .expect("a font should map A");
+
+        // A map sending character id 7 to that glyph, and everything else to
+        // .notdef.
+        let mut map = vec![0u8; 8 * 2];
+        map[14] = (gid >> 8) as u8;
+        map[15] = (gid & 0xFF) as u8;
+
+        let pdf = composite_pdf(&font_bytes, Some(&map));
+        let fonts = embedded_fonts(&pdf);
+        let font = fonts.first().expect("the composite font should be found");
+        assert!(font.cid_to_gid.is_some(), "the map should have been read");
+
+        let mapped = font.outline(7).expect("id 7 should draw through the map");
+        let direct = program.outline(gid).expect("the same glyph directly");
+        assert_eq!(
+            mapped.contours.len(),
+            direct.contours.len(),
+            "the mapped id must reach the same glyph"
+        );
+        assert!(!mapped.contours.is_empty());
+
+        // An id the map sends to zero must reach glyph 0, not a letter.
+        // `.notdef` is not empty -- it is usually a box -- so the check is
+        // that it is *that* glyph, and that it is not the letter.
+        let unmapped = font.outline(3).expect("an unmapped id still resolves");
+        assert_eq!(
+            unmapped,
+            program.outline(0).expect("glyph 0 exists"),
+            "an unmapped id should reach .notdef"
+        );
+        assert_ne!(unmapped, mapped, "the two ids must reach different glyphs");
+    }
+
+    /// Build a `/Type0` font with a TrueType descendant.
+    fn composite_pdf(font_bytes: &[u8], cid_to_gid: Option<&[u8]>) -> Vec<u8> {
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(b"%PDF-1.4\n");
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        };
+
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> >> >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /TestCID /Encoding /Identity-H \
+              /DescendantFonts [5 0 R] >>",
+        );
+        let descendant = match cid_to_gid {
+            Some(_) => "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /TestCID \
+                        /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                        /FontDescriptor 6 0 R /CIDToGIDMap 8 0 R >>"
+                .to_string(),
+            None => "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /TestCID \
+                     /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                     /FontDescriptor 6 0 R /CIDToGIDMap /Identity >>"
+                .to_string(),
+        };
+        push(&mut pdf, &mut offsets, descendant.as_bytes());
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /FontDescriptor /FontName /TestCID /Flags 4 /FontFile2 7 0 R >>",
+        );
+
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"7 0 obj\n");
+        pdf.extend_from_slice(
+            format!(
+                "<< /Length {} /Length1 {} >>\nstream\n",
+                font_bytes.len(),
+                font_bytes.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(font_bytes);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        if let Some(map) = cid_to_gid {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(b"8 0 obj\n");
+            pdf.extend_from_slice(format!("<< /Length {} >>\nstream\n", map.len()).as_bytes());
+            pdf.extend_from_slice(map);
+            pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        }
+
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 }

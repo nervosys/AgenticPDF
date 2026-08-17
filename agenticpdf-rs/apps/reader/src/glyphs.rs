@@ -84,9 +84,8 @@ impl FontSet {
         {
             return hit.clone();
         }
-        let outline = u8::try_from(code)
-            .ok()
-            .and_then(|code| self.fonts[index].outline(code))
+        let outline = self.fonts[index]
+            .outline(code)
             .filter(|glyph| !glyph.contours.is_empty())
             .map(Arc::new);
         if let Ok(mut cache) = self.cache.lock() {
