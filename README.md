@@ -625,9 +625,20 @@ try {
 ## Security
 
 Audited 2026-08-11 against CVE/CVSS, MITRE ATT&CK, NIST FIPS 140-3, and CMMC 2.0
-Level 2. Findings below are stated as measured, including the ones that are
-unresolved. Report vulnerabilities per [SECURITY.md](SECURITY.md) — please do not
-open a public issue.
+Level 2, and remediated the same day. Findings below are stated as measured,
+including what remains open. Report vulnerabilities per
+[SECURITY.md](SECURITY.md) — please do not open a public issue.
+
+| Audit finding | State |
+| --- | --- |
+| Unrestricted agent file access (T1005 / T1565.001) | **Fixed** — MCP confined to configured roots |
+| ADF provenance used a non-cryptographic hash | **Fixed** — SHA-256, full 32-byte digest |
+| 26 production dependency CVEs, 1 critical | **Fixed** — 0 remaining |
+| Security scanners disabled and failing | **Fixed** — re-enabled, and the failing step repaired |
+| Mutable GitHub Action refs | **Fixed** — pinned to commit SHAs |
+| Workflows taking default token scope | **Fixed** — `contents: read` |
+| No branch protection on `master` | **Open** — repository setting, not a code change |
+| Dev-only dependency CVEs | **Open** — 16, none reachable at runtime |
 
 ### Threat model
 
@@ -657,45 +668,62 @@ off-page, zero-size, white-on-white, and format-specific hiding (`w:vanish`,
 retrieval pipeline; this is a differentiator, and we know of no comparable
 extractor that checks.
 
-### Provenance is integrity, not authenticity — **known limitation**
+### Provenance is a cryptographic commitment
 
 ADF records a content hash per block so a quotation is reported as matching,
-drifted, or unrecorded. That hash is **FNV-1a (64-bit), a non-cryptographic
-hash**, as are the chunk and header checksums.
+drifted, or unrecorded. That hash is **SHA-256, stored as a full 32-byte
+digest**.
 
-It detects accidental drift and corruption reliably. It does **not** withstand an
-adversary: FNV-1a offers no collision or preimage resistance, and 64 bits falls to
-a generic birthday search regardless. **Do not rely on ADF provenance as a
-tamper-evidence control.** Making it one means SHA-256 and a signature over the
-chunk table — a format change we have not made.
+It was FNV-1a, which was wrong for the job and is now removed from the crate
+entirely. FNV is a hash-table function with no collision or preimage
+resistance, so a fabricated citation could be made to report as `Matches` by
+anyone able to choose the text — and a 64-bit field falls to a generic
+birthday search regardless of the function feeding it. Detecting accidental
+drift only needed a checksum; withstanding a forged citation needs a
+cryptographic hash.
+
+Chunk and header checksums are truncated SHA-256 to fit fixed-width fields, so
+those remain **corruption** checks; the authenticity anchor is the full digest
+in the provenance table. Signing the chunk table, which would extend this from
+tamper *evidence* to tamper *proof* against someone who can rewrite the whole
+file, is still future work.
 
 ### FIPS 140-3
 
-**The product performs no cryptographic operations and makes no FIPS claim.** It
-has no cryptographic dependency; it neither encrypts, signs, nor derives keys.
-Consequently no FIPS 140-3 validated module is in use and none is required. Where
-FIPS-validated integrity is a requirement, the non-cryptographic hashing above is
-the gap to close — FNV-1a is not an approved algorithm, so provenance and
-checksums must not be presented as satisfying SC-13 or SI-7.
+**The product performs no keyed cryptographic operations and makes no FIPS
+claim.** It does not encrypt, sign, or derive keys, so no FIPS 140-3 validated
+module is in use and none is required.
 
-### Agent file access — **open finding, highest severity**
+It does now hash with SHA-256, a FIPS 180-4 approved algorithm — but the
+implementation is the crate's own, not a validated module. Approved algorithm
+is not the same as validated implementation. Where a validated module is
+mandated, this does not satisfy SC-13 by itself; the digests are verifiable
+against published vectors, and the tests run them.
 
-The MCP server and CLI read and write **any path the process can reach**, with no
-root, allowlist, or confirmation. Verified, not theorized:
+### Agent file access — **fixed**
 
-- `apdf text <path>` on a non-document returns its bytes verbatim — the text
-  format accepts anything, so this is arbitrary file read (ATT&CK **T1005**, Data
-  from Local System).
-- `apdf convert <src> --output <path>` silently overwrites an existing file
-  (ATT&CK **T1565.001**, Stored Data Manipulation).
+The MCP server previously read and wrote **any path the process could reach**,
+with no root, allowlist, or confirmation, while the *model* chose that path.
+Both halves were demonstrated: `apdf text <non-document>` returned the bytes
+verbatim (ATT&CK **T1005**), and `convert --output` silently overwrote an
+existing file (**T1565.001**).
 
-Reachable by an agent over MCP, a prompt-injected model can exfiltrate or destroy
-local files within the server's privileges. Mitigating today: the server runs
-with the privileges its operator gives it, and MCP clients gate tool calls. That
-is the *client's* control, not ours. **Run the MCP server with least privilege
-and do not expose it to untrusted document content and sensitive paths at once.**
-The fix is a configurable root with path canonicalization, which is not yet
-implemented.
+MCP file access is now confined to a set of roots:
+
+```bash
+apdf mcp                                   # confined to the working directory
+APDF_MCP_ROOTS=/srv/docs:/srv/reports apdf mcp   # explicit roots
+APDF_MCP_ROOTS='*' apdf mcp                # confinement off, deliberately
+```
+
+Enforcement is by canonicalization rather than string matching, so `..`
+traversal and symlinks planted inside a root are both refused; writes
+canonicalize the parent and re-check any pre-existing target, which may itself
+be a symlink pointing out.
+
+**The CLI is deliberately not confined.** A person running `apdf` already has a
+shell, so `apdf text /etc/passwd` grants nothing `cat` does not. The boundary
+exists only where a model picks the path.
 
 ### Dependency CVEs
 
@@ -705,14 +733,19 @@ Scope matters more than the totals; the engine and the GUI differ sharply.
 | --- | --- |
 | **Rust core library** (`agenticpdf`, 53 crates) | **Zero advisories** (`cargo audit`) |
 | Rust reader app (desktop GUI) | 2 high (`quick-xml` RUSTSEC-2026-0194/0195, DoS) via `accesskit_unix` → **Linux desktop only**, absent on Windows, macOS, wasm and mobile; 2 unmaintained (`paste`, `ttf-parser`) via egui |
-| **npm, production** | 26 (1 critical, 5 high) — **all** in the OpenTelemetry tree, `protobufjs` GHSA-xq3m-2v4x-88gg being the critical |
-| npm, including dev | 42 (2 critical, 17 high) |
+| **npm, production** | **Zero** (was 26, 1 critical) |
+| npm, including dev | 16 (was 42) — build tooling only, none reachable at runtime |
 
-Every production npm finding is in `optionalDependencies` behind telemetry, which
-initializes **only** when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and is otherwise a
-no-op. The packages are still installed, so the code is on disk even when unused:
-the exposure is conditional, not absent. Upgrading the OTel SDK (pinned at
-0.57/1.30, now several majors behind) is the open remediation.
+Production findings were all in the OpenTelemetry tree, including the critical
+`protobufjs` arbitrary code execution (GHSA-xq3m-2v4x-88gg). Upgrading the SDK
+from 0.57/1.30 to 0.221/2.10 cleared them. SDK 2.x replaced the `Resource`
+class with `resourceFromAttributes`; both spellings are accepted, and a failed
+OTEL start now warns rather than silently falling back to no-op — silence is
+how such a break disables audit records unnoticed.
+
+The remaining 16 are dev-only (`ts-jest` → `handlebars`, `jsdom` → `undici`,
+`@typescript-eslint`), reached only when building or testing this repository,
+never by a consumer of the package.
 
 ### CMMC 2.0 Level 2 posture
 
@@ -722,26 +755,28 @@ authorized CUI boundary.
 
 | Practice | State |
 | --- | --- |
-| AC.L2-3.1.5 least privilege | **Partial.** Security workflows scope `permissions:`; `ci.yml` and `rust.yml` do not, so they take default token scope |
+| AC.L2-3.1.5 least privilege | Met — every workflow scopes `permissions:`; MCP is confined to configured roots |
+| AC.L2-3.1.3 control of information flow | Met — MCP path confinement by canonicalization |
 | CM.L2-3.4.1 baseline config | Met — pinned toolchains, committed lockfiles, Dewey pinned by commit rev rather than a mutable branch |
-| CM.L2-3.4.9 third-party software | **Gap.** `trivy-action@master` and `trufflehog@main` are mutable refs; a compromised upstream executes with the repo token. Pin to SHAs |
-| RA.L2-3.11.2 vulnerability scanning | **Gap — controls are dark.** CodeQL, Trivy, Semgrep, gitleaks and TruffleHog are configured but all three security workflows are `disabled_inactivity` and have not run since 2026-08-04 |
-| SI.L2-3.14.1 flaw remediation | **Partial.** 26 production npm CVEs are known and unremediated |
+| CM.L2-3.4.9 third-party software | Met — all GitHub Actions pinned to commit SHAs |
+| RA.L2-3.11.2 vulnerability scanning | Met — CodeQL, Trivy, Semgrep, gitleaks and TruffleHog re-enabled and running; `cargo audit` and `npm audit` in CI |
+| SI.L2-3.14.1 flaw remediation | Met for production — 0 production CVEs across Rust and npm; 16 dev-only remain |
 | SI.L2-3.14.2 malicious content protection | Met — `apdf scan`, parser caps, no egress |
+| SI.L2-3.14.6 monitoring | **Partial.** Telemetry is opt-in and now warns on failed start, but there is no security event log |
 | IR.L2-3.6.1 incident handling | Met — [SECURITY.md](SECURITY.md) defines private disclosure and response targets |
 | AU.L2-3.3.1 audit records | Met for documents — the ADF op log records every edit with its author and whether that author was a model |
 | CA.L2-3.12.1 control assessment | This audit; no external assessment has been performed |
 
-### Priorities
+### Still open
 
-1. Re-enable the three security workflows — detection is configured but not running.
-2. Constrain MCP/CLI file access to a configured root.
-3. Upgrade the OpenTelemetry SDK to clear the critical `protobufjs` CVE.
-4. Pin GitHub Actions to commit SHAs.
-5. Move ADF provenance to SHA-256 before anyone treats it as tamper evidence.
-
-Branch protection is not enabled on `master`, so no status check is required to
-merge; CI passing is a convention here, not an enforced gate.
+1. **Branch protection is not enabled on `master`**, so no status check is
+   required to merge; CI passing is a convention here, not an enforced gate.
+   This is a repository setting rather than a code change.
+2. **Signing the ADF chunk table.** Provenance is now tamper *evidence*; a
+   signature would make it hold against someone who can rewrite the whole file.
+3. **16 dev-only dependency CVEs**, none reachable by a consumer.
+4. **Two Rust advisories in the Linux desktop GUI only** (`quick-xml` via
+   `accesskit_unix`), which upstream `egui`/`accesskit` must move.
 
 ## License
 

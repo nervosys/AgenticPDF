@@ -55,6 +55,39 @@ An agentic-first document reader and editor built on
 - `agenticpdf-rs` is now a Cargo workspace, with the library as its root
   package and the app as a member.
 
+### Security
+
+Remediation of the 2026-08-11 audit (CVE/CVSS, MITRE ATT&CK, NIST FIPS 140-3,
+CMMC 2.0 Level 2).
+
+- **MCP file access is confined to a set of roots.** The server previously read
+  and wrote any path the process could reach while the *model* chose that path,
+  and a document can carry text arguing for a particular one — a confused deputy
+  holding its operator's privileges. `apdf text <any file>` returned the bytes
+  verbatim (ATT&CK **T1005**) and `convert --output` silently overwrote an
+  existing file (**T1565.001**). The default root is now the working directory
+  the operator chose to serve from; `APDF_MCP_ROOTS` sets the list and `*`
+  disables confinement deliberately. Enforcement is by canonicalization, so
+  `..` traversal and symlinks planted inside a root are both refused. The CLI
+  is deliberately unchanged — a person running it already has a shell.
+- **ADF provenance and integrity now use SHA-256 instead of FNV-1a.** FNV has
+  no collision or preimage resistance, so a fabricated citation could be made
+  to report as `Matches`; provenance rows carry a full 32-byte digest and the
+  stride grows 48 → 64 bytes (`VERSION_MINOR` 0 → 1, no migration — ADF is
+  unreleased). FNV-1a was deleted rather than kept for cheap cases.
+- **Production dependency CVEs cleared: 26 → 0**, including the critical
+  `protobufjs` arbitrary code execution (GHSA-xq3m-2v4x-88gg), by upgrading the
+  OpenTelemetry SDK from 0.57/1.30 to 0.221/2.10. SDK 2.x replaced the
+  `Resource` class with `resourceFromAttributes`; both spellings are accepted,
+  and a failed OTEL start now warns instead of silently falling back to no-op,
+  which is how such a break disables audit records unnoticed.
+- **CI hardening.** Re-enabled the three security workflows, which had been
+  `disabled_inactivity` since 2026-08-04, leaving CodeQL, Trivy, Semgrep,
+  gitleaks and TruffleHog configured but not running; fixed the TruffleHog step
+  that made every one of those runs fail (base and head were both `master` on a
+  push); pinned `trivy-action@master` and `trufflehog@main` to commit SHAs; and
+  added `permissions: contents: read` to `ci.yml` and `rust.yml`.
+
 ### Fixed
 
 - **The `apdf` / `agenticpdf` CLI could not start when installed.** `cli.js`

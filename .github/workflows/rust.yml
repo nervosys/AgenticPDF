@@ -37,6 +37,19 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
 
+      # Dependency CVEs. The two ignores are quick-xml advisories reached only
+      # through accesskit_unix -- Linux desktop accessibility for the reader
+      # GUI, absent from the library and from every other target. They are
+      # upstream's to move; ignoring them by id keeps this gate meaningful for
+      # everything else rather than permanently red.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Dependency audit
+        run: >
+          cargo audit
+          --ignore RUSTSEC-2026-0194
+          --ignore RUSTSEC-2026-0195
+
       - name: Clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
 

@@ -32,6 +32,16 @@ jobs:
     - name: Install dependencies
       run: npm ci
       
+    # Gates on what a consumer of the package actually installs. The existing
+    # security workflows run `npm audit || echo`, which reports but never
+    # fails; this one fails, and production is currently at zero, so it stays
+    # green until something regresses. Dev-only findings are excluded
+    # deliberately -- build tooling is not reachable by a consumer, and
+    # blocking every PR on an unpatched eslint transitive would train everyone
+    # to ignore the gate.
+    - name: Audit production dependencies
+      run: npm audit --omit=dev --audit-level=high
+
     - name: Run linting
       run: npm run lint
       
