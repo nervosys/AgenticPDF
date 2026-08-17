@@ -1085,7 +1085,7 @@ mod debug_real {
         // than as absolute units, because a serif face's `l` is wider than the
         // stem alone and guessing a number tests the guess.
         let mut narrow = 0.0f32;
-        if let Some(glyph) = font.program.outline("l") {
+        if let Some(glyph) = font.program.as_type1().expect("type 1").outline("l") {
             let (w, h, min_y) = extent(&glyph);
             narrow = w;
             assert!(
@@ -1102,7 +1102,7 @@ mod debug_real {
         }
 
         // `o` is round and has a counter, so two contours.
-        if let Some(glyph) = font.program.outline("o") {
+        if let Some(glyph) = font.program.as_type1().expect("type 1").outline("o") {
             let (w, h, min_y) = extent(&glyph);
             assert_eq!(glyph.contours.len(), 2, "o has an outer and inner contour");
             assert!((350.0..520.0).contains(&w), "o width {w}");
@@ -1111,7 +1111,7 @@ mod debug_real {
         }
 
         // `A` is a cap: as tall as the cap height, wider than it is deep.
-        if let Some(glyph) = font.program.outline("A") {
+        if let Some(glyph) = font.program.as_type1().expect("type 1").outline("A") {
             let (w, h, _) = extent(&glyph);
             assert!(h > 600.0, "A should reach cap height, got {h}");
             assert!(w > 500.0, "A should be wide, got {w}");

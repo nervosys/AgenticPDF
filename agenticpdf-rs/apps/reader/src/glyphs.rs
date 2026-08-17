@@ -72,7 +72,7 @@ impl FontSet {
     /// font units to text space, and is very nearly always 1/1000.
     pub fn font_matrix(&self, base_font: &str) -> Option<[f64; 6]> {
         let index = *self.by_name.get(base_font)?;
-        Some(self.fonts[index].program.font_matrix)
+        Some(self.fonts[index].font_matrix())
     }
 
     /// The outline a character code selects in a named font.
@@ -120,7 +120,7 @@ impl FontSet {
         {
             return hit.clone();
         }
-        let matrix = self.fonts[index].program.font_matrix;
+        let matrix = self.fonts[index].font_matrix();
         let raster = self
             .glyph(base_font, code)
             .and_then(|glyph| {
