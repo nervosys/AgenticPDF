@@ -126,23 +126,81 @@ pub fn paint_page(
                 x,
                 y,
                 size,
+                width,
+                advances,
+                measured,
+                rot,
                 color,
                 ..
             } => {
                 if text.trim().is_empty() {
                     continue;
                 }
-                let style = dewey::core::TextStyle {
+                let mut style = dewey::core::TextStyle {
                     font_size: (*size as f32 * transform.scale).max(1.0),
                     color: to_color(*color),
                     ..Default::default()
                 };
 
-                // The op anchors at the baseline; Dewey's text draws from the
-                // top of the line, so lift by the size to put the glyphs where
-                // the document put them.
-                let at = transform.point(*x, *y);
-                painter.text(Position::new(at.x, at.y - style.font_size), text, &style);
+                // A PDF positions text itself; it does not ask for a string
+                // to be laid out, and the document's font is not the font this
+                // renderer has. Three things follow, learned by looking at the
+                // result rather than by reasoning about it:
+                //
+                //   - Drawing a run and letting the UI font pick its width
+                //     makes runs collide, because that font is wider than the
+                //     document's. That is the overlapping sentences.
+                //   - Placing every glyph at its recorded position fixes the
+                //     collisions and scatters letters inside words instead,
+                //     because the per-glyph error lands mid-word ("gz y5102").
+                //   - Placing every *word* at its recorded position jams words
+                //     together, because a word wider than its slot eats the
+                //     space after it.
+                //
+                // What actually works without the document's own font is to
+                // let the font lay the whole run out -- one call, so spacing
+                // stays even and words stay whole -- and then fit that run to
+                // the width the document reserved for it. PDF.js scales
+                // horizontally here; with no horizontal scale available, the
+                // size is scaled uniformly, which costs a little height and
+                // keeps every run inside its own slot.
+                let target = *width as f32 * transform.scale;
+                let natural = painter.measure_text(text, &style).width;
+                if *rot == 0.0 {
+                    if target > 0.0 && natural > target {
+                        // Floored: a run whose slot is absurdly narrow relative
+                        // to this font should end up slightly cramped rather
+                        // than unreadably small.
+                        let fit = (target / natural).max(0.6);
+                        style.font_size = (style.font_size * fit).max(1.0);
+                    }
+                    let at = transform.point(*x, *y);
+                    painter.text(Position::new(at.x, at.y - style.font_size), text, &style);
+                    continue;
+                }
+
+                // Rotated text has no layout call that can place it, so walk
+                // the baseline glyph by glyph. Without this an arXiv stamp
+                // meant for the margin is drawn straight across the body.
+                let chars: Vec<char> = text.chars().collect();
+                let from_pdf = !*measured && advances.len() == chars.len();
+                let (dx, dy) = (rot.cos(), rot.sin());
+                let mut pen = 0.0f64;
+                let mut buf = [0u8; 4];
+                for (index, glyph) in chars.iter().enumerate() {
+                    let encoded = glyph.encode_utf8(&mut buf);
+                    if !glyph.is_whitespace() {
+                        let at = transform.point(x + pen * dx, y + pen * dy);
+                        painter.text(Position::new(at.x, at.y - style.font_size), encoded, &style);
+                    }
+                    pen += match from_pdf {
+                        true => advances[index],
+                        false => {
+                            let measured = painter.measure_text(encoded, &style).width as f64;
+                            measured / transform.scale.max(f32::EPSILON) as f64
+                        }
+                    };
+                }
             }
             RenderOp::Image { x, y, w, h, name } => {
                 // y + h because the op's origin is the image's bottom-left and
@@ -330,9 +388,11 @@ impl Painter for RecordingPainter {
     }
 
     fn measure_text(&self, text: &str, style: &dewey::core::TextStyle) -> dewey::core::Size {
-        // An estimate, because the real measurement lives in the browser. Only
-        // used for layout decisions the page painter does not make — it works
-        // from advances the engine already computed.
+        // An estimate, because the real measurement lives in the browser.
+        // `paint_page` fits each run to the width the document reserved, so
+        // this feeds that decision: a recording made here will differ slightly
+        // from what the browser lays out, which is the price of deciding the
+        // fit on this side rather than shipping both widths.
         dewey::core::Size::new(
             text.chars().count() as f32 * style.font_size * 0.5,
             style.font_size,
@@ -602,5 +662,118 @@ mod tests {
         let large = Transform::fit(&page, area(), 2.0);
         assert!(large.scale > small.scale);
         assert_eq!(large.page_height, small.page_height);
+    }
+
+    fn text_op(text: &str, width: f64, rot: f64) -> RenderOp {
+        RenderOp::Text {
+            text: text.into(),
+            x: 10.0,
+            y: 50.0,
+            size: 12.0,
+            width,
+            // One advance per character, summing to `width`, as a real PDF's do.
+            advances: vec![width / text.chars().count() as f64; text.chars().count()],
+            measured: false,
+            rot,
+            color: [0.0, 0.0, 0.0, 1.0],
+            font: "Times".into(),
+        }
+    }
+
+    /// A run drawn at its natural width overruns the slot the document gave it
+    /// and collides with the next run -- the overlapping sentences this used to
+    /// render. The run must be fitted to the width the document reserved.
+    #[test]
+    fn a_run_is_fitted_to_the_width_the_document_reserved() {
+        let mut painter = RecordingPainter::new();
+        // A slot far narrower than this text measures at size 12.
+        let ops = vec![text_op("a sentence that is much too wide", 20.0, 0.0)];
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
+        let json = painter.to_json();
+        let drawn: Vec<&str> = json.matches(r#""op":"text""#).collect();
+        assert_eq!(drawn.len(), 1, "the run should be laid out in one call");
+        // Size reduced from 12 to fit, but floored rather than made unreadable.
+        let size = json
+            .split(r#""size":"#)
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|n| n.parse::<f32>().ok())
+            .expect("a size in the recording");
+        assert!(size < 12.0, "expected the run to be fitted, got {size}");
+        // A floor, not an exact value: the comparison is in f32, where
+        // 12.0 * 0.6 is not exactly 7.2.
+        assert!(size >= 12.0 * 0.6 - 0.01, "expected a floor, got {size}");
+    }
+
+    /// A run that already fits must not be resized: shrinking text that was
+    /// never going to collide would make every page subtly too small.
+    #[test]
+    fn a_run_that_fits_is_left_alone() {
+        let mut painter = RecordingPainter::new();
+        let ops = vec![text_op("hi", 400.0, 0.0)];
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
+        assert!(
+            painter.to_json().contains(r#""size":12.00"#),
+            "a fitting run should keep its size: {}",
+            painter.to_json()
+        );
+    }
+
+    /// Rotated text has no layout call that can place it, so it is walked glyph
+    /// by glyph along its baseline. Without this an arXiv stamp meant for the
+    /// margin is drawn straight across the body text.
+    #[test]
+    fn rotated_text_runs_along_its_baseline() {
+        let mut painter = RecordingPainter::new();
+        let quarter_turn = std::f64::consts::FRAC_PI_2;
+        let ops = vec![text_op("abc", 30.0, quarter_turn)];
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+        );
+        let json = painter.to_json();
+        assert_eq!(
+            json.matches(r#""op":"text""#).count(),
+            3,
+            "each glyph should be placed: {json}"
+        );
+        // Quarter turn: the glyphs advance up the page, so x stays put and y
+        // changes. Getting this wrong is what drew the stamp horizontally.
+        // Parse the text ops only: the page fill and the clip carry
+        // coordinates too, and reading those instead is how this test first
+        // "failed" against correct output.
+        let glyphs: Vec<(f32, f32)> = json
+            .split(r#"{"op":"text","#)
+            .skip(1)
+            .map(|entry| {
+                let field = |name: &str| {
+                    entry
+                        .split(&format!(r#""{name}":"#))
+                        .nth(1)
+                        .and_then(|rest| rest.split(',').next())
+                        .and_then(|n| n.trim_matches('"').parse::<f32>().ok())
+                        .expect("a coordinate")
+                };
+                (field("x"), field("y"))
+            })
+            .collect();
+        assert_eq!(glyphs.len(), 3, "each glyph should be placed: {json}");
+        assert_eq!(glyphs[0].0, glyphs[1].0, "x must not advance: {json}");
+        assert!(
+            glyphs[0].1 > glyphs[1].1,
+            "y must advance up the page: {json}"
+        );
     }
 }
