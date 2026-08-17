@@ -15,6 +15,7 @@ pub mod doc;
 pub mod document;
 pub mod engine;
 pub mod figures;
+pub mod font;
 pub mod formats;
 pub mod formula;
 pub mod layout;

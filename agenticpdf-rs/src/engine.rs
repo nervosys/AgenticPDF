@@ -881,6 +881,18 @@ impl<'a> Document<'a> {
     }
 
     /// Resolve one level of indirection.
+    /// Every object number the cross-reference table knows.
+    ///
+    /// Walking objects directly is how font programs are found: a font can be
+    /// shared between pages, reached through nested form XObjects, or sit in a
+    /// resource dictionary nothing else has reason to visit.
+    pub fn object_numbers(&self) -> Vec<u32> {
+        let mut numbers: Vec<u32> = self.xref.keys().copied().collect();
+        // Sorted so results do not depend on hash iteration order.
+        numbers.sort_unstable();
+        numbers
+    }
+
     pub fn resolve(&self, obj: &Object) -> Object {
         match obj {
             Object::Ref(n, _) => self.fetch(*n).unwrap_or(Object::Null),
@@ -898,7 +910,7 @@ impl<'a> Document<'a> {
 // Stream decoding (Flate + predictors; ASCIIHex/ASCII85 passthrough-ish)
 // ============================================================================
 
-fn decode_stream(dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
+pub fn decode_stream(dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
     let filters: Vec<String> = match dict.get("Filter") {
         Some(Object::Name(n)) => vec![n.clone()],
         Some(Object::Array(a)) => a
