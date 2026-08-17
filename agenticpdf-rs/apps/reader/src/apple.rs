@@ -127,7 +127,13 @@ pub extern "C" fn apdf_render_page(width: f32, height: f32, zoom: f32) -> *mut c
 
         let area = dewey::core::Rect::new(0.0, 0.0, width, height);
         let mut painter = RecordingPainter::new();
-        crate::canvas::paint_page(&mut painter, &list, Transform::fit(&list, area, zoom), &[]);
+        crate::canvas::paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, zoom),
+            &[],
+            session.fonts(),
+        );
         into_c(painter.to_json())
     })
     .unwrap_or_else(|_| failure("panicked while rendering"))

@@ -90,6 +90,14 @@ CMMC 2.0 Level 2).
 
 ### Fixed
 
+- **PDF text is now drawn with the document's own fonts.** The renderer used a
+  substitute face, whose advances differ from the document's, so runs ran into
+  one another and sentences overlapped. `/FontFile` programs are now decoded
+  into glyph outlines and rasterised, which is what PDF.js and Okular do and
+  the only way the page matches: correct letterforms, real italics, and
+  spacing that is the document's rather than an approximation. Fonts that are
+  not embedded — the standard fourteen — still fall back to laying the run out
+  and fitting it to the width the document reserved.
 - **PDFs could not be converted to ADF, and opened as an empty document in the
   reader.** `Document::semantic()` is `None` for PDF by design — it carries
   geometry, not authored structure — and every caller that took that option and

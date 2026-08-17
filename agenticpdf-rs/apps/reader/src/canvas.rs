@@ -62,6 +62,83 @@ impl Transform {
     }
 }
 
+/// Fill the document's own glyphs for one text run.
+///
+/// Returns false when the run cannot be drawn this way -- no embedded font
+/// under that name, or codes that do not line up with the text -- so the
+/// caller can fall back rather than leave a blank line.
+///
+/// Placement is the document's, not the font's: each glyph sits at the
+/// cumulative advance the PDF recorded, so a run occupies exactly the space it
+/// reserved and cannot run into the next one. That is the whole difference
+/// between this and laying text out with a substitute face.
+#[allow(clippy::too_many_arguments)]
+fn draw_embedded_glyphs(
+    painter: &mut dyn Painter,
+    fonts: &crate::glyphs::FontSet,
+    transform: &Transform,
+    text: &str,
+    x: f64,
+    y: f64,
+    size: f64,
+    advances: &[f64],
+    codes: &[u32],
+    rot: f64,
+    style: &dewey::core::TextStyle,
+    font: &str,
+) -> bool {
+    // A font we have no glyphs for is not one we can draw this way.
+    if fonts.font_matrix(font).is_none() {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // Codes must line up with the text, because a glyph is chosen by code.
+    if advances.len() != chars.len() || codes.len() != chars.len() {
+        return false;
+    }
+
+    let (cos, sin) = (rot.cos(), rot.sin());
+    let ink = [
+        (style.color.r * 255.0).clamp(0.0, 255.0) as u8,
+        (style.color.g * 255.0).clamp(0.0, 255.0) as u8,
+        (style.color.b * 255.0).clamp(0.0, 255.0) as u8,
+    ];
+    let mut pen = 0.0f64;
+    let mut drew = false;
+
+    for (index, glyph_char) in chars.iter().enumerate() {
+        // A cluster's continuation characters carry no advance and no glyph of
+        // their own: the code that opened the cluster drew it.
+        let is_continuation = index > 0 && advances[index] == 0.0;
+        if !glyph_char.is_whitespace() && !is_continuation {
+            // The document's code, not the Unicode it decodes to. A subset
+            // font remaps freely: drawing by Unicode picks a neighbouring
+            // glyph, which is how "LLMs" came out as "hhMs".
+            if let Some(raster) = fonts.raster(font, codes[index], size, rot, ink) {
+                // The mask is placed by its own offset from the glyph origin,
+                // which is where the outline actually sits -- a letter with a
+                // descender starts above the baseline and drops below it.
+                let origin_x = x + pen * cos;
+                let origin_y = y + pen * sin;
+                let at = transform.point(origin_x, origin_y);
+                let rect = Rect::new(
+                    at.x + raster.left,
+                    at.y + raster.top,
+                    raster.width as f32,
+                    raster.height as f32,
+                );
+                painter.draw_image(
+                    rect,
+                    &ImageData::new(raster.width, raster.height, &raster.pixels),
+                );
+                drew = true;
+            }
+        }
+        pen += advances[index];
+    }
+    drew
+}
+
 /// A decoded image the canvas can draw, keyed by the resource name an
 /// [`RenderOp::Image`] refers to.
 pub struct Texture {
@@ -82,6 +159,7 @@ pub fn paint_page(
     list: &DisplayList,
     transform: Transform,
     textures: &[Texture],
+    fonts: &crate::glyphs::FontSet,
 ) {
     let page = transform.page_rect(list);
     painter.fill_rect(page, Color::WHITE, 0.0);
@@ -128,10 +206,11 @@ pub fn paint_page(
                 size,
                 width,
                 advances,
+                codes,
                 measured,
                 rot,
                 color,
-                ..
+                font,
             } => {
                 if text.trim().is_empty() {
                     continue;
@@ -142,35 +221,29 @@ pub fn paint_page(
                     ..Default::default()
                 };
 
-                // A PDF positions text itself; it does not ask for a string
-                // to be laid out, and the document's font is not the font this
-                // renderer has. Three things follow, learned by looking at the
-                // result rather than by reasoning about it:
-                //
-                //   - Drawing a run and letting the UI font pick its width
-                //     makes runs collide, because that font is wider than the
-                //     document's. That is the overlapping sentences.
-                //   - Placing every glyph at its recorded position fixes the
-                //     collisions and scatters letters inside words instead,
-                //     because the per-glyph error lands mid-word ("gz y5102").
-                //   - Placing every *word* at its recorded position jams words
-                //     together, because a word wider than its slot eats the
-                //     space after it.
-                //
-                // What actually works without the document's own font is to
-                // let the font lay the whole run out -- one call, so spacing
-                // stays even and words stay whole -- and then fit that run to
-                // the width the document reserved for it. PDF.js scales
-                // horizontally here; with no horizontal scale available, the
-                // size is scaled uniformly, which costs a little height and
-                // keeps every run inside its own slot.
+                // Draw the document's own glyphs where they exist. Filling
+                // the outlines the file carries is what PDF.js and Okular do,
+                // and it is the only way the page matches: a substituted font
+                // has different advances, so runs either collide or have to be
+                // squeezed to fit.
+                if draw_embedded_glyphs(
+                    painter, fonts, &transform, text, *x, *y, *size, advances, codes, *rot, &style,
+                    font,
+                ) {
+                    continue;
+                }
+
+                // No embedded font -- a non-PDF format laid out by the
+                // typesetter, or a PDF that references fonts without embedding
+                // them. Lay the run out with the painter's own font and fit it
+                // to the width the document reserved, so at least runs keep
+                // their slots and do not overlap.
                 let target = *width as f32 * transform.scale;
                 let natural = painter.measure_text(text, &style).width;
                 if *rot == 0.0 {
                     if target > 0.0 && natural > target {
-                        // Floored: a run whose slot is absurdly narrow relative
-                        // to this font should end up slightly cramped rather
-                        // than unreadably small.
+                        // Floored: a run whose slot is very narrow for this
+                        // font should be cramped rather than unreadable.
                         let fit = (target / natural).max(0.6);
                         style.font_size = (style.font_size * fit).max(1.0);
                     }
@@ -179,9 +252,8 @@ pub fn paint_page(
                     continue;
                 }
 
-                // Rotated text has no layout call that can place it, so walk
-                // the baseline glyph by glyph. Without this an arXiv stamp
-                // meant for the margin is drawn straight across the body.
+                // Rotated text with no glyphs to fill: walk the baseline so an
+                // arXiv stamp meant for the margin is not drawn across the body.
                 let chars: Vec<char> = text.chars().collect();
                 let from_pdf = !*measured && advances.len() == chars.len();
                 let (dx, dy) = (rot.cos(), rot.sin());
@@ -496,6 +568,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
 
         // The page is filled white first, and white also has r > 0.9 — so red
@@ -533,6 +606,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             std::slice::from_ref(&texture),
+            &crate::glyphs::FontSet::default(),
         );
         // Green, not the white page: check red is gone rather than green present.
         let drawn = painter.get_pixel(50, 50);
@@ -554,6 +628,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
 
         // The frame is gray on a white page, so look for a pixel that is
@@ -585,6 +660,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
         let filled = painter.get_pixel(50, 50);
         assert!(filled.r > 0.9 && filled.g < 0.5, "the fill did not survive");
@@ -608,6 +684,7 @@ mod tests {
                 size: 12.0,
                 width: 40.0,
                 advances: vec![],
+                codes: vec![],
                 measured: false,
                 rot: 0.0,
                 color: [0.0, 0.0, 0.0, 1.0],
@@ -619,6 +696,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
 
         assert_eq!(
@@ -673,6 +751,7 @@ mod tests {
             width,
             // One advance per character, summing to `width`, as a real PDF's do.
             advances: vec![width / text.chars().count() as f64; text.chars().count()],
+            codes: text.chars().map(|c| c as u32).collect(),
             measured: false,
             rot,
             color: [0.0, 0.0, 0.0, 1.0],
@@ -693,6 +772,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
         let json = painter.to_json();
         let drawn: Vec<&str> = json.matches(r#""op":"text""#).collect();
@@ -721,6 +801,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
         assert!(
             painter.to_json().contains(r#""size":12.00"#),
@@ -742,6 +823,7 @@ mod tests {
             &list(ops),
             Transform::fit(&list(Vec::new()), area(), 1.0),
             &[],
+            &crate::glyphs::FontSet::default(),
         );
         let json = painter.to_json();
         assert_eq!(

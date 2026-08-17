@@ -35,6 +35,9 @@ pub struct Hit {
 /// An open document and everything the app knows about it.
 pub struct Session {
     document: Document,
+    /// The document's own embedded fonts, so text is drawn with the glyphs
+    /// the file carries rather than a substitute whose advances differ.
+    fonts: crate::glyphs::FontSet,
     /// Original bytes, kept so a save can append to an ADF file rather than
     /// rewriting it, and so re-detection never has to guess.
     source: Vec<u8>,
@@ -52,6 +55,10 @@ impl Session {
     /// Open a document from bytes.
     pub fn open(bytes: Vec<u8>) -> Result<Session, PdfError> {
         let document = Document::open(&bytes)?;
+        // Parsed once per document: a charstring is a small program, and
+        // interpreting one per glyph per frame would be paid sixty times a
+        // second for an answer that never changes.
+        let fonts = crate::glyphs::FontSet::load(&bytes);
 
         // An ADF file brings its own history; anything else is seeded from its
         // blocks so it is editable — and mergeable — from the first keystroke
@@ -78,6 +85,7 @@ impl Session {
 
         Ok(Session {
             document,
+            fonts,
             source: bytes,
             log,
             saved_mark,
@@ -138,6 +146,11 @@ impl Session {
     /// The blocks as the edit log currently has them.
     pub fn blocks(&self) -> Vec<(OpId, Block)> {
         self.log.materialize_with_ids(OpId::ROOT)
+    }
+
+    /// The document's embedded fonts, for the painter.
+    pub fn fonts(&self) -> &crate::glyphs::FontSet {
+        &self.fonts
     }
 
     pub fn log(&self) -> &OpLog {

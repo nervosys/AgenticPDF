@@ -1219,6 +1219,9 @@ fn emit_line(
             // The advances are our own metrics, and they are the same ones the
             // line was broken with — so the renderer must use them rather than
             // re-measuring, or the paint would drift from the layout.
+            // Typeset formats have no PDF character codes; the renderer
+            // falls back to laying the run out with its own font.
+            codes: Vec::new(),
             measured: false,
             rot: 0.0,
             color: piece.color,

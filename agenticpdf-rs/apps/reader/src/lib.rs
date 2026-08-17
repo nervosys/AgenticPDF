@@ -23,6 +23,7 @@
 
 pub mod actions;
 pub mod canvas;
+pub mod glyphs;
 pub mod ontology;
 pub mod session;
 

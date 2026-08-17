@@ -151,7 +151,13 @@ pub extern "system" fn Java_ai_nervosys_apdf_Reader_nativeRenderPage(
 
         let area = dewey::core::Rect::new(0.0, 0.0, width, height);
         let mut painter = RecordingPainter::new();
-        crate::canvas::paint_page(&mut painter, &list, Transform::fit(&list, area, zoom), &[]);
+        crate::canvas::paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, zoom),
+            &[],
+            session.fonts(),
+        );
         to_jstring(&env, painter.to_json())
     }));
     result.unwrap_or(std::ptr::null_mut())

@@ -1624,6 +1624,12 @@ pub enum RenderOp {
         /// the Unicode chars of `text`. Lets a renderer place each glyph at the
         /// exact PDF cumulative position (matching the reference renderer).
         advances: Vec<f64>,
+        /// The character code that produced each character of `text`, parallel
+        /// to it. A glyph is selected by code, not by the Unicode the code
+        /// happens to mean, so a renderer drawing the document's own embedded
+        /// font needs this rather than the text.
+        #[serde(default)]
+        codes: Vec<u32>,
         /// True when the PDF lacked explicit glyph widths (advances are a flat
         /// default); a renderer should measure real glyph widths instead.
         measured: bool,
@@ -2009,23 +2015,30 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             // (small adjustments) stay merged into one segment.
                             const GAP_EM: f64 = 1.0;
                             // (start_em_from_run, text, per-char advances em)
-                            let mut segs: Vec<(f64, String, Vec<f64>)> = Vec::new();
+                            let mut segs: Vec<(f64, String, Vec<f64>, Vec<u32>)> = Vec::new();
                             let mut cursor = 0.0f64;
                             let mut seg = String::new();
                             let mut seg_advs: Vec<f64> = Vec::new();
+                            let mut seg_codes: Vec<u32> = Vec::new();
                             let mut seg_start = 0.0f64;
                             for part in parts {
                                 match part {
                                     ArrPart::Str(bytes) => {
                                         if let Some(f) = cur_font {
                                             let before = seg_advs.iter().sum::<f64>();
-                                            f.decode_with_advances(bytes, &mut seg, &mut seg_advs);
+                                            f.decode_with_advances(
+                                                bytes,
+                                                &mut seg,
+                                                &mut seg_advs,
+                                                &mut seg_codes,
+                                            );
                                             cursor += seg_advs.iter().sum::<f64>() - before;
                                         } else {
                                             for &b in bytes {
                                                 if let Some(c) = winansi(b) {
                                                     seg.push(c);
                                                     seg_advs.push(0.5);
+                                                    seg_codes.push(b as u32);
                                                     cursor += 0.5;
                                                 }
                                             }
@@ -2042,16 +2055,22 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                                     seg_start,
                                                     std::mem::take(&mut seg),
                                                     std::mem::take(&mut seg_advs),
+                                                    std::mem::take(&mut seg_codes),
                                                 ));
                                             } else {
                                                 seg.clear();
                                                 seg_advs.clear();
+                                                seg_codes.clear();
                                             }
                                             seg_start = cursor;
                                         } else if *adj < -120.0 && !seg.ends_with(' ') {
                                             // Inter-word space: a space glyph carries the gap.
                                             seg.push(' ');
                                             seg_advs.push(gap);
+                                            // The gap stands in for a space the
+                                            // string never contained; code 32
+                                            // keeps `codes` aligned with `text`.
+                                            seg_codes.push(32);
                                         } else if let Some(idx) =
                                             seg_advs.iter().rposition(|&a| a != 0.0)
                                         {
@@ -2068,10 +2087,10 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                 }
                             }
                             if !seg.trim().is_empty() {
-                                segs.push((seg_start, seg, seg_advs));
+                                segs.push((seg_start, seg, seg_advs, seg_codes));
                             }
                             let measured = cur_font.map(|f| !f.has_widths).unwrap_or(true);
-                            for (start, text, advs) in segs {
+                            for (start, text, advs, codes) in segs {
                                 let seg_tm =
                                     mat_mul(&[1.0, 0.0, 0.0, 1.0, start * font_size, 0.0], &tm);
                                 emit_text_op(
@@ -2079,6 +2098,7 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                     &cur_font_name,
                                     font_size,
                                     &advs,
+                                    &codes,
                                     measured,
                                     &seg_tm,
                                     &ctm,
@@ -2124,13 +2144,15 @@ fn push_text_op(
 ) -> f64 {
     let mut s = String::new();
     let mut advs: Vec<f64> = Vec::new();
+    let mut codes: Vec<u32> = Vec::new();
     if let Some(f) = font {
-        f.decode_with_advances(bytes, &mut s, &mut advs);
+        f.decode_with_advances(bytes, &mut s, &mut advs, &mut codes);
     } else {
         for &b in bytes {
             if let Some(c) = winansi(b) {
                 s.push(c);
                 advs.push(0.5);
+                codes.push(b as u32);
             }
         }
     }
@@ -2138,7 +2160,7 @@ fn push_text_op(
     let measured = font.map(|f| !f.has_widths).unwrap_or(true);
     if !s.trim().is_empty() {
         emit_text_op(
-            &s, font_name, font_size, &advs, measured, tm, ctm, color, ops,
+            &s, font_name, font_size, &advs, &codes, measured, tm, ctm, color, ops,
         );
     }
     advance
@@ -2152,6 +2174,7 @@ fn emit_text_op(
     font_name: &str,
     font_size: f64,
     advs_em: &[f64],
+    codes: &[u32],
     measured: bool,
     tm: &Matrix,
     ctm: &Matrix,
@@ -2178,6 +2201,7 @@ fn emit_text_op(
         size,
         width,
         advances,
+        codes: codes.to_vec(),
         measured,
         rot,
         color,
@@ -2970,13 +2994,28 @@ impl Font {
     /// glyph at its PDF cumulative width. A code that produces N characters
     /// splits its width evenly; a skipped code's width folds into the next
     /// emitted glyph so the total run width is preserved.
-    fn decode_with_advances(&self, bytes: &[u8], out: &mut String, advs: &mut Vec<f64>) {
+    fn decode_with_advances(
+        &self,
+        bytes: &[u8],
+        out: &mut String,
+        advs: &mut Vec<f64>,
+        codes_out: &mut Vec<u32>,
+    ) {
         let mut pending = 0.0f64;
         // A code that decodes to several characters (e.g. an "ﬁ" ligature) is one
         // cluster: the full code width goes on the first character and 0 on the
         // rest, so a renderer draws the cluster as a unit and advances once — the
         // same way the Canvas2D reference draws the whole code string.
-        let mut emit = |s: &str, w: f64, out: &mut String, advs: &mut Vec<f64>| {
+        // The character code travels alongside, because a glyph is selected by
+        // code, not by the Unicode the code happens to mean. Rendering from the
+        // document's own font needs the code; text extraction needs the
+        // Unicode; they are not the same thing and a ligature proves it.
+        let mut emit = |s: &str,
+                        w: f64,
+                        code: u32,
+                        out: &mut String,
+                        advs: &mut Vec<f64>,
+                        codes_out: &mut Vec<u32>| {
             if s.is_empty() {
                 pending += w;
                 return;
@@ -2986,6 +3025,7 @@ impl Font {
             for (i, c) in s.chars().enumerate() {
                 out.push(c);
                 advs.push(if i == 0 { total } else { 0.0 });
+                codes_out.push(code);
             }
         };
         let mut tmp = String::new();
@@ -3008,7 +3048,7 @@ impl Font {
                 {
                     tmp.push(c);
                 }
-                emit(&tmp, w, out, advs);
+                emit(&tmp, w, code, out, advs, codes_out);
             }
         } else {
             for &b in bytes {
@@ -3031,7 +3071,7 @@ impl Font {
                 } else if let Some(c) = winansi(b) {
                     tmp.push(c);
                 }
-                emit(&tmp, w, out, advs);
+                emit(&tmp, w, code, out, advs, codes_out);
             }
         }
         // Fold any trailing skipped width into the last glyph.

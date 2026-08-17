@@ -80,7 +80,7 @@ impl WebReader {
         let area = dewey::core::Rect::new(0.0, 0.0, width, height);
         let transform = Transform::fit(&list, area, zoom);
         let mut painter = RecordingPainter::new();
-        crate::canvas::paint_page(&mut painter, &list, transform, &[]);
+        crate::canvas::paint_page(&mut painter, &list, transform, &[], session.fonts());
         painter.to_json()
     }
 
