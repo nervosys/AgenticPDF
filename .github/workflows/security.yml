@@ -68,7 +68,11 @@ jobs:
         
     - name: Upload Trivy scan results to GitHub Security
       uses: github/codeql-action/upload-sarif@v3
-      if: always()
+      # `always()` alone uploads even when the scan never ran -- an earlier
+      # step failing (a GitHub outage during CodeQL init, say) skips Trivy and
+      # then this fails on a missing file, turning one transient error into
+      # two. Upload only when there is something to upload.
+      if: always() && hashFiles('trivy-results.sarif') != ''
       with:
         sarif_file: 'trivy-results.sarif'
         
