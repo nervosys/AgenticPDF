@@ -622,6 +622,127 @@ try {
 }
 ```
 
+## Security
+
+Audited 2026-08-11 against CVE/CVSS, MITRE ATT&CK, NIST FIPS 140-3, and CMMC 2.0
+Level 2. Findings below are stated as measured, including the ones that are
+unresolved. Report vulnerabilities per [SECURITY.md](SECURITY.md) — please do not
+open a public issue.
+
+### Threat model
+
+The product parses **untrusted documents** and exposes them to **autonomous
+agents**. Those two facts drive everything here: a malicious document is the
+expected input, not an edge case, and an agent acting on that document is a
+confused deputy with the operator's privileges.
+
+### Parser hardening (ATT&CK T1203, Exploitation for Client Execution)
+
+| Control | Where |
+| --- | --- |
+| No `unsafe` in the engine core | `unsafe` appears only in the mobile FFI shims, each with a documented safety contract, bounds and null checks, and `catch_unwind` at the boundary |
+| XXE and entity expansion impossible by construction | `xml.rs` never processes `<!ENTITY>` declarations and skips `<!DOCTYPE>` wholesale; asserted by test, not just by policy |
+| Zip-bomb and decompression caps | 128 MB per entry, 512 MB total, 65,536 entries, 64 KB EOCD search window |
+| Depth and count caps on every recursive format | XML, HTML, ADF, PDF objects, OLE2 streams, PPT records, spreadsheet cells |
+| No network egress in the core | Verified across the crate; the only outbound call is the optional `ocr` feature, to an endpoint the caller supplies explicitly |
+
+Memory-unsafe parsing is the historical root of document-format CVEs. Rust plus
+the above closes that class structurally rather than by patching instances.
+
+### Prompt injection (ATT&CK T1204 / T1059, adapted to agents)
+
+`apdf scan` reports text a human reader cannot see but a model ingests —
+off-page, zero-size, white-on-white, and format-specific hiding (`w:vanish`,
+`display:none`, hidden rows). Documents are an injection vector into any
+retrieval pipeline; this is a differentiator, and we know of no comparable
+extractor that checks.
+
+### Provenance is integrity, not authenticity — **known limitation**
+
+ADF records a content hash per block so a quotation is reported as matching,
+drifted, or unrecorded. That hash is **FNV-1a (64-bit), a non-cryptographic
+hash**, as are the chunk and header checksums.
+
+It detects accidental drift and corruption reliably. It does **not** withstand an
+adversary: FNV-1a offers no collision or preimage resistance, and 64 bits falls to
+a generic birthday search regardless. **Do not rely on ADF provenance as a
+tamper-evidence control.** Making it one means SHA-256 and a signature over the
+chunk table — a format change we have not made.
+
+### FIPS 140-3
+
+**The product performs no cryptographic operations and makes no FIPS claim.** It
+has no cryptographic dependency; it neither encrypts, signs, nor derives keys.
+Consequently no FIPS 140-3 validated module is in use and none is required. Where
+FIPS-validated integrity is a requirement, the non-cryptographic hashing above is
+the gap to close — FNV-1a is not an approved algorithm, so provenance and
+checksums must not be presented as satisfying SC-13 or SI-7.
+
+### Agent file access — **open finding, highest severity**
+
+The MCP server and CLI read and write **any path the process can reach**, with no
+root, allowlist, or confirmation. Verified, not theorized:
+
+- `apdf text <path>` on a non-document returns its bytes verbatim — the text
+  format accepts anything, so this is arbitrary file read (ATT&CK **T1005**, Data
+  from Local System).
+- `apdf convert <src> --output <path>` silently overwrites an existing file
+  (ATT&CK **T1565.001**, Stored Data Manipulation).
+
+Reachable by an agent over MCP, a prompt-injected model can exfiltrate or destroy
+local files within the server's privileges. Mitigating today: the server runs
+with the privileges its operator gives it, and MCP clients gate tool calls. That
+is the *client's* control, not ours. **Run the MCP server with least privilege
+and do not expose it to untrusted document content and sensitive paths at once.**
+The fix is a configurable root with path canonicalization, which is not yet
+implemented.
+
+### Dependency CVEs
+
+Scope matters more than the totals; the engine and the GUI differ sharply.
+
+| Surface | Result |
+| --- | --- |
+| **Rust core library** (`agenticpdf`, 53 crates) | **Zero advisories** (`cargo audit`) |
+| Rust reader app (desktop GUI) | 2 high (`quick-xml` RUSTSEC-2026-0194/0195, DoS) via `accesskit_unix` → **Linux desktop only**, absent on Windows, macOS, wasm and mobile; 2 unmaintained (`paste`, `ttf-parser`) via egui |
+| **npm, production** | 26 (1 critical, 5 high) — **all** in the OpenTelemetry tree, `protobufjs` GHSA-xq3m-2v4x-88gg being the critical |
+| npm, including dev | 42 (2 critical, 17 high) |
+
+Every production npm finding is in `optionalDependencies` behind telemetry, which
+initializes **only** when `OTEL_EXPORTER_OTLP_ENDPOINT` is set and is otherwise a
+no-op. The packages are still installed, so the code is on disk even when unused:
+the exposure is conditional, not absent. Upgrading the OTel SDK (pinned at
+0.57/1.30, now several majors behind) is the open remediation.
+
+### CMMC 2.0 Level 2 posture
+
+Assessed for practices a source repository can satisfy. This is a
+self-assessment of the project, not a certification, and the product is not an
+authorized CUI boundary.
+
+| Practice | State |
+| --- | --- |
+| AC.L2-3.1.5 least privilege | **Partial.** Security workflows scope `permissions:`; `ci.yml` and `rust.yml` do not, so they take default token scope |
+| CM.L2-3.4.1 baseline config | Met — pinned toolchains, committed lockfiles, Dewey pinned by commit rev rather than a mutable branch |
+| CM.L2-3.4.9 third-party software | **Gap.** `trivy-action@master` and `trufflehog@main` are mutable refs; a compromised upstream executes with the repo token. Pin to SHAs |
+| RA.L2-3.11.2 vulnerability scanning | **Gap — controls are dark.** CodeQL, Trivy, Semgrep, gitleaks and TruffleHog are configured but all three security workflows are `disabled_inactivity` and have not run since 2026-08-04 |
+| SI.L2-3.14.1 flaw remediation | **Partial.** 26 production npm CVEs are known and unremediated |
+| SI.L2-3.14.2 malicious content protection | Met — `apdf scan`, parser caps, no egress |
+| IR.L2-3.6.1 incident handling | Met — [SECURITY.md](SECURITY.md) defines private disclosure and response targets |
+| AU.L2-3.3.1 audit records | Met for documents — the ADF op log records every edit with its author and whether that author was a model |
+| CA.L2-3.12.1 control assessment | This audit; no external assessment has been performed |
+
+### Priorities
+
+1. Re-enable the three security workflows — detection is configured but not running.
+2. Constrain MCP/CLI file access to a configured root.
+3. Upgrade the OpenTelemetry SDK to clear the critical `protobufjs` CVE.
+4. Pin GitHub Actions to commit SHAs.
+5. Move ADF provenance to SHA-256 before anyone treats it as tamper evidence.
+
+Branch protection is not enabled on `master`, so no status check is required to
+merge; CI passing is a convention here, not an enforced gate.
+
 ## License
 
 AgenticPDF is dual-licensed:
