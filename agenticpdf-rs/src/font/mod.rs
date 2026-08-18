@@ -107,6 +107,19 @@ impl EmbeddedFont {
     /// address glyphs directly. A simple font's codes are bytes that name a
     /// glyph through an encoding.
     pub fn outline(&self, code: u32) -> Option<Glyph> {
+        self.outline_for(code, None)
+    }
+
+    /// The outline a character code selects, given the character the document
+    /// says the code means.
+    ///
+    /// The character matters for a TrueType font, whose `cmap` is keyed by
+    /// Unicode. WinAnsi puts its curly quotes at codes 0x91-0x94, where
+    /// Unicode has control characters, so looking up the code as a character
+    /// misses every quotation mark, apostrophe and dash on the page. The
+    /// engine has already decoded the right character; this is how it reaches
+    /// the font.
+    pub fn outline_for(&self, code: u32, unicode: Option<char>) -> Option<Glyph> {
         if self.composite {
             let gid = self.glyph_for_cid(code);
             return match &self.program {
@@ -130,9 +143,19 @@ impl EmbeddedFont {
                     .differences
                     .get(&code)
                     .and_then(|name| glyph_name_to_char(name));
-                let fallback = char::from_u32(code as u32);
-                let index = font.glyph_index(code as u32, named.or(fallback))?;
-                font.outline(index)
+                // The document's own decoding first, then `/Differences`,
+                // then the code read as a character -- which is only right
+                // for the ASCII range.
+                let hint = unicode.or(named).or_else(|| char::from_u32(code as u32));
+                // Keep the first candidate that actually draws: a subset can
+                // point one route at a blank glyph while another reaches the
+                // real one.
+                let candidates = font.glyph_candidates(code as u32, hint);
+                let drawn = candidates
+                    .iter()
+                    .filter_map(|index| font.outline(*index))
+                    .find(|glyph| !glyph.contours.is_empty());
+                drawn.or_else(|| font.outline(*candidates.first()?))
             }
             FontProgram::Cff(font) => {
                 // The document's `/Differences` name first, then the font's
@@ -142,7 +165,14 @@ impl EmbeddedFont {
                     .differences
                     .get(&code)
                     .and_then(|name| font.index_for_name(name))
-                    .or_else(|| font.index_for_code(code))?;
+                    .or_else(|| font.index_for_code(code))
+                    // A subset whose encoding omits a code may still name the
+                    // glyph the document decoded it to.
+                    .or_else(|| {
+                        unicode
+                            .map(|ch| ch.to_string())
+                            .and_then(|name| font.index_for_name(&name))
+                    })?;
                 font.outline(index)
             }
         }
@@ -217,7 +247,14 @@ fn glyph_name_to_char(name: &str) -> Option<char> {
     })
 }
 
-/// Every Type 1 program embedded in a PDF, parsed.
+/// Every font program embedded in a PDF, parsed.
+///
+/// A name may appear more than once. A producer commonly embeds several
+/// subsets of one typeface -- one per chunk of the document -- all under the
+/// same `/BaseFont`, each carrying only the glyphs its own chunk needs.
+/// Keeping the first and discarding the rest loses most of the alphabet for
+/// every page the first subset did not cover, so all of them are returned and
+/// the caller tries each.
 ///
 /// Fonts that will not parse are dropped rather than reported: a renderer that
 /// cannot read one font should fall back for that font, not fail the page.
@@ -227,7 +264,6 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
     };
 
     let mut out = Vec::new();
-    let mut seen: Vec<String> = Vec::new();
 
     // Walk every object rather than every page's resources: a font can be
     // shared, reached through nested form XObjects, or referenced from a
@@ -247,23 +283,27 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
             continue;
         }
 
+        // A CID font is reached through its `/Type0` parent and is never used
+        // on its own. Taking it as a font in its own right would offer a
+        // second, byte-addressed reading of the same program under the same
+        // name, and a lookup could pick the wrong one.
+        let subtype = doc
+            .get(dict, "Subtype")
+            .and_then(|o| o.as_name().map(String::from))
+            .unwrap_or_default();
+        if subtype.starts_with("CIDFontType") {
+            continue;
+        }
+
         let base_font = doc
             .get(dict, "BaseFont")
             .and_then(|o| o.as_name().map(String::from))
             .unwrap_or_default();
-        if seen.contains(&base_font) {
-            continue;
-        }
-
         // A composite (`/Type0`) font keeps its descriptor on a descendant,
         // and addresses glyphs by character id rather than by name. Looking
         // only at the outer dictionary finds no descriptor and skips the font
         // entirely, which is what used to happen to every CJK document.
-        let composite = doc
-            .get(dict, "Subtype")
-            .and_then(|o| o.as_name().map(String::from))
-            .as_deref()
-            == Some("Type0");
+        let composite = subtype == "Type0";
 
         let owner = match composite {
             false => dict.clone(),
@@ -299,7 +339,6 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
             true => read_cid_to_gid(&doc, &owner),
         };
 
-        seen.push(base_font.clone());
         out.push(EmbeddedFont {
             base_font,
             program,

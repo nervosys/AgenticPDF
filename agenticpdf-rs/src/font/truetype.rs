@@ -100,21 +100,38 @@ impl TrueTypeFont {
     /// byte, and otherwise the code is Unicode. A font that answers to none of
     /// these is usually addressed by index anyway.
     pub fn glyph_index(&self, code: u32, unicode: Option<char>) -> Option<u16> {
-        if let Some(&index) = self.byte_map.get(&(0xF000 + code)) {
-            return Some(index);
+        self.glyph_candidates(code, unicode).into_iter().next()
+    }
+
+    /// Every glyph index a code might select, best first.
+    ///
+    /// A subset font can carry a `cmap` entry that points at a blank glyph
+    /// while another route reaches the real one -- Word's subsets do this for
+    /// the WinAnsi punctuation range. Taking the first match and stopping
+    /// loses those characters, so the caller tries each in turn and keeps the
+    /// one that actually has an outline.
+    pub fn glyph_candidates(&self, code: u32, unicode: Option<char>) -> Vec<u16> {
+        // Ordered best first: a symbol font's private-use block, the raw
+        // byte, then the character the document decoded the code to.
+        let candidates = [
+            self.byte_map.get(&(0xF000 + code)).copied(),
+            self.byte_map.get(&code).copied(),
+            unicode.and_then(|ch| self.unicode_map.get(&(ch as u32)).copied()),
+            unicode.and_then(|ch| self.byte_map.get(&(0xF000 + ch as u32)).copied()),
+            self.unicode_map.get(&code).copied(),
+        ];
+        let mut out: Vec<u16> = Vec::new();
+        for index in candidates.into_iter().flatten() {
+            if !out.contains(&index) {
+                out.push(index);
+            }
         }
-        if let Some(&index) = self.byte_map.get(&code) {
-            return Some(index);
+        // A subset with no usable character map addresses glyphs by index,
+        // which is the convention every reader falls back to.
+        if out.is_empty() && self.unicode_map.is_empty() && self.byte_map.is_empty() {
+            out.push(code as u16);
         }
-        if let Some(&index) = self.unicode_map.get(&code) {
-            return Some(index);
-        }
-        if let Some(unicode) = unicode
-            && let Some(&index) = self.unicode_map.get(&(unicode as u32))
-        {
-            return Some(index);
-        }
-        None
+        out
     }
 
     /// The outline of a glyph, by index.

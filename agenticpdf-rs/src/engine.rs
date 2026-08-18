@@ -4648,59 +4648,6 @@ endstream\nendobj\n\
 }
 
 #[cfg(test)]
-mod content_probe {
-    /// Print the content stream around a phrase, for diagnosing placement.
-    #[test]
-    #[ignore = "diagnostic; run deliberately"]
-    fn dump_content_around_phrase() {
-        let Ok(pdf) = std::fs::read("../website/public/shannon1948.pdf") else {
-            return;
-        };
-        let doc = super::Document::parse(&pdf).expect("parses");
-        let needle = std::env::var("APDF_NEEDLE").unwrap_or_else(|_| "Hartley".into());
-        if let Ok(dir) = std::env::var("APDF_DUMP_DIR") {
-            for number in doc.object_numbers() {
-                let Ok(object) = doc.fetch(number) else {
-                    continue;
-                };
-                let super::Object::Stream(dict, raw) = &object else {
-                    continue;
-                };
-                let Ok(bytes) = super::decode_stream(dict, raw) else {
-                    continue;
-                };
-                if bytes.len() > 2000 && bytes.windows(2).any(|w| w == b"TJ") {
-                    let path = format!("{dir}/content-{number}.txt");
-                    let _ = std::fs::write(&path, &bytes);
-                    eprintln!("wrote {path} ({} bytes)", bytes.len());
-                }
-            }
-            return;
-        }
-        for number in doc.object_numbers() {
-            let Ok(object) = doc.fetch(number) else {
-                continue;
-            };
-            let super::Object::Stream(dict, raw) = &object else {
-                continue;
-            };
-            let Ok(bytes) = super::decode_stream(dict, raw) else {
-                continue;
-            };
-            let text = String::from_utf8_lossy(&bytes);
-            if let Some(at) = text.find(&needle) {
-                let from = at.saturating_sub(700);
-                let to = (at + 200).min(text.len());
-                eprintln!("--- object {number} ---");
-                eprintln!("{}", &text[from..to]);
-                return;
-            }
-        }
-        eprintln!("phrase not found in any stream");
-    }
-}
-
-#[cfg(test)]
 mod standard_14_widths {
     /// A width fallback has to follow the font's encoding. This document puts
     /// its "fi" ligature at code 2; reading the code as a character gives a

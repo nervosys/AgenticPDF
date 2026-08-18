@@ -17,9 +17,12 @@ use std::sync::{Arc, Mutex};
 use agenticpdf::font::{self, EmbeddedFont, Glyph};
 
 /// Outline cache, keyed by font name and character code.
-type OutlineCache = Mutex<HashMap<(String, u32), Option<Arc<Glyph>>>>;
+/// Keyed by the hint as well as the code: the result depends on both, so
+/// caching by code alone lets a hintless lookup poison a hinted one.
+type OutlineCache = Mutex<HashMap<(String, u32, Option<char>), Option<(Arc<Glyph>, [f64; 6])>>>;
 /// Raster cache: font name, code, size in quarter-pixels, degrees, colour.
-type RasterCache = Mutex<HashMap<(String, u32, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
+type RasterCache =
+    Mutex<HashMap<(String, u32, Option<char>, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
 /// Stand-ins resolved by name. `None` is cached so a face the system lacks is
 /// looked for once rather than per glyph.
 type SubstituteCache = Mutex<HashMap<String, Option<Arc<EmbeddedFont>>>>;
@@ -31,7 +34,11 @@ type SubstituteCache = Mutex<HashMap<String, Option<Arc<EmbeddedFont>>>>;
 #[derive(Default)]
 pub struct FontSet {
     /// Fonts the document embeds, by `/BaseFont` name.
-    embedded: HashMap<String, Arc<EmbeddedFont>>,
+    ///
+    /// Several per name: a producer commonly embeds one subset per chunk of
+    /// the document, all under the same name, each carrying only the glyphs
+    /// its own chunk needs. Keeping one loses the rest of the alphabet.
+    embedded: HashMap<String, Vec<Arc<EmbeddedFont>>>,
     /// Stand-ins for fonts it names but does not embed.
     substitutes: SubstituteCache,
     cache: OutlineCache,
@@ -47,10 +54,13 @@ pub struct FontSet {
 impl FontSet {
     /// Read every embedded font from a document.
     pub fn load(data: &[u8]) -> FontSet {
-        let embedded = font::embedded_fonts(data)
-            .into_iter()
-            .map(|font| (font.base_font.clone(), Arc::new(font)))
-            .collect();
+        let mut embedded: HashMap<String, Vec<Arc<EmbeddedFont>>> = HashMap::new();
+        for font in font::embedded_fonts(data) {
+            embedded
+                .entry(font.base_font.clone())
+                .or_default()
+                .push(Arc::new(font));
+        }
         FontSet {
             embedded,
             substitution: true,
@@ -86,9 +96,18 @@ impl FontSet {
     /// it; Poppler, and so Okular, substitutes a system face there. The
     /// document still supplies the advances, so only the letterforms differ.
     fn face(&self, base_font: &str) -> Option<Arc<EmbeddedFont>> {
-        if let Some(font) = self.embedded.get(base_font) {
-            return Some(font.clone());
+        self.faces(base_font).into_iter().next()
+    }
+
+    /// Every face that could serve a name, in the order to try them.
+    fn faces(&self, base_font: &str) -> Vec<Arc<EmbeddedFont>> {
+        if let Some(fonts) = self.embedded.get(base_font) {
+            return fonts.clone();
         }
+        self.substitute(base_font).into_iter().collect()
+    }
+
+    fn substitute(&self, base_font: &str) -> Option<Arc<EmbeddedFont>> {
         if !self.substitution {
             return None;
         }
@@ -117,8 +136,7 @@ impl FontSet {
 
     /// The advance the face itself gives a code, in text-space ems.
     pub fn own_advance(&self, base_font: &str, code: u32) -> Option<f64> {
-        let matrix = self.font_matrix(base_font)?;
-        let glyph = self.face(base_font)?.outline(code)?;
+        let (glyph, matrix) = self.resolve(base_font, code, char::from_u32(code))?;
         Some(glyph.advance as f64 * matrix[0])
     }
 
@@ -130,31 +148,62 @@ impl FontSet {
 
     /// The outline a character code selects in a named font.
     pub fn glyph(&self, base_font: &str, code: u32) -> Option<Arc<Glyph>> {
-        let key = (base_font.to_string(), code);
+        self.glyph_for(base_font, code, None)
+    }
+
+    /// The outline a code selects, given the character the document decoded it
+    /// to. A TrueType `cmap` is keyed by Unicode, so the character is what
+    /// finds the curly quotes and dashes WinAnsi hides in its control range.
+    pub fn glyph_for(
+        &self,
+        base_font: &str,
+        code: u32,
+        unicode: Option<char>,
+    ) -> Option<Arc<Glyph>> {
+        self.resolve(base_font, code, unicode).map(|found| found.0)
+    }
+
+    /// The glyph a code selects together with the matrix of the face it came
+    /// from.
+    ///
+    /// The two travel together on purpose: with several subsets under one
+    /// name, scaling a glyph by another subset's matrix would draw it at the
+    /// wrong size.
+    pub fn resolve(
+        &self,
+        base_font: &str,
+        code: u32,
+        unicode: Option<char>,
+    ) -> Option<(Arc<Glyph>, [f64; 6])> {
+        let key = (base_font.to_string(), code, unicode);
         if let Ok(cache) = self.cache.lock()
             && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
-        let outline = self
-            .face(base_font)?
-            .outline(code)
-            .filter(|glyph| !glyph.contours.is_empty())
-            .map(Arc::new);
+        // Try every subset under the name: each carries only what its own
+        // chunk of the document needed.
+        let found = self.faces(base_font).into_iter().find_map(|face| {
+            face.outline_for(code, unicode)
+                .filter(|glyph| !glyph.contours.is_empty())
+                .map(|glyph| (Arc::new(glyph), face.font_matrix()))
+        });
         if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(key, outline.clone());
+            cache.insert(key, found.clone());
         }
-        outline
+        found
     }
 
     /// A rasterised glyph, cached.
     ///
     /// Size is quantised to a quarter pixel so that a zoom animation reuses
     /// masks instead of rasterising a fresh set every frame.
+    #[allow(clippy::too_many_arguments)]
     pub fn raster(
         &self,
         base_font: &str,
         code: u32,
+        unicode: Option<char>,
         size: f64,
         rot: f64,
         color: [u8; 3],
@@ -163,16 +212,22 @@ impl FontSet {
         // Angle quantised to a degree: a run shares one angle, so this costs a
         // cache entry per angle actually used rather than per glyph.
         let angle = (rot.to_degrees().round() as i32).rem_euclid(360);
-        let key = (base_font.to_string(), code, quantised, angle, color);
+        let key = (
+            base_font.to_string(),
+            code,
+            unicode,
+            quantised,
+            angle,
+            color,
+        );
         if let Ok(cache) = self.rasters.lock()
             && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
-        let matrix = self.font_matrix(base_font)?;
         let raster = self
-            .glyph(base_font, code)
-            .and_then(|glyph| {
+            .resolve(base_font, code, unicode)
+            .and_then(|(glyph, matrix)| {
                 rasterize(
                     &glyph,
                     matrix,
@@ -457,6 +512,7 @@ mod raster_tests {
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
                 b'L' as u32,
+                None,
                 40.0,
                 0.0,
                 [0, 0, 0],
@@ -496,6 +552,7 @@ mod raster_tests {
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
                 b'o' as u32,
+                None,
                 40.0,
                 0.0,
                 [0, 0, 0],
@@ -521,6 +578,7 @@ mod raster_tests {
         let first = set.raster(
             "MGMJCW+NimbusRomNo9L-Regu",
             b'e' as u32,
+            None,
             12.0,
             0.0,
             [0, 0, 0],
@@ -528,6 +586,7 @@ mod raster_tests {
         let second = set.raster(
             "MGMJCW+NimbusRomNo9L-Regu",
             b'e' as u32,
+            None,
             12.0,
             0.0,
             [0, 0, 0],
@@ -552,6 +611,7 @@ mod raster_tests {
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
                 b'L' as u32,
+                None,
                 40.0,
                 0.0,
                 [0, 0, 0],
@@ -561,6 +621,7 @@ mod raster_tests {
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
                 b'L' as u32,
+                None,
                 40.0,
                 std::f64::consts::FRAC_PI_2,
                 [0, 0, 0],

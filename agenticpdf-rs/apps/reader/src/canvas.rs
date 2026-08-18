@@ -185,7 +185,7 @@ fn draw_embedded_glyphs(
             // glyph, which is how "LLMs" came out as "hhMs".
             let mut sub_pen = pen;
             for code in &expanded[index] {
-                if let Some(raster) = fonts.raster(font, *code, size, rot, ink) {
+                if let Some(raster) = fonts.raster(font, *code, Some(*glyph_char), size, rot, ink) {
                     // The mask is placed by its own offset from the glyph origin,
                     // which is where the outline actually sits -- a letter with a
                     // descender starts above the baseline and drops below it.
@@ -1051,5 +1051,176 @@ mod render_report {
         let ops = json.matches(r#""op":"#).count();
         eprintln!("total recorded ops: {ops}");
         assert!(ops > 1, "the page produced no drawing at all");
+    }
+}
+
+#[cfg(test)]
+mod render_sweep {
+    use super::*;
+
+    /// Render page one of every document in a directory and report what each
+    /// took to draw. Finds the cases fixtures cannot: producers this code has
+    /// never seen, damaged files, fonts that resolve to nothing.
+    ///
+    /// Reports counts only, never text: a sweep is usually run over documents
+    /// that are nobody's business but their owner's.
+    ///
+    /// `APDF_SWEEP_DIR=<dir> cargo test -- --ignored render_sweep`
+    #[test]
+    #[ignore = "needs a directory; run deliberately"]
+    fn render_sweep() {
+        let Ok(dir) = std::env::var("APDF_SWEEP_DIR") else {
+            eprintln!("set APDF_SWEEP_DIR");
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            eprintln!("cannot read {dir}");
+            return;
+        };
+
+        let mut files: Vec<std::path::PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| {
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+
+        let limit: usize = std::env::var("APDF_SWEEP_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+
+        let mut opened = 0;
+        let mut failed = 0;
+        let mut with_fallback = 0;
+        let mut blank = 0;
+
+        for path in files.iter().take(limit) {
+            let name: String = path
+                .file_name()
+                .map(|n| n.to_string_lossy().chars().take(38).collect())
+                .unwrap_or_default();
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let session = match crate::session::Session::open(bytes) {
+                Ok(session) => session,
+                Err(why) => {
+                    eprintln!("{name:40} OPEN FAILED: {why}");
+                    failed += 1;
+                    continue;
+                }
+            };
+            opened += 1;
+            let Ok(list) = session.display_list() else {
+                eprintln!("{name:40} no geometry");
+                continue;
+            };
+            let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
+            let mut painter = RecordingPainter::new();
+            paint_page(
+                &mut painter,
+                &list,
+                Transform::fit(&list, area, 1.0),
+                &[],
+                session.fonts(),
+            );
+            let json = painter.to_json();
+            let glyphs = json.matches(r#""op":"image""#).count();
+            let fallback = json.matches(r#""op":"text""#).count();
+            let text_ops = list
+                .ops
+                .iter()
+                .filter(|op| matches!(op, RenderOp::Text { .. }))
+                .count();
+
+            if fallback > 0 {
+                with_fallback += 1;
+            }
+            if text_ops > 0 && glyphs == 0 {
+                blank += 1;
+            }
+            eprintln!(
+                "{name:40} fonts={:<3} runs={text_ops:<5} glyphs={glyphs:<6} fallback={fallback}",
+                session.fonts().len()
+            );
+        }
+
+        eprintln!(
+            "\nopened {opened}, failed {failed}, with fallback {with_fallback}, \
+             text but no glyphs {blank}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fallback_probe {
+    use super::*;
+
+    /// Report which runs could not be drawn with glyphs, and why.
+    ///
+    /// `APDF_RENDER_PDF=<file> cargo test -- --ignored why_fallback`
+    #[test]
+    #[ignore = "needs a document; run deliberately"]
+    fn why_fallback() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read");
+        let session = crate::session::Session::open(bytes).expect("open");
+        let fonts = session.fonts();
+        let list = session.display_list().expect("geometry");
+
+        for op in &list.ops {
+            let RenderOp::Text {
+                text,
+                advances,
+                codes,
+                font,
+                size,
+                rot,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            let chars: Vec<char> = text.chars().collect();
+            let have_face = fonts.font_matrix(font).is_some();
+            let aligned = advances.len() == chars.len() && codes.len() == chars.len();
+
+            // How many of the run's non-space characters resolve to a glyph.
+            let substituted = fonts.is_substituted(font);
+            let mut resolved = 0;
+            let mut wanted = 0;
+            for (index, ch) in chars.iter().enumerate() {
+                if ch.is_whitespace() {
+                    continue;
+                }
+                wanted += 1;
+                let code = match substituted {
+                    true => *ch as u32,
+                    false => codes.get(index).copied().unwrap_or(0),
+                };
+                if fonts
+                    .raster(font, code, Some(*ch), *size, *rot, [0, 0, 0])
+                    .is_some()
+                {
+                    resolved += 1;
+                } else {
+                    eprintln!("  miss: {font} code={code} U+{:04X}", *ch as u32);
+                }
+            }
+            if have_face && aligned && resolved == wanted && wanted > 0 {
+                continue;
+            }
+            eprintln!(
+                "font={font:<32} face={have_face:<5} sub={substituted:<5} chars={:<4} resolved={resolved}/{wanted}",
+                chars.len()
+            );
+        }
     }
 }
