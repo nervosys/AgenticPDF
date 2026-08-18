@@ -408,7 +408,14 @@ impl App {
                         .with_property("page", serde_json::json!(session.page()))
                         .with_property("ops", serde_json::json!(list.ops.len())),
                 );
-                canvas::paint_page(frame.painter(), &list, transform, &[], session.fonts());
+                let textures = session.textures();
+                canvas::paint_page(
+                    frame.painter(),
+                    &list,
+                    transform,
+                    &textures,
+                    session.fonts(),
+                );
             }
             // Formats with no geometry are not a failure — the crate's standing
             // rule is to say so rather than invent coordinates.

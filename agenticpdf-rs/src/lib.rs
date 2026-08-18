@@ -18,6 +18,7 @@ pub mod figures;
 pub mod font;
 pub mod formats;
 pub mod formula;
+pub mod image;
 pub mod layout;
 #[cfg(feature = "cli")]
 pub mod mcp;

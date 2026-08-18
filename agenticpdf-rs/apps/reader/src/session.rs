@@ -9,6 +9,9 @@
 //! and the ontology would describe an app that no longer matches the one the
 //! user sees. Here there is one implementation and two callers.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use agenticpdf::adf::oplog::{Actor, Change, OpId, OpLog};
 use agenticpdf::adf::{AdfDoc, AdfWriter};
 use agenticpdf::detect::Format;
@@ -49,6 +52,14 @@ pub struct Session {
     /// Scale applied when rendering pages, as a multiple of natural size.
     zoom: f32,
     dirty: bool,
+    /// Decoded page images, by page.
+    ///
+    /// A photograph costs milliseconds to decode and a page is redrawn on
+    /// every scroll, zoom and keystroke, so decoding per frame would make the
+    /// reader unusable on exactly the documents that need it most. A mutex
+    /// rather than a cell because the mobile shells keep the session in a
+    /// `static` and so require `Send`.
+    textures: Mutex<HashMap<usize, Arc<Vec<crate::canvas::Texture>>>>,
 }
 
 impl Session {
@@ -92,6 +103,7 @@ impl Session {
             page: 1,
             zoom: 1.0,
             dirty: false,
+            textures: Mutex::new(HashMap::new()),
         })
     }
 
@@ -151,6 +163,42 @@ impl Session {
     /// The document's embedded fonts, for the painter.
     pub fn fonts(&self) -> &crate::glyphs::FontSet {
         &self.fonts
+    }
+
+    /// The current page's images, decoded to pixels and kept.
+    ///
+    /// Returns an empty set for a format with no images and for images in a
+    /// codec we cannot read -- JPEG 2000, or a progressive JPEG -- where the
+    /// painter draws the frame instead. A page that is one big photograph is
+    /// then a page with a box on it, which is at least honest.
+    pub fn textures(&self) -> Arc<Vec<crate::canvas::Texture>> {
+        let page = self.page;
+        if let Ok(cache) = self.textures.lock()
+            && let Some(hit) = cache.get(&page)
+        {
+            return hit.clone();
+        }
+        let decoded: Vec<crate::canvas::Texture> =
+            agenticpdf::engine::extract_page_textures(&self.source, page)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| crate::canvas::Texture {
+                    name: t.name,
+                    width: t.width,
+                    height: t.height,
+                    rgba: t.rgba,
+                })
+                .collect();
+        let shared = Arc::new(decoded);
+        if let Ok(mut cache) = self.textures.lock() {
+            // Bounded: a long document read end to end would otherwise hold
+            // every page it has ever shown.
+            if cache.len() > 8 {
+                cache.clear();
+            }
+            cache.insert(page, shared.clone());
+        }
+        shared
     }
 
     pub fn log(&self) -> &OpLog {

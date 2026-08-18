@@ -2643,6 +2643,127 @@ pub struct PageImage {
     pub data: String,
 }
 
+/// A page image decoded all the way to pixels a painter can draw.
+///
+/// [`PageImage`] hands JPEG bytes on untouched, which is right for a browser
+/// -- it has a decoder and base64 of an already-compressed photograph is far
+/// smaller than base64 of its pixels. A native painter has neither luxury and
+/// wants the pixels.
+pub struct PageTexture {
+    /// The resource name a [`RenderOp::Image`] refers to.
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` bytes, straight RGBA.
+    pub rgba: Vec<u8>,
+}
+
+/// Decode every image a page draws, by resource name.
+pub fn extract_page_textures(
+    data: &[u8],
+    page_number: usize,
+) -> Result<Vec<PageTexture>, PdfError> {
+    let doc = Document::parse(data)?;
+    let root = doc
+        .trailer
+        .get("Root")
+        .map(|o| doc.resolve(o))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let mut page_dicts: Vec<Dict> = Vec::new();
+    if let Some(pages_obj) = doc.get(&root, "Pages")
+        && let Some(pages_dict) = pages_obj.as_dict()
+    {
+        let mut visited = std::collections::HashSet::new();
+        collect_pages(
+            &doc,
+            pages_dict,
+            &mut page_dicts,
+            &Inherited::default(),
+            0,
+            &mut visited,
+        );
+    }
+    let Some(pd) = page_dicts.get(page_number.saturating_sub(1)) else {
+        return Ok(Vec::new());
+    };
+    let xobjects = doc
+        .get(pd, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|r| doc.get(&r, "XObject"))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+
+    let mut out = Vec::new();
+    for (name, obj) in xobjects.iter() {
+        let resolved = doc.resolve(obj);
+        let Object::Stream(d, raw) = &resolved else {
+            continue;
+        };
+        if doc
+            .get(d, "Subtype")
+            .and_then(|o| o.as_name().map(String::from))
+            .as_deref()
+            != Some("Image")
+        {
+            continue;
+        }
+        let Some((format, width, height, bytes)) = image_to_rgba(&doc, d, raw) else {
+            continue;
+        };
+        // A Separation or DeviceN image carries colorant *tints*, not colour:
+        // full tint is full ink, which is dark. Read as intensity, every such
+        // image comes out as its own negative. Inverting is the same
+        // approximation the fill colours use, and for the one-ink and
+        // process-ink spaces these documents use it lands on the right side of
+        // black and white.
+        let tint = matches!(
+            color_space_name(&doc, d).as_str(),
+            "Separation" | "DeviceN"
+        );
+        let mut rgba = match format.as_str() {
+            "rgba" => bytes,
+            "jpeg" => {
+                // A codec the platform may or may not have. Where it cannot be
+                // decoded the image is left out and the painter draws its
+                // frame, which is honest about there being something there.
+                let Some(image) = crate::image::jpeg::decode(&bytes) else {
+                    continue;
+                };
+                if image.width != width || image.height != height {
+                    continue;
+                }
+                let mut rgba = Vec::with_capacity(image.rgb.len() / 3 * 4);
+                for pixel in image.rgb.chunks_exact(3) {
+                    rgba.extend_from_slice(pixel);
+                    rgba.push(255);
+                }
+                // The soft mask is a separate image and applies either way.
+                apply_smask(&doc, d, &mut rgba, width as usize, height as usize);
+                rgba
+            }
+            _ => continue,
+        };
+        if rgba.len() != width as usize * height as usize * 4 {
+            rgba.resize(width as usize * height as usize * 4, 0);
+        }
+        if tint {
+            for pixel in rgba.chunks_exact_mut(4) {
+                pixel[0] = 255 - pixel[0];
+                pixel[1] = 255 - pixel[1];
+                pixel[2] = 255 - pixel[2];
+            }
+        }
+        out.push(PageTexture {
+            name: name.clone(),
+            width,
+            height,
+            rgba,
+        });
+    }
+    Ok(out)
+}
+
 /// Extract a page's placed images with decoded pixels, for the renderer.
 pub fn extract_page_images(data: &[u8], page_number: usize) -> Result<Vec<PageImage>, PdfError> {
     let doc = Document::parse(data)?;

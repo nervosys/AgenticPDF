@@ -1479,11 +1479,12 @@ mod page_image {
         let area = Rect::new(0.0, 0.0, width as f32, height as f32);
 
         let mut painter = ImagePainter::new(width, height);
+        let textures = session.textures();
         paint_page(
             &mut painter,
             &list,
             Transform::fit(&list, area, 1.0),
-            &[],
+            &textures,
             session.fonts(),
         );
 
