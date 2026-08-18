@@ -1813,19 +1813,10 @@ fn color_in_space(stack: &[Token], kind: ColorKind) -> [f64; 4] {
 }
 
 
-/// The page's named colour spaces, classified once.
-///
-/// `cs /CS0` names an entry in the page resources; without it there is no way
-/// to know whether the number that follows is a grey level or a tint.
-fn build_color_spaces(doc: &Document, page: &Dict) -> HashMap<String, ColorKind> {
+/// The colour spaces a resource dictionary names.
+fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, ColorKind> {
     let mut out = HashMap::new();
-    let Some(resources) = doc.get(page, "Resources") else {
-        return out;
-    };
-    let Some(rd) = resources.as_dict().cloned() else {
-        return out;
-    };
-    let Some(spaces) = doc.get(&rd, "ColorSpace").map(|o| doc.resolve(&o)) else {
+    let Some(spaces) = doc.get(rd, "ColorSpace").map(|o| doc.resolve(&o)) else {
         return out;
     };
     let Some(sd) = spaces.as_dict().cloned() else {
@@ -1869,21 +1860,132 @@ struct GState {
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
-    let fonts = build_fonts(doc, page);
-    let color_spaces = build_color_spaces(doc, page);
     let content = page_contents(doc, page);
     if content.is_empty() {
         return Vec::new();
     }
+    let resources = doc
+        .get(page, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
     let mut ops = Vec::new();
+    // Content is placed in the media box's coordinates; the display list is in
+    // the visible box's. Where the two differ the whole page shifts.
+    run_content(
+        doc,
+        &content,
+        &resources,
+        [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]],
+        &mut ops,
+        0,
+    );
+    ops
+}
+
+/// The form XObject a name refers to, if it is one.
+///
+/// An image XObject is drawn; a form is executed. Anything else -- a
+/// PostScript XObject, a broken reference -- is neither.
+fn form_xobject(doc: &Document, resources: &Dict, name: &str) -> Option<(Dict, Vec<u8>)> {
+    let xobjects = doc
+        .get(resources, "XObject")
+        .and_then(|o| o.as_dict().cloned())?;
+    let resolved = doc.resolve(xobjects.get(name)?);
+    let Object::Stream(d, raw) = &resolved else {
+        return None;
+    };
+    if doc
+        .get(d, "Subtype")
+        .and_then(|o| o.as_name().map(String::from))
+        .as_deref()
+        != Some("Form")
+    {
+        return None;
+    }
+    let content = decode_stream(d, raw).ok()?;
+    Some((d.clone(), content))
+}
+
+/// Run a form XObject: its own transform, clipped to its own box, with its own
+/// resources.
+///
+/// The form's `/Matrix` maps form space into the space of whoever drew it, and
+/// its `/BBox` bounds what it may paint -- a form is entitled to draw outside
+/// its box and expect to be cut off there.
+fn run_form(
+    doc: &Document,
+    form: &(Dict, Vec<u8>),
+    outer: &Dict,
+    ctm: Matrix,
+    ops: &mut Vec<RenderOp>,
+    depth: usize,
+) {
+    let (dict, content) = form;
+    let matrix = rect6(doc, dict, "Matrix").unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let inner = mat_mul(&matrix, &ctm);
+
+    ops.push(RenderOp::Save);
+    if let Some(bbox) = rect4(doc, dict, "BBox") {
+        // The box is in form space, so its corners go through the form's own
+        // transform; a rotated form has a rotated box and needs the polygon,
+        // not just its extent.
+        let corners = [
+            transform_point(&inner, bbox[0], bbox[1]),
+            transform_point(&inner, bbox[2], bbox[1]),
+            transform_point(&inner, bbox[2], bbox[3]),
+            transform_point(&inner, bbox[0], bbox[3]),
+        ];
+        let xs: Vec<f64> = corners.iter().map(|c| c.0).collect();
+        let ys: Vec<f64> = corners.iter().map(|c| c.1).collect();
+        ops.push(RenderOp::Clip {
+            rect: [
+                xs.iter().cloned().fold(f64::INFINITY, f64::min),
+                ys.iter().cloned().fold(f64::INFINITY, f64::min),
+                xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            ],
+            subpaths: vec![corners.iter().map(|c| [c.0, c.1]).collect()],
+        });
+    }
+    // A form without resources of its own inherits the ones around it, which
+    // the specification allows and producers rely on.
+    let inner_resources = doc
+        .get(dict, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_else(|| outer.clone());
+    run_content(doc, content, &inner_resources, inner, ops, depth + 1);
+    ops.push(RenderOp::Restore);
+}
+
+/// How deep a form may nest before we stop following it.
+///
+/// Forms refer to forms legitimately -- a logo inside a letterhead inside a
+/// page -- but a malformed file can make one refer to itself, and the reader
+/// must come back either way.
+const MAX_FORM_DEPTH: usize = 12;
+
+/// Interpret one content stream, appending to `ops`.
+///
+/// A page and a form XObject are the same thing here: a stream of operators
+/// with a resource dictionary and a starting transform. Keeping that in one
+/// function is what lets a form be drawn by running it, rather than by
+/// pretending it is an image and drawing a box.
+fn run_content(
+    doc: &Document,
+    content: &[u8],
+    resources: &Dict,
+    start_ctm: Matrix,
+    ops: &mut Vec<RenderOp>,
+    depth: usize,
+) {
+    let fonts = build_fonts_in(doc, resources);
+    let color_spaces = build_color_spaces_in(doc, resources);
 
     // The text rendering mode rides along with the transform: it is graphics
     // state, so `q`/`Q` must restore it. Otherwise an invisible run inside a
     // saved state leaks out and blanks the real text that follows.
     let mut ctm_stack: Vec<GState> = Vec::new();
-    // Content is placed in the media box's coordinates; the display list is
-    // in the visible box's. Where the two differ the whole page shifts.
-    let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]];
+    let mut ctm: Matrix = start_ctm;
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = tm;
     let mut font_size = 0.0f64;
@@ -2094,6 +2196,18 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
                     }
                     "Do" => {
                         if let Some(Token::Name(name)) = stack.last() {
+                            // A form is a content stream, not a picture: run
+                            // it. Drawing a box where one should be executed
+                            // leaves a blank page for every document that
+                            // wraps its content in one, which is what any
+                            // number of imposition and archiving tools emit.
+                            if let Some(form) = form_xobject(doc, resources, name)
+                                && depth < MAX_FORM_DEPTH
+                            {
+                                run_form(doc, &form, resources, ctm, ops, depth);
+                                stack.clear();
+                                continue;
+                            }
                             let c0 = transform_point(&ctm, 0.0, 0.0);
                             let c1 = transform_point(&ctm, 1.0, 0.0);
                             let c2 = transform_point(&ctm, 1.0, 1.0);
@@ -2194,7 +2308,7 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
                                 &ctm,
                                 fill,
                                 &ts,
-                                &mut ops,
+                                ops,
                             );
                             // Advance the text matrix by the run width so the
                             // next show on the same line is positioned correctly.
@@ -2322,7 +2436,7 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
                                     &seg_tm,
                                     &ctm,
                                     fill,
-                                    &mut ops,
+                                    ops,
                                 );
                             }
                             // Advance the text matrix by the total run width so a
@@ -2349,7 +2463,6 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
             break;
         }
     }
-    ops
 }
 
 /// The text-state parameters that move the pen but are not the font or the
@@ -3164,6 +3277,20 @@ fn collect_pages(
     }
 }
 
+/// A six-number array: a transformation matrix.
+fn rect6(doc: &Document, dict: &Dict, key: &str) -> Option<Matrix> {
+    let arr = doc.get(dict, key)?;
+    let a = arr.as_array()?;
+    if a.len() < 6 {
+        return None;
+    }
+    let mut out = [0.0f64; 6];
+    for (slot, value) in out.iter_mut().zip(a.iter()) {
+        *slot = doc.resolve(value).as_f64()?;
+    }
+    Some(out)
+}
+
 fn rect4(doc: &Document, dict: &Dict, key: &str) -> Option<[f64; 4]> {
     let arr = doc.get(dict, key)?;
     let a = arr.as_array()?;
@@ -3577,17 +3704,10 @@ impl Font {
     }
 }
 
-fn build_fonts(doc: &Document, page: &Dict) -> HashMap<String, Font> {
+/// The fonts a resource dictionary names. A form XObject brings its own.
+fn build_fonts_in(doc: &Document, rd: &Dict) -> HashMap<String, Font> {
     let mut fonts = HashMap::new();
-    let resources = match doc.get(page, "Resources") {
-        Some(o) => o,
-        None => return fonts,
-    };
-    let rd = match resources.as_dict() {
-        Some(d) => d.clone(),
-        None => return fonts,
-    };
-    let font_dict = match doc.get(&rd, "Font") {
+    let font_dict = match doc.get(rd, "Font") {
         Some(o) => o,
         None => return fonts,
     };
@@ -4141,16 +4261,48 @@ fn flush_path(path: &mut Vec<Seg>, h: &mut Vec<Seg>, v: &mut Vec<Seg>) {
 
 /// Extract positioned text fragments and ruling lines from a page.
 fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> PageContent {
-    let fonts = build_fonts(doc, page);
     let content = page_contents(doc, page);
+    let mut found = PageContent {
+        text: Vec::new(),
+        h_lines: Vec::new(),
+        v_lines: Vec::new(),
+        placed: Vec::new(),
+    };
     if content.is_empty() {
-        return PageContent {
-            text: Vec::new(),
-            h_lines: Vec::new(),
-            v_lines: Vec::new(),
-            placed: Vec::new(),
-        };
+        return found;
     }
+    let resources = doc
+        .get(page, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    read_content(
+        doc,
+        &content,
+        &resources,
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        page_number,
+        &mut found,
+        0,
+    );
+    found
+}
+
+/// Read one content stream for text and rulings.
+///
+/// The companion to `run_content`: a page and a form XObject are the same kind
+/// of thing, and text inside a form is text on the page. Without this a
+/// document that wraps its content in a form -- which imposition and archiving
+/// tools do routinely -- extracts as nothing at all.
+fn read_content(
+    doc: &Document,
+    content: &[u8],
+    resources: &Dict,
+    start_ctm: Matrix,
+    page_number: usize,
+    found: &mut PageContent,
+    depth: usize,
+) {
+    let fonts = build_fonts_in(doc, resources);
 
     let mut blocks = Vec::new();
     let mut h_lines: Vec<Seg> = Vec::new();
@@ -4159,7 +4311,7 @@ fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> Page
 
     // Graphics + text state.
     let mut ctm_stack: Vec<Matrix> = Vec::new();
-    let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut ctm: Matrix = start_ctm;
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut font_size = 0.0f64;
@@ -4240,6 +4392,28 @@ fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> Page
                     }
                     "Do" => {
                         if let Some(Token::Name(n)) = stack.last() {
+                            // A form holds text like any other content stream.
+                            if let Some(form) = form_xobject(doc, resources, n)
+                                && depth < MAX_FORM_DEPTH
+                            {
+                                let matrix = rect6(doc, &form.0, "Matrix")
+                                    .unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+                                let inner_resources = doc
+                                    .get(&form.0, "Resources")
+                                    .and_then(|o| o.as_dict().cloned())
+                                    .unwrap_or_else(|| resources.clone());
+                                read_content(
+                                    doc,
+                                    &form.1,
+                                    &inner_resources,
+                                    mat_mul(&matrix, &ctm),
+                                    page_number,
+                                    found,
+                                    depth + 1,
+                                );
+                                stack.clear();
+                                continue;
+                            }
                             // Image space is the unit square mapped by the CTM.
                             let c0 = transform_point(&ctm, 0.0, 0.0);
                             let c1 = transform_point(&ctm, 1.0, 0.0);
@@ -4360,12 +4534,10 @@ fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> Page
         }
     }
 
-    PageContent {
-        text: blocks,
-        h_lines,
-        v_lines,
-        placed,
-    }
+    found.text.append(&mut blocks);
+    found.h_lines.append(&mut h_lines);
+    found.v_lines.append(&mut v_lines);
+    found.placed.append(&mut placed);
 }
 
 /// Extract image XObjects with their on-page placement bounding boxes.
@@ -5542,6 +5714,151 @@ mod text_state {
             spaced > plain + 15.0,
             "character spacing should widen a TJ run: {plain} -> {spaced}"
         );
+    }
+
+    /// A form XObject is a content stream and must be run, not drawn.
+    ///
+    /// A page whose whole content is one form is a real shape -- imposition
+    /// and archiving tools emit it -- and treating the form as a picture left
+    /// the page blank, in the renderer and in text extraction alike.
+    #[test]
+    fn a_form_xobject_is_executed() {
+        let pdf = form_document(
+            "q 1 0 0 1 50 20 cm /Fm0 Do Q",
+            "/BBox [0 0 200 100] /Resources << /Font << /F1 4 0 R >> >>",
+            "BT /F1 12 Tf 10 10 Td (Inside) Tj ET",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let (text, x, y) = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { text, x, y, .. } => Some((text.clone(), *x, *y)),
+                _ => None,
+            })
+            .expect("the form's text should be drawn");
+        assert_eq!(text.trim(), "Inside");
+        // Placed by the `cm` at the call site plus the offset inside the form.
+        assert!((x - 60.0).abs() < 1.0, "x {x}");
+        assert!((y - 30.0).abs() < 1.0, "y {y}");
+
+        // And the same words come out of extraction.
+        let extracted = crate::PdfDocument::from_bytes(&pdf)
+            .expect("parse")
+            .extract_text();
+        assert!(
+            extracted.contains("Inside"),
+            "text inside a form is text on the page: {extracted:?}"
+        );
+    }
+
+    /// A form's `/Matrix` maps its space into the caller's.
+    #[test]
+    fn a_form_matrix_places_its_content() {
+        let pdf = form_document(
+            "/Fm0 Do",
+            "/BBox [0 0 200 100] /Matrix [1 0 0 1 100 40]              /Resources << /Font << /F1 4 0 R >> >>",
+            "BT /F1 12 Tf 10 10 Td (Inside) Tj ET",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let (x, y) = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("the form's text");
+        assert!((x - 110.0).abs() < 1.0, "x {x}");
+        assert!((y - 50.0).abs() < 1.0, "y {y}");
+    }
+
+    /// A form that draws itself must not take the reader with it.
+    #[test]
+    fn a_self_referential_form_terminates() {
+        let pdf = form_document(
+            "/Fm0 Do",
+            "/BBox [0 0 200 100] /Resources << /XObject << /Fm0 6 0 R >> >>",
+            "/Fm0 Do",
+        );
+        // The point is that this returns at all.
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        assert!(list.ops.len() < 10_000, "bounded: {}", list.ops.len());
+    }
+
+    /// A page whose content is one form, with the form as object 6.
+    fn form_document(content: &str, form_dict: &str, form_content: &str) -> Vec<u8> {
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(b"%PDF-1.4
+");
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(format!("{number} 0 obj
+").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"
+endobj
+");
+        };
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /Resources << /XObject << /Fm0 6 0 R >> /Font << /F1 4 0 R >> >>               /Contents 5 0 R >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!("<< /Length {} >>
+stream
+{content}
+endstream", content.len()).as_bytes(),
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            {
+                let header =
+                    format!("<< /Type /XObject /Subtype /Form {form_dict} /Length {} >>",
+                            form_content.len());
+                format!("{header}
+stream
+{form_content}
+endstream")
+            }
+            .as_bytes(),
+        );
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref
+0 {}
+", offsets.len()).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f 
+");
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n 
+").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{xref}
+%%EOF
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 
     /// A reader shows the crop box, not the sheet the page was printed on.
