@@ -435,18 +435,87 @@ pub fn paint_page(
 /// page-painting code, and only the last step differs.
 ///
 /// It is deliberately native-compatible so it can be tested without a browser.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RecordingPainter {
     ops: Vec<String>,
     clip_depth: usize,
+    /// Device pixels per painter unit on the host, so an image is sampled
+    /// down to the resolution the screen can actually show.
+    raster_scale: f32,
     /// Content keys already sent in this recording, so a repeated glyph costs
     /// a key rather than its pixels again.
     images: std::collections::HashSet<String>,
 }
 
-/// Images at or below this size are inlined in the recording. A glyph mask is
-/// a few hundred bytes; a scanned page is not.
-const MAX_INLINE_IMAGE_BYTES: usize = 64 * 1024;
+impl Default for RecordingPainter {
+    fn default() -> RecordingPainter {
+        RecordingPainter {
+            ops: Vec::new(),
+            clip_depth: 0,
+            // One device pixel per painter unit until the host says otherwise.
+            raster_scale: 1.0,
+            images: std::collections::HashSet::new(),
+        }
+    }
+}
+
+/// The largest image sent inline, after sampling to its drawn size.
+///
+/// Generous, because the sampling above bounds an image by where it is drawn
+/// and the page is bounded by the window: a full-page picture on a large
+/// screen is a few megabytes once, and a key thereafter. Anything past this is
+/// left to the host, which draws its frame.
+const MAX_INLINE_IMAGE_BYTES: usize = 6 * 1024 * 1024;
+
+/// Sample an image down to the size it is drawn at, if that is meaningfully
+/// smaller than the image itself.
+///
+/// A box filter over the source pixels covered by each destination pixel:
+/// slower than picking one of them and far better looking, which matters
+/// because the alternative -- letting the host scale it -- is what we are
+/// avoiding by not sending it at full size in the first place.
+fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(u32, u32, Vec<u8>)> {
+    let want_w = (rect.width.abs() * raster_scale).ceil().max(1.0) as u32;
+    let want_h = (rect.height.abs() * raster_scale).ceil().max(1.0) as u32;
+    let (src_w, src_h) = (image.width, image.height);
+    // Only worth doing when it saves real weight, and never an enlargement.
+    if src_w <= want_w || src_h <= want_h || src_w * src_h <= 4 * want_w * want_h {
+        return None;
+    }
+    if image.pixels.len() < (src_w as usize * src_h as usize * 4) {
+        return None;
+    }
+
+    let mut out = vec![0u8; want_w as usize * want_h as usize * 4];
+    for y in 0..want_h {
+        let y0 = (y as usize * src_h as usize) / want_h as usize;
+        let y1 = (((y + 1) as usize * src_h as usize) / want_h as usize).max(y0 + 1);
+        for x in 0..want_w {
+            let x0 = (x as usize * src_w as usize) / want_w as usize;
+            let x1 = (((x + 1) as usize * src_w as usize) / want_w as usize).max(x0 + 1);
+            let mut sum = [0u32; 4];
+            let mut n = 0u32;
+            for sy in y0..y1.min(src_h as usize) {
+                let row = sy * src_w as usize;
+                for sx in x0..x1.min(src_w as usize) {
+                    let at = (row + sx) * 4;
+                    for (channel, total) in sum.iter_mut().enumerate() {
+                        *total += image.pixels[at + channel] as u32;
+                    }
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            let at = (y as usize * want_w as usize + x as usize) * 4;
+            for (channel, total) in sum.iter().enumerate() {
+                out[at + channel] = (total / n) as u8;
+            }
+        }
+    }
+    Some((want_w, want_h, out))
+}
 
 /// A short content hash, so identical pixels are sent once.
 fn content_key(pixels: &[u8]) -> String {
@@ -470,6 +539,15 @@ impl RecordingPainter {
             images: known,
             ..RecordingPainter::default()
         }
+    }
+
+    /// How many device pixels the host paints per painter unit.
+    ///
+    /// Images are sampled to that resolution rather than sent whole; a host
+    /// that never says defaults to one, which is the safe assumption.
+    pub fn with_raster_scale(mut self, scale: f32) -> RecordingPainter {
+        self.raster_scale = scale.clamp(0.25, 4.0);
+        self
     }
 
     /// The masks the host holds after this recording.
@@ -651,15 +729,26 @@ impl Painter for RecordingPainter {
         // A large image is still left to the host. A scanned page inlined per
         // frame would be megabytes of JSON, and the host already resolves
         // those by index.
-        let inline = image.pixels.len() <= MAX_INLINE_IMAGE_BYTES;
+        // A photograph is sent at the size it is drawn, not the size it was
+        // scanned. A 2700-pixel-wide picture placed in a 400-pixel column
+        // costs forty times its useful weight as base64, and the host would
+        // throw the difference away on the first draw. Sampling down here is
+        // what makes page images affordable over this transport at all.
+        let scaled = fit_to_draw(image, rect, self.raster_scale);
+        let (width, height, pixels_ref) = match &scaled {
+            Some((w, h, bytes)) => (*w, *h, bytes.as_slice()),
+            None => (image.width, image.height, image.pixels),
+        };
+
+        let inline = pixels_ref.len() <= MAX_INLINE_IMAGE_BYTES;
         let key = match inline {
-            true => Some(content_key(image.pixels)),
+            true => Some(content_key(pixels_ref)),
             false => None,
         };
         let pixels = match &key {
             // Sent once. A repeat carries the key alone.
             Some(key) if self.images.insert(key.clone()) => {
-                format!(r#","pixels":"{}""#, agenticpdf::engine::b64e(image.pixels))
+                format!(r#","pixels":"{}""#, agenticpdf::engine::b64e(pixels_ref))
             }
             _ => String::new(),
         };
@@ -669,7 +758,7 @@ impl Painter for RecordingPainter {
         };
         self.push(format!(
             r#"{{"op":"image","x":{:.2},"y":{:.2},"w":{:.2},"h":{:.2},"iw":{},"ih":{}{key}{pixels}}}"#,
-            rect.x, rect.y, rect.width, rect.height, image.width, image.height
+            rect.x, rect.y, rect.width, rect.height, width, height
         ));
     }
 }
@@ -883,10 +972,9 @@ mod tests {
 
     #[test]
     fn the_recording_inlines_masks_but_not_photographs() {
-        // The rule is a size boundary, not a blanket refusal. Every glyph on
-        // the page is an image, and a host given only geometry draws text as
-        // empty rectangles; a scanned page inlined per frame would be
-        // megabytes of JSON. So masks travel and photographs do not.
+        // An image travels at the size it is drawn. A 512-pixel picture in a
+        // ten-point slot is ten points of detail; sending the rest costs the
+        // host a megabyte to throw away.
         let mut painter = RecordingPainter::new();
         let page_sized = vec![255u8; 512 * 512 * 4];
         painter.draw_image(
@@ -895,12 +983,17 @@ mod tests {
         );
         let json = painter.to_json();
         assert!(
-            !json.contains("\"pixels\":"),
-            "a page-sized image should be left to the host"
+            json.contains("\"pixels\":"),
+            "sampled down, it is small enough to send"
         );
         assert!(
-            json.contains("\"iw\":512"),
-            "its geometry should still be sent"
+            json.contains("\"iw\":10"),
+            "and it is sent at the size it is drawn: {json:.120}"
+        );
+        assert!(
+            json.len() < 4096,
+            "a quarter-megapixel image in a ten-point slot should cost              hundreds of bytes, not hundreds of thousands: {} bytes",
+            json.len()
         );
 
         let mut painter = RecordingPainter::new();
@@ -1740,21 +1833,73 @@ mod recording_glyphs {
         );
     }
 
-    /// A large image is still left to the host: inlining a scanned page per
-    /// frame would be megabytes of JSON.
+    /// Sampling averages the pixels it drops rather than picking one.
+    ///
+    /// Nearest-neighbour on a photograph reduced tenfold is a field of
+    /// speckle: every tenth pixel survives and the other ninety-nine
+    /// hundredths of the picture is gone. Averaging keeps the colour.
     #[test]
-    fn a_large_image_is_not_inlined() {
+    fn sampling_down_averages_rather_than_picks() {
+        // A checkerboard of black and white pixels: any single sample is one
+        // or the other, the average is grey.
+        let (w, h) = (64u32, 64u32);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let at = (y * w as usize + x) * 4;
+                let v = if (x + y) % 2 == 0 { 0 } else { 255 };
+                pixels[at] = v;
+                pixels[at + 1] = v;
+                pixels[at + 2] = v;
+                pixels[at + 3] = 255;
+            }
+        }
+        let image = ImageData::new(w, h, &pixels);
+        let (out_w, out_h, out) =
+            fit_to_draw(&image, Rect::new(0.0, 0.0, 8.0, 8.0), 1.0).expect("should sample down");
+        assert_eq!((out_w, out_h), (8, 8));
+        for pixel in out.chunks_exact(4) {
+            assert!(
+                (100..=155).contains(&pixel[0]),
+                "a black and white checkerboard averages to grey, got {}",
+                pixel[0]
+            );
+            assert_eq!(pixel[3], 255, "alpha survives");
+        }
+    }
+
+    /// An image drawn at or near its own size is left alone: sampling it
+    /// would only lose detail the host can use.
+    #[test]
+    fn an_image_drawn_at_its_own_size_is_not_sampled() {
+        let pixels = vec![9u8; 32 * 32 * 4];
+        let image = ImageData::new(32, 32, &pixels);
+        assert!(fit_to_draw(&image, Rect::new(0.0, 0.0, 32.0, 32.0), 1.0).is_none());
+        // Nor is it enlarged to fill a bigger slot.
+        assert!(fit_to_draw(&image, Rect::new(0.0, 0.0, 90.0, 90.0), 1.0).is_none());
+        // A host with more pixels per unit gets more of the image.
+        assert!(fit_to_draw(&image, Rect::new(0.0, 0.0, 32.0, 32.0), 0.25).is_some());
+    }
+
+    /// An image that is still enormous after sampling is left to the host,
+    /// which draws its frame: a picture drawn at wall size has nothing to
+    /// sample away, and inlining it per frame would be megabytes of JSON.
+    #[test]
+    fn an_image_too_large_even_when_sampled_is_left_to_the_host() {
+        // Drawn as large as it is stored, so there is nothing to sample away
+        // and the whole thing would have to travel.
+        let side = 1400u32; // 1400^2 * 4 bytes is past the inline bound
         let mut painter = RecordingPainter::new();
-        let pixels = vec![0u8; MAX_INLINE_IMAGE_BYTES + 4];
+        let pixels = vec![0u8; (side * side * 4) as usize];
         painter.draw_image(
-            Rect::new(0.0, 0.0, 10.0, 10.0),
-            &ImageData::new(128, 128, &pixels),
+            Rect::new(0.0, 0.0, side as f32, side as f32),
+            &ImageData::new(side, side, &pixels),
         );
         let json = painter.to_json();
-        assert!(json.contains(r#""op":"image""#));
+        assert!(json.contains(r#""op":"image""#), "its geometry still goes");
         assert!(
             !json.contains(r#""pixels":""#),
-            "a large image should not inline"
+            "past the bound the host draws the frame instead"
         );
     }
 

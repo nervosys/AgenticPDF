@@ -93,8 +93,10 @@ impl WebReader {
         // redraw sends keys rather than pixels. Without this every scroll and
         // zoom re-inlines the same few hundred masks.
         let known = self.sent_images.borrow().clone();
-        let mut painter = RecordingPainter::with_known_images(known);
-        crate::canvas::paint_page(&mut painter, &list, transform, &[], session.fonts());
+        let mut painter = RecordingPainter::with_known_images(known)
+            .with_raster_scale(session.fonts().raster_scale() as f32);
+        let textures = session.textures();
+        crate::canvas::paint_page(&mut painter, &list, transform, &textures, session.fonts());
         let json = painter.to_json();
         let mut sent = painter.image_keys();
         // Bounded: every zoom level produces its own masks, so an afternoon of
