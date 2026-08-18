@@ -2518,7 +2518,9 @@ pub(crate) fn unpack_samples(bytes: &[u8], w: usize, h: usize, bpc: u8) -> Optio
 }
 
 /// Standard-alphabet base64 (no dependency).
-pub(crate) fn b64e(data: &[u8]) -> String {
+/// Base64, for embedding bytes in JSON. Public because a recording inlines
+/// glyph masks for a host that has no other way to receive them.
+pub fn b64e(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {

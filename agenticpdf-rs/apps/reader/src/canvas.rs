@@ -414,11 +414,42 @@ pub fn paint_page(
 pub struct RecordingPainter {
     ops: Vec<String>,
     clip_depth: usize,
+    /// Content keys already sent in this recording, so a repeated glyph costs
+    /// a key rather than its pixels again.
+    images: std::collections::HashSet<String>,
+}
+
+/// Images at or below this size are inlined in the recording. A glyph mask is
+/// a few hundred bytes; a scanned page is not.
+const MAX_INLINE_IMAGE_BYTES: usize = 64 * 1024;
+
+/// A short content hash, so identical pixels are sent once.
+fn content_key(pixels: &[u8]) -> String {
+    let digest = agenticpdf::adf::sha256::sha256(pixels);
+    agenticpdf::adf::sha256::hex(&digest[..8])
 }
 
 impl RecordingPainter {
     pub fn new() -> RecordingPainter {
         RecordingPainter::default()
+    }
+
+    /// A recording that assumes the host already holds these masks.
+    ///
+    /// A fresh recording is built for every frame, so without this the same
+    /// few hundred masks are inlined again on every scroll and zoom -- a third
+    /// of a megabyte per redraw for a page the host has already decoded and
+    /// cached by key.
+    pub fn with_known_images(known: std::collections::HashSet<String>) -> RecordingPainter {
+        RecordingPainter {
+            images: known,
+            ..RecordingPainter::default()
+        }
+    }
+
+    /// The masks the host holds after this recording.
+    pub fn image_keys(self) -> std::collections::HashSet<String> {
+        self.images
     }
 
     /// The recording, as a JSON array.
@@ -583,10 +614,36 @@ impl Painter for RecordingPainter {
     }
 
     fn draw_image(&mut self, rect: Rect, image: &ImageData<'_>) {
-        // Pixels are not inlined: a scanned page would be megabytes of JSON per
-        // frame. The host is given the geometry and fetches the asset by index.
+        // Glyph masks are inlined; scanned pages are not.
+        //
+        // Every glyph on the page arrives here, so a host that is only given
+        // geometry draws text as a field of empty rectangles -- which is what
+        // the browser did once glyphs became masks. They are small and they
+        // repeat: one page uses a hundred or so distinct glyph-and-size
+        // combinations across thousands of instances, so each is sent once
+        // under a content key and referenced after that.
+        //
+        // A large image is still left to the host. A scanned page inlined per
+        // frame would be megabytes of JSON, and the host already resolves
+        // those by index.
+        let inline = image.pixels.len() <= MAX_INLINE_IMAGE_BYTES;
+        let key = match inline {
+            true => Some(content_key(image.pixels)),
+            false => None,
+        };
+        let pixels = match &key {
+            // Sent once. A repeat carries the key alone.
+            Some(key) if self.images.insert(key.clone()) => {
+                format!(r#","pixels":"{}""#, agenticpdf::engine::b64e(image.pixels))
+            }
+            _ => String::new(),
+        };
+        let key = match &key {
+            Some(key) => format!(r#","key":"{key}""#),
+            None => String::new(),
+        };
         self.push(format!(
-            r#"{{"op":"image","x":{:.2},"y":{:.2},"w":{:.2},"h":{:.2},"iw":{},"ih":{}}}"#,
+            r#"{{"op":"image","x":{:.2},"y":{:.2},"w":{:.2},"h":{:.2},"iw":{},"ih":{}{key}{pixels}}}"#,
             rect.x, rect.y, rect.width, rect.height, image.width, image.height
         ));
     }
@@ -800,18 +857,37 @@ mod tests {
     }
 
     #[test]
-    fn the_recording_painter_does_not_inline_image_pixels() {
-        // A scanned page would otherwise be megabytes of JSON on every frame.
+    fn the_recording_inlines_masks_but_not_photographs() {
+        // The rule is a size boundary, not a blanket refusal. Every glyph on
+        // the page is an image, and a host given only geometry draws text as
+        // empty rectangles; a scanned page inlined per frame would be
+        // megabytes of JSON. So masks travel and photographs do not.
         let mut painter = RecordingPainter::new();
-        let pixels = vec![255u8; 64 * 64 * 4];
+        let page_sized = vec![255u8; 512 * 512 * 4];
         painter.draw_image(
             Rect::new(0.0, 0.0, 10.0, 10.0),
-            &ImageData::new(64, 64, &pixels),
+            &ImageData::new(512, 512, &page_sized),
+        );
+        let json = painter.to_json();
+        assert!(
+            !json.contains("\"pixels\":"),
+            "a page-sized image should be left to the host"
+        );
+        assert!(
+            json.contains("\"iw\":512"),
+            "its geometry should still be sent"
         );
 
-        let json = painter.to_json();
-        assert!(json.len() < 200, "image pixels leaked into the recording");
-        assert!(json.contains("\"iw\":64"));
+        let mut painter = RecordingPainter::new();
+        let mask = vec![255u8; 12 * 14 * 4];
+        painter.draw_image(
+            Rect::new(0.0, 0.0, 12.0, 14.0),
+            &ImageData::new(12, 14, &mask),
+        );
+        assert!(
+            painter.to_json().contains("\"pixels\":"),
+            "a glyph mask has to travel, or text does not render at all"
+        );
     }
 
     #[test]
@@ -1484,6 +1560,125 @@ mod placement {
         assert_eq!(
             gross, 0,
             "{gross} of {total} glyphs landed far outside any run (worst {worst:.1}px)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod recording_glyphs {
+    use super::*;
+
+    /// The recording has to carry the glyph masks themselves.
+    ///
+    /// Every glyph on a page is an image op, and a host that receives only
+    /// geometry draws text as a field of empty rectangles -- which is exactly
+    /// what the browser did once glyphs became masks, while the desktop, which
+    /// paints directly, looked fine. The two surfaces share `paint_page`, so
+    /// the recording is the only place that difference can live.
+    #[test]
+    fn a_recording_carries_its_glyph_masks() {
+        let Ok(pdf) = std::fs::read("../../demos/sample.pdf")
+            .or_else(|_| std::fs::read("../demos/sample.pdf"))
+        else {
+            eprintln!("skipping: demos/sample.pdf not present");
+            return;
+        };
+        let session = crate::session::Session::open(pdf).expect("open");
+        let list = session.display_list().expect("geometry");
+        let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, 1.0),
+            &[],
+            session.fonts(),
+        );
+        let json = painter.to_json();
+
+        let images = json.matches(r#""op":"image""#).count();
+        let keyed = json.matches(r#""key":""#).count();
+        let inlined = json.matches(r#""pixels":""#).count();
+        assert!(images > 100, "the page should draw glyphs: {images}");
+        assert_eq!(keyed, images, "every glyph should carry a content key");
+        assert!(inlined > 0, "the masks themselves must be sent");
+
+        // The point of the key: a page reuses the same letters constantly, so
+        // pixels are sent once and referenced after that. Inlining every
+        // instance would multiply the recording several times over.
+        assert!(
+            inlined * 3 < images,
+            "{inlined} masks for {images} glyphs -- repeats should reference, not resend"
+        );
+    }
+
+    /// A large image is still left to the host: inlining a scanned page per
+    /// frame would be megabytes of JSON.
+    #[test]
+    fn a_large_image_is_not_inlined() {
+        let mut painter = RecordingPainter::new();
+        let pixels = vec![0u8; MAX_INLINE_IMAGE_BYTES + 4];
+        painter.draw_image(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            &ImageData::new(128, 128, &pixels),
+        );
+        let json = painter.to_json();
+        assert!(json.contains(r#""op":"image""#));
+        assert!(
+            !json.contains(r#""pixels":""#),
+            "a large image should not inline"
+        );
+    }
+
+    /// The same mask twice costs one copy of the pixels.
+    #[test]
+    fn a_repeated_mask_is_sent_once() {
+        let mut painter = RecordingPainter::new();
+        let pixels = vec![7u8; 64];
+        for _ in 0..5 {
+            painter.draw_image(
+                Rect::new(0.0, 0.0, 4.0, 4.0),
+                &ImageData::new(4, 4, &pixels),
+            );
+        }
+        let json = painter.to_json();
+        assert_eq!(json.matches(r#""op":"image""#).count(), 5);
+        assert_eq!(
+            json.matches(r#""pixels":""#).count(),
+            1,
+            "the mask should be sent once and referenced after that"
+        );
+    }
+}
+
+#[cfg(test)]
+mod recording_size {
+    use super::*;
+
+    #[test]
+    #[ignore = "diagnostic"]
+    fn report_recording_size() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read");
+        let session = crate::session::Session::open(bytes).expect("open");
+        let list = session.display_list().expect("geometry");
+        let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, 1.0),
+            &[],
+            session.fonts(),
+        );
+        let json = painter.to_json();
+        eprintln!(
+            "recording {} KiB, {} glyphs, {} masks inlined",
+            json.len() / 1024,
+            json.matches(r#""op":"image""#).count(),
+            json.matches(r#""pixels":""#).count()
         );
     }
 }

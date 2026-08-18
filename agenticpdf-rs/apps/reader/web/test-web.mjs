@@ -55,10 +55,58 @@ try {
     };
   });
   console.log(JSON.stringify(result, null, 1));
+
+  // A PDF exercises the path Markdown never touches: text drawn from the
+  // document's own glyphs, which reach the browser as image masks in the
+  // recording. A host that cannot draw those renders a page of empty
+  // rectangles -- ink on the canvas is what distinguishes the two.
+  const pdfPath = ["../../../demos/sample.pdf", "../../demos/sample.pdf", "demos/sample.pdf"]
+    .map((candidate) => path.resolve(candidate))
+    .find((candidate) => fs.existsSync(candidate)) ?? "";
+  let pdf = null;
+  if (pdfPath) {
+    await page.setInputFiles("#file", pdfPath);
+    await page.waitForTimeout(1500);
+    pdf = await page.evaluate(() => {
+      const canvas = document.getElementById("page");
+      const ctx = canvas.getContext("2d");
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let ink = 0;
+      // Dark pixels only: the page itself is painted white, so counting
+      // anything opaque would pass on a blank sheet.
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 8 && data[i] < 128 && data[i + 1] < 128 && data[i + 2] < 128) ink++;
+      }
+      const ops = JSON.parse(window.__lastOps ?? "[]");
+      return {
+        status: document.getElementById("status").textContent,
+        glyphOps: ops.filter((op) => op.op === "image").length,
+        masksInlined: ops.filter((op) => op.op === "image" && op.pixels).length,
+        framesDrawn: ops.filter((op) => op.op === "image" && !op.key).length,
+        ink,
+      };
+    });
+    console.log(JSON.stringify(pdf, null, 1));
+  } else {
+    console.log("skipping the PDF case: demos/sample.pdf not present");
+  }
+
   console.log("pageerrors:", errors);
 
-  const ok = result.canvasPx > 1000 && result.hits === 1 && result.exported && errors.length === 0;
-  console.log(ok ? "OK: the web shell opened, rendered, searched, edited and exported." : "FAIL");
+  const pdfOk =
+    pdf === null ||
+    // Thousands of glyphs, each an image op, and enough dark pixels that they
+    // were actually rasterised rather than outlined.
+    (pdf.glyphOps > 500 && pdf.ink > 5000 && pdf.framesDrawn === 0);
+  if (pdf && !pdfOk) console.log("FAIL: the PDF page did not render its glyphs");
+
+  const ok =
+    result.canvasPx > 1000 &&
+    result.hits === 1 &&
+    result.exported &&
+    errors.length === 0 &&
+    pdfOk;
+  console.log(ok ? "OK: the web shell rendered Markdown and a PDF's own glyphs." : "FAIL");
   process.exitCode = ok ? 0 : 1;
 } finally {
   await browser.close();

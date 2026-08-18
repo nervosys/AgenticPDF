@@ -18,17 +18,27 @@ use crate::actions;
 use crate::canvas::{RecordingPainter, Transform};
 use crate::session::Session;
 
+/// How many glyph masks the host is assumed to hold before the reckoning is
+/// dropped and started again.
+const MAX_REMEMBERED_MASKS: usize = 4096;
+
 /// A document open in the browser.
 #[wasm_bindgen]
 pub struct WebReader {
     session: Option<Session>,
+    /// Glyph masks the host has already decoded and cached, so a redraw sends
+    /// their keys instead of their pixels.
+    sent_images: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
 #[wasm_bindgen]
 impl WebReader {
     #[wasm_bindgen(constructor)]
     pub fn new() -> WebReader {
-        WebReader { session: None }
+        WebReader {
+            session: None,
+            sent_images: std::cell::RefCell::new(std::collections::HashSet::new()),
+        }
     }
 
     /// Open a document from bytes the host read — a file input, a fetch, a
@@ -79,9 +89,23 @@ impl WebReader {
 
         let area = dewey::core::Rect::new(0.0, 0.0, width, height);
         let transform = Transform::fit(&list, area, zoom);
-        let mut painter = RecordingPainter::new();
+        // The host decodes each glyph mask once and keeps it by key, so a
+        // redraw sends keys rather than pixels. Without this every scroll and
+        // zoom re-inlines the same few hundred masks.
+        let known = self.sent_images.borrow().clone();
+        let mut painter = RecordingPainter::with_known_images(known);
         crate::canvas::paint_page(&mut painter, &list, transform, &[], session.fonts());
-        painter.to_json()
+        let json = painter.to_json();
+        let mut sent = painter.image_keys();
+        // Bounded: every zoom level produces its own masks, so an afternoon of
+        // reading would otherwise accumulate them without limit. Clearing
+        // costs one redraw that re-sends pixels, which is what the host does
+        // on first paint anyway.
+        if sent.len() > MAX_REMEMBERED_MASKS {
+            sent.clear();
+        }
+        *self.sent_images.borrow_mut() = sent;
+        json
     }
 
     /// The current page number.

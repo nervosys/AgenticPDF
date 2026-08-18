@@ -88,12 +88,50 @@ function resize() {
   return { width, height };
 }
 
+
+// Glyph masks, decoded once and kept by content key.
+//
+// A page is thousands of glyph instances over about a hundred distinct
+// masks, so decoding per instance would cost far more than drawing does.
+// Each tile is an offscreen canvas, which drawImage scales and composites;
+// putImageData would replace the pixels underneath instead of blending, and
+// text would arrive in opaque boxes.
+const glyphTiles = new Map();
+
+// Bounded for the same reason the sender is: every zoom level makes its own
+// masks. Both sides clear at the same size, so they agree about what the
+// other holds.
+const MAX_GLYPH_TILES = 4096;
+
+function glyphTile(op) {
+  const cached = glyphTiles.get(op.key);
+  if (cached) return cached;
+  if (!op.pixels) return null;
+  if (glyphTiles.size > MAX_GLYPH_TILES) glyphTiles.clear();
+
+  const binary = atob(op.pixels);
+  const bytes = new Uint8ClampedArray(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  if (bytes.length < op.iw * op.ih * 4) return null;
+
+  const tile = document.createElement("canvas");
+  tile.width = op.iw;
+  tile.height = op.ih;
+  tile.getContext("2d").putImageData(new ImageData(bytes, op.iw, op.ih), 0, 0);
+  glyphTiles.set(op.key, tile);
+  return tile;
+}
+
 function render() {
   const { width, height } = resize();
   ctx.clearRect(0, 0, width, height);
   if (!reader.page_count()) return;
 
-  const ops = JSON.parse(reader.render_page(width, height, zoom));
+  const recording = reader.render_page(width, height, zoom);
+  // Kept so a test can inspect what was actually asked for, rather than
+  // inferring it from pixels alone.
+  window.__lastOps = recording;
+  const ops = JSON.parse(recording);
   for (const op of ops) {
     switch (op.op) {
       case "fill_rect":
@@ -135,10 +173,18 @@ function render() {
         ctx.fillText(op.text, op.x, op.y);
         break;
       case "image":
-        // Assets are not inlined in the recording; show the frame until the
-        // host resolves them, rather than leaving an invisible gap.
-        ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
-        ctx.strokeRect(op.x, op.y, op.w, op.h);
+        // Every glyph arrives as an image, so this is the text path. The
+        // recording inlines each distinct mask once under a content key and
+        // refers to it by key after that; a large asset carries no pixels and
+        // still shows its frame until the host resolves it.
+        {
+          const tile = op.key ? glyphTile(op) : null;
+          if (tile) ctx.drawImage(tile, op.x, op.y, op.w, op.h);
+          else {
+            ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
+            ctx.strokeRect(op.x, op.y, op.w, op.h);
+          }
+        }
         break;
       case "push_clip":
         ctx.save();
