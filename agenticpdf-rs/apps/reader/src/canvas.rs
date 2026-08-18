@@ -825,6 +825,31 @@ mod tests {
         assert!(transform.point(0.0, 0.0).y > 99.0);
     }
 
+    /// The painter must actually clip. Scoping the clips correctly means
+    /// nothing if a path can still be drawn outside one.
+    #[test]
+    fn a_path_outside_the_clip_is_not_drawn() {
+        let mut painter = ImagePainter::new(100, 100);
+        painter.push_clip(Rect::new(0.0, 0.0, 100.0, 20.0));
+        // A square well below the clip band.
+        painter.fill_path(
+            &[
+                Position::new(10.0, 50.0),
+                Position::new(90.0, 50.0),
+                Position::new(90.0, 90.0),
+                Position::new(10.0, 90.0),
+            ],
+            Color::rgba(0.0, 0.0, 0.0, 1.0),
+        );
+        painter.pop_clip();
+        let pixels = painter.pixels();
+        let ink = pixels
+            .chunks_exact(4)
+            .filter(|px| px[3] > 8 && px[0] < 128)
+            .count();
+        assert_eq!(ink, 0, "a path outside the clip must not reach the surface");
+    }
+
     /// A clip belongs to the `q`/`Q` pair that narrowed it.
     ///
     /// A `Q` that saved no clip of its own must not release the one around
