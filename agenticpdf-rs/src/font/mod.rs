@@ -12,6 +12,7 @@
 //! polygons rather than curves.
 
 pub mod cff;
+pub mod glyphnames;
 pub mod substitute;
 pub mod truetype;
 pub mod type1;
@@ -161,17 +162,20 @@ impl EmbeddedFont {
                 // The document's `/Differences` name first, then the font's
                 // own encoding. A subset font commonly ships an encoding that
                 // is the only route to its glyphs.
+                // The document's own name first, then the font's encoding,
+                // then the Adobe name for the character the code decoded to.
+                // That last route is how the WinAnsi high range is reached at
+                // all: its dashes and accented letters are named, not spelled.
                 let index = self
                     .differences
                     .get(&code)
                     .and_then(|name| font.index_for_name(name))
                     .or_else(|| font.index_for_code(code))
-                    // A subset whose encoding omits a code may still name the
-                    // glyph the document decoded it to.
                     .or_else(|| {
-                        unicode
-                            .map(|ch| ch.to_string())
-                            .and_then(|name| font.index_for_name(&name))
+                        let ch = unicode?;
+                        glyphnames::names_for(ch)
+                            .iter()
+                            .find_map(|name| font.index_for_name(name))
                     })?;
                 font.outline(index)
             }
@@ -179,72 +183,13 @@ impl EmbeddedFont {
     }
 }
 
-/// The Unicode value a glyph name stands for, where that is knowable.
+/// The character a glyph name stands for.
 ///
-/// Covers the two spellings that carry their own answer -- a single character,
-/// and the `uniXXXX` form -- plus the punctuation names common enough that a
-/// document using them would otherwise lose its punctuation. The full Adobe
-/// glyph list would be a large table for little more coverage.
+/// Delegates to [`glyphnames`], which holds the one table both directions are
+/// derived from. Keeping a second copy here is how the two came to disagree
+/// about whether `quoteright` was the upright apostrophe or the curly one.
 fn glyph_name_to_char(name: &str) -> Option<char> {
-    let mut chars = name.chars();
-    if let (Some(only), None) = (chars.next(), chars.next()) {
-        return Some(only);
-    }
-    if let Some(hex) = name.strip_prefix("uni")
-        && hex.len() == 4
-        && let Ok(value) = u32::from_str_radix(hex, 16)
-    {
-        return char::from_u32(value);
-    }
-    Some(match name {
-        "space" => ' ',
-        "exclam" => '!',
-        "quotedbl" => '"',
-        "numbersign" => '#',
-        "dollar" => '$',
-        "percent" => '%',
-        "ampersand" => '&',
-        "quotesingle" | "quoteleft" | "quoteright" => '\'',
-        "parenleft" => '(',
-        "parenright" => ')',
-        "asterisk" => '*',
-        "plus" => '+',
-        "comma" => ',',
-        "hyphen" => '-',
-        "period" => '.',
-        "slash" => '/',
-        "zero" => '0',
-        "one" => '1',
-        "two" => '2',
-        "three" => '3',
-        "four" => '4',
-        "five" => '5',
-        "six" => '6',
-        "seven" => '7',
-        "eight" => '8',
-        "nine" => '9',
-        "colon" => ':',
-        "semicolon" => ';',
-        "less" => '<',
-        "equal" => '=',
-        "greater" => '>',
-        "question" => '?',
-        "at" => '@',
-        "bracketleft" => '[',
-        "backslash" => '\\',
-        "bracketright" => ']',
-        "underscore" => '_',
-        "braceleft" => '{',
-        "bar" => '|',
-        "braceright" => '}',
-        "quotedblleft" => '\u{201C}',
-        "quotedblright" => '\u{201D}',
-        "endash" => '\u{2013}',
-        "emdash" => '\u{2014}',
-        "fi" => '\u{FB01}',
-        "fl" => '\u{FB02}',
-        _ => return None,
-    })
+    glyphnames::char_for(name)
 }
 
 /// Every font program embedded in a PDF, parsed.

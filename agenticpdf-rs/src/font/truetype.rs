@@ -126,10 +126,17 @@ impl TrueTypeFont {
                 out.push(index);
             }
         }
-        // A subset with no usable character map addresses glyphs by index,
-        // which is the convention every reader falls back to.
-        if out.is_empty() && self.unicode_map.is_empty() && self.byte_map.is_empty() {
-            out.push(code as u16);
+        // Last resort: the code as a glyph index. A subset can ship a
+        // character map that answers for part of its alphabet and not the
+        // rest, and addressing glyphs by index is the convention every reader
+        // falls back to. It is last, so a mapped route always wins, and the
+        // caller keeps the first candidate that actually draws -- an index
+        // that lands on a blank glyph costs nothing.
+        if (code as usize) < self.glyph_count() {
+            let index = code as u16;
+            if !out.contains(&index) {
+                out.push(index);
+            }
         }
         out
     }

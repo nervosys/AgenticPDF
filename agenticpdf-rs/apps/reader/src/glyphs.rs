@@ -100,11 +100,17 @@ impl FontSet {
     }
 
     /// Every face that could serve a name, in the order to try them.
+    ///
+    /// Embedded first, then a stand-in. The stand-in is appended rather than
+    /// used only when nothing is embedded, because a name can be shared: a
+    /// document may embed a composite font and also reference a simple,
+    /// non-embedded font under the same name, and a run of the second one
+    /// would otherwise be handed the first and draw nothing.
     fn faces(&self, base_font: &str) -> Vec<Arc<EmbeddedFont>> {
-        if let Some(fonts) = self.embedded.get(base_font) {
-            return fonts.clone();
-        }
-        self.substitute(base_font).into_iter().collect()
+        let mut out: Vec<Arc<EmbeddedFont>> =
+            self.embedded.get(base_font).cloned().unwrap_or_default();
+        out.extend(self.substitute(base_font));
+        out
     }
 
     fn substitute(&self, base_font: &str) -> Option<Arc<EmbeddedFont>> {
