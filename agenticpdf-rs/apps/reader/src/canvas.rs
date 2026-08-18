@@ -1098,6 +1098,7 @@ mod render_sweep {
         let mut failed = 0;
         let mut with_fallback = 0;
         let mut blank = 0;
+        let mut misplaced = 0;
 
         for path in files.iter().take(limit) {
             let name: String = path
@@ -1144,16 +1145,21 @@ mod render_sweep {
             if text_ops > 0 && glyphs == 0 {
                 blank += 1;
             }
+            let (measured, stray, worst) =
+                super::measure_placement(&session, &list, Transform::fit(&list, area, 1.0));
+            if stray > 0 {
+                misplaced += 1;
+            }
             eprintln!(
-                "{name:40} fonts={:<3} runs={text_ops:<5} glyphs={glyphs:<6} fallback={fallback}",
-                session.fonts().len()
+                "{name:40} runs={text_ops:<5} glyphs={glyphs:<6} fallback={fallback:<3}                  stray={stray}/{measured} worst={worst:.1}px"
             );
         }
 
         eprintln!(
             "\nopened {opened}, failed {failed}, with fallback {with_fallback}, \
-             text but no glyphs {blank}"
+             text but no glyphs {blank}, misplaced {misplaced}"
         );
+        assert_eq!(failed, 0, "every document should open");
     }
 }
 
@@ -1222,5 +1228,262 @@ mod fallback_probe {
                 chars.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod page_image {
+    use super::*;
+    use dewey::backend::image_buffer::ImagePainter;
+
+    /// Render a page to an image file, so the output can be looked at and
+    /// compared against another renderer rather than counted.
+    ///
+    /// A count says a glyph was drawn; only a picture says it was drawn in the
+    /// right place. Writes a PPM, which needs no encoder.
+    ///
+    /// `APDF_RENDER_PDF=<file> APDF_IMAGE_OUT=<file.ppm> [APDF_RENDER_PAGE=n]
+    /// [APDF_IMAGE_WIDTH=1200] cargo test -- --ignored write_page_image`
+    #[test]
+    #[ignore = "writes a file; run deliberately"]
+    fn write_page_image() {
+        let (Ok(path), Ok(out)) = (
+            std::env::var("APDF_RENDER_PDF"),
+            std::env::var("APDF_IMAGE_OUT"),
+        ) else {
+            eprintln!("set APDF_RENDER_PDF and APDF_IMAGE_OUT");
+            return;
+        };
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let width: u32 = std::env::var("APDF_IMAGE_WIDTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1200);
+
+        let bytes = std::fs::read(&path).expect("read the document");
+        let mut session = crate::session::Session::open(bytes).expect("open");
+        for _ in 1..page {
+            session.next_page();
+        }
+        let list = session.display_list().expect("geometry");
+
+        // Fit the page to the requested width, keeping its aspect.
+        let scale = width as f32 / list.width.max(1.0) as f32;
+        let height = (list.height as f32 * scale).round().max(1.0) as u32;
+        let area = Rect::new(0.0, 0.0, width as f32, height as f32);
+
+        let mut painter = ImagePainter::new(width, height);
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, 1.0),
+            &[],
+            session.fonts(),
+        );
+
+        // PPM: a header and raw RGB, which every image tool reads.
+        let pixels = painter.pixels();
+        let mut file = format!("P6\n{width} {height}\n255\n").into_bytes();
+        for chunk in pixels.chunks_exact(4) {
+            file.extend_from_slice(&chunk[..3]);
+        }
+        std::fs::write(&out, &file).expect("write the image");
+        eprintln!("wrote {out} ({width}x{height})");
+    }
+}
+
+#[cfg(test)]
+/// How many glyph masks a page drew, and how many landed outside the run that
+/// asked for them. See `placement::glyphs_land_in_their_run` for why.
+fn measure_placement(
+    session: &crate::session::Session,
+    list: &DisplayList,
+    transform: Transform,
+) -> (usize, usize, f32) {
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for op in &list.ops {
+        let RenderOp::Text {
+            x,
+            y,
+            size,
+            width,
+            rot,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let origin = transform.point(*x, *y);
+        let end = transform.point(x + width * rot.cos(), y + width * rot.sin());
+        let pad = (*size as f32 * transform.scale).max(1.0) * 1.6;
+        boxes.push((
+            origin.x.min(end.x) - pad,
+            origin.y.min(end.y) - pad,
+            origin.x.max(end.x) + pad,
+            origin.y.max(end.y) + pad,
+        ));
+    }
+
+    let mut painter = RecordingPainter::new();
+    paint_page(&mut painter, list, transform, &[], session.fonts());
+    let json = painter.to_json();
+
+    let mut total = 0usize;
+    let mut stray = 0usize;
+    let mut worst = 0.0f32;
+    for entry in json.split("{\"op\":\"image\",").skip(1) {
+        let field = |name: &str| -> Option<f32> {
+            entry
+                .split(&format!("\"{name}\":"))
+                .nth(1)?
+                .split([',', '}'])
+                .next()?
+                .parse()
+                .ok()
+        };
+        let (Some(x), Some(y), Some(w), Some(h)) = (field("x"), field("y"), field("w"), field("h"))
+        else {
+            continue;
+        };
+        total += 1;
+        let escape = boxes
+            .iter()
+            .map(|(left, top, right, bottom)| {
+                let dx = (left - x).max(x + w - right).max(0.0);
+                let dy = (top - y).max(y + h - bottom).max(0.0);
+                dx.max(dy)
+            })
+            .fold(f32::MAX, f32::min);
+        if escape > 0.0 {
+            stray += 1;
+            worst = worst.max(escape);
+        }
+    }
+    (total, stray, worst)
+}
+
+#[cfg(test)]
+mod placement {
+    use super::*;
+
+    /// Every glyph must land inside the run that asked for it.
+    ///
+    /// Counting glyphs proves they were drawn; it says nothing about where.
+    /// A wrong advance, a wrong baseline or a wrong transform all draw the
+    /// right number of glyphs in the wrong place. The document states each
+    /// run's origin and width, so the ink can be checked against it.
+    ///
+    /// `APDF_RENDER_PDF=<file> cargo test -- --ignored glyphs_land_in_their_run`
+    #[test]
+    #[ignore = "needs a document; run deliberately"]
+    fn glyphs_land_in_their_run() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            eprintln!("set APDF_RENDER_PDF");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read");
+        let session = crate::session::Session::open(bytes).expect("open");
+        let list = session.display_list().expect("geometry");
+        let area = Rect::new(0.0, 0.0, 1000.0, 1300.0);
+        let transform = Transform::fit(&list, area, 1.0);
+
+        // Each run's box in screen space, generous vertically: ascenders and
+        // descenders reach well past the size, and a mask is padded a pixel.
+        let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+        for op in &list.ops {
+            let RenderOp::Text {
+                x,
+                y,
+                size,
+                width,
+                rot,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            // The run runs along its baseline direction, so its extent is
+            // taken from both ends. Skipping rotated runs would leave their
+            // glyphs belonging to no box at all, and they would then read as
+            // misplaced -- which is what this test first reported.
+            let origin = transform.point(*x, *y);
+            let end = transform.point(x + width * rot.cos(), y + width * rot.sin());
+            let height = (*size as f32 * transform.scale).max(1.0);
+            // Generous: ascenders and descenders reach past the size, a mask
+            // is padded, and a rotated run needs the margin on both axes.
+            let pad_x = height * 1.6;
+            let pad_y = height * 1.6;
+            boxes.push((
+                origin.x.min(end.x) - pad_x,
+                origin.y.min(end.y) - pad_y,
+                origin.x.max(end.x) + pad_x,
+                origin.y.max(end.y) + pad_y,
+            ));
+        }
+        if boxes.is_empty() {
+            eprintln!("skipping: no horizontal text on this page");
+            return;
+        }
+
+        let mut painter = RecordingPainter::new();
+        paint_page(&mut painter, &list, transform, &[], session.fonts());
+        let json = painter.to_json();
+
+        // Every glyph mask is an image op; the page itself draws none.
+        let mut total = 0usize;
+        let mut stray = 0usize;
+        let mut gross = 0usize;
+        let mut worst = 0.0f32;
+        for entry in json.split("{\"op\":\"image\",").skip(1) {
+            let field = |name: &str| -> Option<f32> {
+                entry
+                    .split(&format!("\"{name}\":"))
+                    .nth(1)?
+                    .split([',', '}'])
+                    .next()?
+                    .parse()
+                    .ok()
+            };
+            let (Some(x), Some(y), Some(w), Some(h)) =
+                (field("x"), field("y"), field("w"), field("h"))
+            else {
+                continue;
+            };
+            total += 1;
+            // How far outside the nearest run this glyph sits. A tall bracket
+            // overshooting a heuristic box by a few pixels is not the same
+            // defect as a glyph on the wrong side of the page, so the distance
+            // is what gets judged.
+            let escape = boxes
+                .iter()
+                .map(|(left, top, right, bottom)| {
+                    let dx = (left - x).max(x + w - right).max(0.0);
+                    let dy = (top - y).max(y + h - bottom).max(0.0);
+                    dx.max(dy)
+                })
+                .fold(f32::MAX, f32::min);
+            if escape > 0.0 {
+                stray += 1;
+                worst = worst.max(escape);
+            }
+            if escape > 24.0 {
+                gross += 1;
+            }
+        }
+
+        eprintln!(
+            "{total} glyphs, {stray} outside their run, {gross} grossly so, worst {worst:.1}px"
+        );
+        assert!(total > 0, "no glyphs were drawn");
+        // Overshooting a heuristic box by a few pixels is a tall glyph, not a
+        // misplacement. Landing a line away from every run is the real defect,
+        // and there should be none of it.
+        assert_eq!(
+            gross, 0,
+            "{gross} of {total} glyphs landed far outside any run (worst {worst:.1}px)"
+        );
     }
 }

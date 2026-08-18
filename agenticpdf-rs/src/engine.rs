@@ -3242,6 +3242,24 @@ fn parse_font_widths(
 ) -> (HashMap<u32, f64>, f64, bool) {
     let mut widths = HashMap::new();
     if !two_byte {
+        // A Type 3 font measures its glyphs in its own space, and `/FontMatrix`
+        // is what converts that to text space. Dividing by 1000 as every other
+        // simple font requires makes a Type 3 advance about ten times too
+        // small, so a line of text claims a fraction of the width it occupies
+        // and everything after it on that line is drawn through it.
+        let scale = match doc
+            .get(font, "Subtype")
+            .and_then(|o| o.as_name().map(String::from))
+            .as_deref()
+        {
+            Some("Type3") => doc
+                .get(font, "FontMatrix")
+                .and_then(|o| o.as_array().and_then(|a| a.first().cloned()))
+                .and_then(|o| doc.resolve(&o).as_f64())
+                .filter(|value| *value > 0.0)
+                .unwrap_or(0.001),
+            _ => 0.001,
+        };
         let first = doc
             .get(font, "FirstChar")
             .and_then(|o| o.as_int())
@@ -3252,7 +3270,7 @@ fn parse_font_widths(
         if let Some(arr) = &widths_arr {
             for (i, wo) in arr.iter().enumerate() {
                 if let Some(w) = doc.resolve(wo).as_f64() {
-                    widths.insert(first + i as u32, w / 1000.0);
+                    widths.insert(first + i as u32, w * scale);
                 }
             }
         }
@@ -3261,7 +3279,7 @@ fn parse_font_widths(
             .and_then(|o| o.as_dict().cloned())
             .and_then(|fd| doc.get(&fd, "MissingWidth"));
         let has = widths_arr.map(|a| !a.is_empty()).unwrap_or(false) || missing.is_some();
-        let default_width = missing.and_then(|o| o.as_f64()).unwrap_or(500.0) / 1000.0;
+        let default_width = missing.and_then(|o| o.as_f64()).unwrap_or(500.0) * scale;
         if has {
             return (widths, default_width, has);
         }
@@ -4644,6 +4662,157 @@ endstream\nendobj\n\
         let mut out = String::new();
         font.decode(&[0x00, 0x03], &mut out);
         assert_eq!(out, "");
+    }
+}
+
+#[cfg(test)]
+mod type3_widths {
+    /// A Type 3 font measures glyphs in its own space, and `/FontMatrix` is
+    /// what converts that to text space. Dividing by 1000, as every other
+    /// simple font requires, makes the advance about ten times too small: a
+    /// line then claims a fraction of the width it occupies and the text after
+    /// it is drawn straight through it.
+    #[test]
+    fn a_type3_advance_follows_the_font_matrix() {
+        // `/Widths [50]` with `/FontMatrix [0.01 ...]` is half an em, not a
+        // twentieth of one.
+        let pdf = build(0.01, 50.0);
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let run = list.ops.iter().find_map(|op| match op {
+            super::RenderOp::Text { advances, size, .. } if !advances.is_empty() => {
+                Some((advances.clone(), *size))
+            }
+            _ => None,
+        });
+        let Some((advances, size)) = run else {
+            panic!("the page should draw text");
+        };
+        let em = advances[0] / size;
+        assert!((em - 0.5).abs() < 0.01, "expected half an em, got {em:.3}");
+    }
+
+    /// The same font measured with a different matrix must scale with it, or
+    /// the matrix is being ignored and a constant substituted.
+    #[test]
+    fn a_different_matrix_gives_a_different_advance() {
+        let wide = build(0.02, 50.0);
+        let narrow = build(0.005, 50.0);
+        let advance = |pdf: &[u8]| -> f64 {
+            let list = super::extract_display_list(pdf, 1).expect("page 1");
+            list.ops
+                .iter()
+                .find_map(|op| match op {
+                    super::RenderOp::Text { advances, size, .. } if !advances.is_empty() => {
+                        Some(advances[0] / *size)
+                    }
+                    _ => None,
+                })
+                .expect("text")
+        };
+        let (wide, narrow) = (advance(&wide), advance(&narrow));
+        assert!(
+            (wide / narrow - 4.0).abs() < 0.05,
+            "a matrix four times larger should give four times the advance:              {wide:.3} vs {narrow:.3}"
+        );
+    }
+
+    /// A minimal document with one Type 3 font drawing one character.
+    fn build(matrix: f64, width: f64) -> Vec<u8> {
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(
+            b"%PDF-1.4
+",
+        );
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(
+                format!(
+                    "{number} 0 obj
+"
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(
+                b"
+endobj
+",
+            );
+        };
+
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]               /Resources << /Font << /F1 4 0 R >> >> /Contents 6 0 R >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 100 100]                  /FontMatrix [{matrix} 0 0 {matrix} 0 0] /CharProcs 5 0 R                  /Encoding << /Type /Encoding /Differences [65 /A] >>                  /FirstChar 65 /LastChar 65 /Widths [{width}] >>"
+            )
+            .as_bytes(),
+        );
+        push(&mut pdf, &mut offsets, b"<< >>");
+
+        let content = "BT /F1 10 Tf 20 100 Td (AA) Tj ET";
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!(
+                "<< /Length {} >>
+stream
+{content}
+endstream",
+                content.len()
+            )
+            .as_bytes(),
+        );
+
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "xref
+0 {}
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(
+                format!(
+                    "{offset:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{xref}
+%%EOF
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 }
 
