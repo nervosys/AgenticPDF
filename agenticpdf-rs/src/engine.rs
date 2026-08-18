@@ -3194,7 +3194,11 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     }
 
     // Glyph advance widths (em fractions) for fitting rendered text to layout.
-    let (widths, default_width, has_widths) = parse_font_widths(doc, font, two_byte);
+    // The encoding is passed in because a width fallback has to follow it: a
+    // code is not a character, and a font that puts its "fi" ligature at code
+    // 2 needs the ligature's width, not a control character's.
+    let (widths, default_width, has_widths) =
+        parse_font_widths(doc, font, two_byte, simple.as_deref());
 
     Font {
         two_byte,
@@ -3209,6 +3213,22 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     }
 }
 
+/// The standard-14 font whose published metrics a base font name implies.
+///
+/// A PDF may name Times, Helvetica or Courier without embedding anything and
+/// without a `/Widths` array, because every reader is required to know their
+/// metrics. This is where that knowledge comes from; the tables are the same
+/// ones the typesetter measures with, so a document laid out here and a
+/// document read from a file agree.
+fn standard_14_metrics(base_font: &str) -> crate::typeset::fonts::Font {
+    let lower = base_font.to_ascii_lowercase();
+    crate::typeset::fonts::Font {
+        family: crate::typeset::fonts::Family::from_name(base_font),
+        bold: lower.contains("bold") || lower.contains("black") || lower.contains("heavy"),
+        italic: lower.contains("italic") || lower.contains("oblique"),
+    }
+}
+
 /// Parse glyph advance widths: simple fonts use /Widths + /FirstChar; Type0
 /// uses the descendant font's /W array + /DW. Returns (code→em-fraction,
 /// default, has_explicit_widths). When `has_explicit_widths` is false (e.g. a
@@ -3218,6 +3238,7 @@ fn parse_font_widths(
     doc: &Document,
     font: &Dict,
     two_byte: bool,
+    simple: Option<&[Option<char>; 256]>,
 ) -> (HashMap<u32, f64>, f64, bool) {
     let mut widths = HashMap::new();
     if !two_byte {
@@ -3241,7 +3262,35 @@ fn parse_font_widths(
             .and_then(|fd| doc.get(&fd, "MissingWidth"));
         let has = widths_arr.map(|a| !a.is_empty()).unwrap_or(false) || missing.is_some();
         let default_width = missing.and_then(|o| o.as_f64()).unwrap_or(500.0) / 1000.0;
-        return (widths, default_width, has);
+        if has {
+            return (widths, default_width, has);
+        }
+
+        // No `/Widths`, which a standard-14 font is entitled to omit: every
+        // reader is expected to know its metrics. Falling back to a flat half
+        // em makes every run too wide -- Times' `i` is 0.278 em, not 0.5 --
+        // so a line overruns the position the document explicitly sets for
+        // what follows, and text overlaps. Use the published metrics instead.
+        let base = doc
+            .get(font, "BaseFont")
+            .and_then(|o| o.as_name().map(String::from))
+            .unwrap_or_default();
+        let metrics = standard_14_metrics(&base);
+        for code in 0u32..=255 {
+            // The character the code stands for under this font's encoding.
+            // Reading the code as a character instead gives a control
+            // character zero width, which then reads as a cluster
+            // continuation and the glyph is never drawn at all.
+            let ch = simple
+                .and_then(|table| table[code as usize])
+                .or_else(|| char::from_u32(code));
+            if let Some(ch) = ch {
+                widths.insert(code, metrics.char_width(ch));
+            }
+        }
+        // The widths are now real, so a renderer should place by them rather
+        // than measure a substitute face.
+        return (widths, metrics.char_width(' '), true);
     }
 
     // Type0: descendant CIDFont carries /W and /DW.
@@ -4595,5 +4644,156 @@ endstream\nendobj\n\
         let mut out = String::new();
         font.decode(&[0x00, 0x03], &mut out);
         assert_eq!(out, "");
+    }
+}
+
+#[cfg(test)]
+mod content_probe {
+    /// Print the content stream around a phrase, for diagnosing placement.
+    #[test]
+    #[ignore = "diagnostic; run deliberately"]
+    fn dump_content_around_phrase() {
+        let Ok(pdf) = std::fs::read("../website/public/shannon1948.pdf") else {
+            return;
+        };
+        let doc = super::Document::parse(&pdf).expect("parses");
+        let needle = std::env::var("APDF_NEEDLE").unwrap_or_else(|_| "Hartley".into());
+        if let Ok(dir) = std::env::var("APDF_DUMP_DIR") {
+            for number in doc.object_numbers() {
+                let Ok(object) = doc.fetch(number) else {
+                    continue;
+                };
+                let super::Object::Stream(dict, raw) = &object else {
+                    continue;
+                };
+                let Ok(bytes) = super::decode_stream(dict, raw) else {
+                    continue;
+                };
+                if bytes.len() > 2000 && bytes.windows(2).any(|w| w == b"TJ") {
+                    let path = format!("{dir}/content-{number}.txt");
+                    let _ = std::fs::write(&path, &bytes);
+                    eprintln!("wrote {path} ({} bytes)", bytes.len());
+                }
+            }
+            return;
+        }
+        for number in doc.object_numbers() {
+            let Ok(object) = doc.fetch(number) else {
+                continue;
+            };
+            let super::Object::Stream(dict, raw) = &object else {
+                continue;
+            };
+            let Ok(bytes) = super::decode_stream(dict, raw) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(at) = text.find(&needle) {
+                let from = at.saturating_sub(700);
+                let to = (at + 200).min(text.len());
+                eprintln!("--- object {number} ---");
+                eprintln!("{}", &text[from..to]);
+                return;
+            }
+        }
+        eprintln!("phrase not found in any stream");
+    }
+}
+
+#[cfg(test)]
+mod standard_14_widths {
+    /// A width fallback has to follow the font's encoding. This document puts
+    /// its "fi" ligature at code 2; reading the code as a character gives a
+    /// control character, whose width is zero, and a zero advance then reads
+    /// downstream as a cluster continuation -- so the ligature was skipped
+    /// entirely and "intensified" rendered as "intensi ed".
+    #[test]
+    fn a_width_fallback_follows_the_encoding() {
+        let Ok(pdf) = std::fs::read("../website/public/shannon1948.pdf") else {
+            eprintln!("skipping: shannon1948.pdf not present");
+            return;
+        };
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let run = list.ops.iter().find_map(|op| match op {
+            super::RenderOp::Text {
+                text,
+                advances,
+                size,
+                ..
+            } if text.contains('\u{FB01}') => Some((text.clone(), advances.clone(), *size)),
+            _ => None,
+        });
+        let Some((text, advances, size)) = run else {
+            eprintln!("skipping: no ligature on this page");
+            return;
+        };
+        let at = text.chars().position(|ch| ch == '\u{FB01}').expect("found");
+        let em = advances[at] / size;
+        assert!(
+            em > 0.3,
+            "the ligature should carry a real advance, got {em:.3} em"
+        );
+    }
+
+    /// A standard-14 font may omit `/Widths`, because every reader is required
+    /// to know its metrics. Falling back to a flat half em made every run too
+    /// wide, so a line overran the position the document explicitly set for
+    /// what followed and the text overlapped on screen.
+    #[test]
+    fn a_base_14_font_without_widths_gets_its_published_metrics() {
+        let Ok(pdf) = std::fs::read("../website/public/shannon1948.pdf") else {
+            eprintln!("skipping: shannon1948.pdf not present");
+            return;
+        };
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let runs: Vec<_> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text {
+                    text,
+                    x,
+                    y,
+                    width,
+                    measured,
+                    ..
+                } => Some((text.clone(), *x, *y, *width, *measured)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(!runs.is_empty(), "the page should have text");
+        assert!(
+            runs.iter().all(|run| !run.4),
+            "widths should be known, not measured by the renderer"
+        );
+
+        // Narrow letters must be narrower than wide ones. A flat default is
+        // what this is guarding against, and it makes every width identical.
+        let widths: Vec<f64> = runs.iter().map(|run| run.3).collect();
+        assert!(widths.iter().any(|w| *w > 0.0), "runs should have a width");
+
+        // Runs on one baseline must not overlap: the document places each one
+        // itself, so an overrun is a metric error.
+        let mut line: Vec<(f64, f64, String)> = runs
+            .iter()
+            .filter(|run| (run.2 - 570.9).abs() < 0.5)
+            .map(|run| (run.1, run.1 + run.3, run.0.clone()))
+            .collect();
+        if line.len() < 2 {
+            eprintln!("skipping overlap check: expected line not found");
+            return;
+        }
+        line.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for pair in line.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0 + 0.5,
+                "runs overlap: {:?} ends at {:.1} but {:?} starts at {:.1}",
+                pair[0].2,
+                pair[0].1,
+                pair[1].2,
+                pair[1].0
+            );
+        }
     }
 }
