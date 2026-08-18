@@ -49,6 +49,15 @@ pub struct FontSet {
     /// the system. False in the browser, which has no filesystem to read, and
     /// in tests that need the fallback path to be the one taken.
     substitution: bool,
+    /// Mask pixels per painter unit, as hundredths.
+    ///
+    /// A painter working in logical units on a display with more pixels than
+    /// that -- any phone, any HiDPI screen -- has the host scale the result
+    /// up. A mask rasterised one pixel per logical unit is then blown up by
+    /// the same factor and the text goes soft, which at small sizes is the
+    /// difference between a word and a smudge. Rasterising at the host's
+    /// ratio and placing at the same size costs memory, not sharpness.
+    raster_scale: std::sync::atomic::AtomicU32,
 }
 
 impl FontSet {
@@ -64,6 +73,7 @@ impl FontSet {
         FontSet {
             embedded,
             substitution: true,
+            raster_scale: std::sync::atomic::AtomicU32::new(100),
             ..FontSet::default()
         }
     }
@@ -76,6 +86,7 @@ impl FontSet {
     pub fn without_substitution(data: &[u8]) -> FontSet {
         FontSet {
             substitution: false,
+            raster_scale: std::sync::atomic::AtomicU32::new(100),
             ..FontSet::load(data)
         }
     }
@@ -200,6 +211,24 @@ impl FontSet {
         found
     }
 
+
+    /// How many mask pixels to rasterise per painter unit.
+    ///
+    /// Set by the host from its device pixel ratio. Glyphs are placed at the
+    /// same size either way; only the detail in the mask changes.
+    pub fn set_raster_scale(&self, scale: f64) {
+        let clamped = scale.clamp(1.0, 4.0);
+        self.raster_scale.store(
+            (clamped * 100.0).round() as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The current mask resolution, in pixels per painter unit.
+    pub fn raster_scale(&self) -> f64 {
+        self.raster_scale.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0
+    }
+
     /// A rasterised glyph, cached.
     ///
     /// Size is quantised to a quarter pixel so that a zoom animation reuses
@@ -214,7 +243,9 @@ impl FontSet {
         rot: f64,
         color: [u8; 3],
     ) -> Option<Arc<RasterGlyph>> {
-        let quantised = (size * 4.0).round().max(0.0) as u32;
+        // Quantised after scaling, so masks at one ratio never stand in for
+        // another's.
+        let quantised = (size * self.raster_scale() * 4.0).round().max(0.0) as u32;
         // Angle quantised to a degree: a run shares one angle, so this costs a
         // cache entry per angle actually used rather than per glyph.
         let angle = (rot.to_degrees().round() as i32).rem_euclid(360);

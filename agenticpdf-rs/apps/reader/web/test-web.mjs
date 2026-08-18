@@ -91,6 +91,31 @@ try {
     console.log("skipping the PDF case: demos/sample.pdf not present");
   }
 
+  // Paging deep into a document is where the two mask caches can fall out of
+  // step: the sender stops inlining pixels for masks it believes the host
+  // holds, and a host that has dropped them draws empty boxes. The page count
+  // here is chosen to be past the point where a document's masks accumulate.
+  let deep = null;
+  if (pdfPath) {
+    for (let i = 0; i < 11; i++) {
+      await page.click("#next");
+      await page.waitForTimeout(120);
+    }
+    await page.waitForTimeout(1500);
+    deep = await page.evaluate(() => {
+      const canvas = document.getElementById("page");
+      const ctx = canvas.getContext("2d");
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let ink = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 8 && data[i] < 128 && data[i + 1] < 128 && data[i + 2] < 128) ink++;
+      }
+      const ops = JSON.parse(window.__lastOps ?? "[]");
+      return { page: document.getElementById("position").textContent, glyphOps: ops.filter((o) => o.op === "image").length, ink };
+    });
+    console.log(JSON.stringify(deep, null, 1));
+  }
+
   console.log("pageerrors:", errors);
 
   const pdfOk =
@@ -100,7 +125,13 @@ try {
     (pdf.glyphOps > 500 && pdf.ink > 5000 && pdf.framesDrawn === 0);
   if (pdf && !pdfOk) console.log("FAIL: the PDF page did not render its glyphs");
 
+  // Glyph ops with no ink behind them means the host was sent keys for masks
+  // it does not hold -- text that silently disappears the further you read.
+  const deepOk = deep === null || deep.glyphOps === 0 || deep.ink > 1000;
+  if (!deepOk) console.log("FAIL: a page reached by paging drew glyphs but no ink");
+
   const ok =
+    deepOk &&
     result.canvasPx > 1000 &&
     result.hits === 1 &&
     result.exported &&

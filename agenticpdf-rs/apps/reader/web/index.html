@@ -85,6 +85,9 @@ function resize() {
   canvas.width  = Math.round(width  * ratio);
   canvas.height = Math.round(height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  // The recording is in CSS pixels; this is how many real ones each becomes,
+  // and glyph masks are rasterised to match rather than being blown up.
+  reader.set_device_pixel_ratio(ratio);
   return { width, height };
 }
 
@@ -99,15 +102,17 @@ function resize() {
 const glyphTiles = new Map();
 
 // Bounded for the same reason the sender is: every zoom level makes its own
-// masks. Both sides clear at the same size, so they agree about what the
-// other holds.
+// masks. Both sides must drop them at the same moment, not merely at the same
+// size: the sender omits the pixels for every mask it believes we hold, so a
+// cache we clear on our own schedule leaves it sending keys for tiles we threw
+// away, and the text silently stops appearing. Eviction therefore happens once
+// per recording, in `render`, under the rule the sender uses.
 const MAX_GLYPH_TILES = 4096;
 
 function glyphTile(op) {
   const cached = glyphTiles.get(op.key);
   if (cached) return cached;
   if (!op.pixels) return null;
-  if (glyphTiles.size > MAX_GLYPH_TILES) glyphTiles.clear();
 
   const binary = atob(op.pixels);
   const bytes = new Uint8ClampedArray(binary.length);
@@ -127,11 +132,20 @@ function render() {
   ctx.clearRect(0, 0, width, height);
   if (!reader.page_count()) return;
 
+  // In step with the sender, which drops its record of what we hold once a
+  // recording pushes it past the same bound. It then re-inlines every mask,
+  // which is what refills this map below.
+  if (glyphTiles.size > MAX_GLYPH_TILES) glyphTiles.clear();
+
   const recording = reader.render_page(width, height, zoom);
   // Kept so a test can inspect what was actually asked for, rather than
   // inferring it from pixels alone.
   window.__lastOps = recording;
   const ops = JSON.parse(recording);
+  // A key with no pixels for a tile we do not hold draws nothing at all, and
+  // a page of nothing at all is what the reader would show. Counted here and
+  // repaired below rather than passed over.
+  let missingTiles = 0;
   for (const op of ops) {
     switch (op.op) {
       case "fill_rect":
@@ -181,6 +195,9 @@ function render() {
           const tile = op.key ? glyphTile(op) : null;
           if (tile) ctx.drawImage(tile, op.x, op.y, op.w, op.h);
           else {
+            // Pixels we were never sent, for a key we do not hold: the sender
+            // and this cache have fallen out of step.
+            if (op.key && !op.pixels) missingTiles++;
             ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
             ctx.strokeRect(op.x, op.y, op.w, op.h);
           }
@@ -199,7 +216,25 @@ function render() {
     }
   }
   position.textContent = `${reader.page()} / ${reader.page_count()}`;
+
+  // Repair, once. `forget_images` makes the next recording carry every mask's
+  // pixels again, so the redraw below has everything it needs; the guard is
+  // there because a second failure means something other than a stale cache,
+  // and a reader that loops redrawing is worse than one missing a glyph.
+  if (missingTiles > 0 && !repairing) {
+    repairing = true;
+    reader.forget_images();
+    glyphTiles.clear();
+    try {
+      render();
+    } finally {
+      repairing = false;
+    }
+  }
 }
+
+// Guards the one-shot redraw in `render`.
+let repairing = false;
 
 // --- actions ---------------------------------------------------------------
 

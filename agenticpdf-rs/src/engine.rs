@@ -1745,15 +1745,140 @@ fn color_from_stack(stack: &[Token]) -> [f64; 4] {
     }
 }
 
+
+/// How to read the operands of `sc`/`scn` for the space currently selected.
+///
+/// Arity alone is not enough. A single number is a grey level in DeviceGray
+/// but a *tint* in a Separation or DeviceN space, and a tint runs the other
+/// way: 1 means the colorant at full strength, which is usually black ink.
+/// Read as grey, `1 scn` paints white, and a page of white text on white
+/// paper looks exactly like a page that failed to render.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ColorKind {
+    Gray,
+    Rgb,
+    Cmyk,
+    /// Separation or DeviceN: the operands are colorant tints.
+    Tint,
+    /// A pattern or something unrecognised; fall back to operand count.
+    Unknown,
+}
+
+impl ColorKind {
+    /// Classify a colour space object, resolving `ICCBased` by its component
+    /// count and named spaces by name.
+    fn of(doc: &Document, cs: &Object) -> ColorKind {
+        match cs {
+            Object::Name(n) => match n.as_str() {
+                "DeviceGray" | "CalGray" | "G" => ColorKind::Gray,
+                "DeviceCMYK" | "CMYK" => ColorKind::Cmyk,
+                "DeviceRGB" | "CalRGB" | "RGB" => ColorKind::Rgb,
+                "Pattern" => ColorKind::Unknown,
+                _ => ColorKind::Unknown,
+            },
+            Object::Array(a) => match a.first().and_then(|o| o.as_name()) {
+                Some("Separation") | Some("DeviceN") => ColorKind::Tint,
+                Some("Indexed") | Some("Pattern") => ColorKind::Unknown,
+                Some("CalGray") => ColorKind::Gray,
+                Some("CalRGB") | Some("Lab") => ColorKind::Rgb,
+                Some("ICCBased") => match color_space_components(doc, cs) {
+                    1 => ColorKind::Gray,
+                    4 => ColorKind::Cmyk,
+                    _ => ColorKind::Rgb,
+                },
+                _ => ColorKind::Unknown,
+            },
+            _ => ColorKind::Unknown,
+        }
+    }
+}
+
+/// The colour an `sc`/`scn` names, given the space in force.
+///
+/// A tint is treated as ink coverage on white: full tint is black. Evaluating
+/// the space's tint transform into its alternate would be exact, but coverage
+/// is the right sense of the number, and the sense is what matters -- the
+/// alternative is text painted in the inverse of its own colour.
+fn color_in_space(stack: &[Token], kind: ColorKind) -> [f64; 4] {
+    let nums: Vec<f64> = stack.iter().rev().map_while(|t| t.as_num()).collect();
+    if kind == ColorKind::Tint && !nums.is_empty() {
+        // DeviceN carries one tint per colorant; the heaviest governs.
+        let ink = nums.iter().cloned().fold(0.0f64, f64::max).clamp(0.0, 1.0);
+        let level = 1.0 - ink;
+        return [level, level, level, 1.0];
+    }
+    color_from_stack(stack)
+}
+
+
+/// The page's named colour spaces, classified once.
+///
+/// `cs /CS0` names an entry in the page resources; without it there is no way
+/// to know whether the number that follows is a grey level or a tint.
+fn build_color_spaces(doc: &Document, page: &Dict) -> HashMap<String, ColorKind> {
+    let mut out = HashMap::new();
+    let Some(resources) = doc.get(page, "Resources") else {
+        return out;
+    };
+    let Some(rd) = resources.as_dict().cloned() else {
+        return out;
+    };
+    let Some(spaces) = doc.get(&rd, "ColorSpace").map(|o| doc.resolve(&o)) else {
+        return out;
+    };
+    let Some(sd) = spaces.as_dict().cloned() else {
+        return out;
+    };
+    for (name, obj) in sd.iter() {
+        let resolved = doc.resolve(obj);
+        out.insert(name.clone(), ColorKind::of(doc, &resolved));
+    }
+    out
+}
+
+/// Resolve the name `cs` was given against the page's spaces, treating the
+/// device names as themselves.
+fn named_space(stack: &[Token], spaces: &HashMap<String, ColorKind>) -> ColorKind {
+    let Some(Token::Name(name)) = stack.last() else {
+        return ColorKind::Unknown;
+    };
+    match name.as_str() {
+        "DeviceGray" | "CalGray" | "G" => ColorKind::Gray,
+        "DeviceRGB" | "CalRGB" | "RGB" => ColorKind::Rgb,
+        "DeviceCMYK" | "CMYK" => ColorKind::Cmyk,
+        other => spaces.get(other).copied().unwrap_or(ColorKind::Unknown),
+    }
+}
+
+
+/// What `q` saves and `Q` puts back.
+///
+/// Colour rides along with the transform: a form or an annotation that sets
+/// its own colour inside `q`/`Q` must not leave it set for the rest of the
+/// page.
+#[derive(Debug, Clone, Copy)]
+struct GState {
+    ctm: Matrix,
+    text: TextState,
+    fill: [f64; 4],
+    stroke: [f64; 4],
+    fill_space: ColorKind,
+    stroke_space: ColorKind,
+}
+
 fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
     let fonts = build_fonts(doc, page);
+    let color_spaces = build_color_spaces(doc, page);
     let content = page_contents(doc, page);
     if content.is_empty() {
         return Vec::new();
     }
     let mut ops = Vec::new();
 
-    let mut ctm_stack: Vec<Matrix> = Vec::new();
+    // The text rendering mode rides along with the transform: it is graphics
+    // state, so `q`/`Q` must restore it. Otherwise an invisible run inside a
+    // saved state leaks out and blanks the real text that follows.
+    let mut ctm_stack: Vec<GState> = Vec::new();
     let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = tm;
@@ -1761,8 +1886,17 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
     let mut leading = 0.0f64;
     let mut cur_font: Option<&Font> = None;
     let mut cur_font_name = String::new();
+    // Text rendering mode. 3 is invisible and 7 clips without painting, which
+    // is how an OCR layer sits over a scanned page: the words are there to be
+    // searched and selected, not to be seen. Drawing them puts the
+    // transcription on top of the picture of the same words.
+    let mut ts = TextState::default();
     let mut fill: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
     let mut stroke: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    // Which space those numbers are in, so `1 scn` can mean full ink rather
+    // than white.
+    let mut fill_space = ColorKind::Unknown;
+    let mut stroke_space = ColorKind::Unknown;
     let mut line_width = 1.0f64;
 
     // Path state, in device space.
@@ -1787,12 +1921,24 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
             Token::Op(op) => {
                 match op.as_str() {
                     "q" => {
-                        ctm_stack.push(ctm);
+                        ctm_stack.push(GState {
+                            ctm,
+                            text: ts,
+                            fill,
+                            stroke,
+                            fill_space,
+                            stroke_space,
+                        });
                         ops.push(RenderOp::Save);
                     }
                     "Q" => {
-                        if let Some(m) = ctm_stack.pop() {
-                            ctm = m;
+                        if let Some(state) = ctm_stack.pop() {
+                            ctm = state.ctm;
+                            ts = state.text;
+                            fill = state.fill;
+                            stroke = state.stroke;
+                            fill_space = state.fill_space;
+                            stroke_space = state.stroke_space;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -1832,10 +1978,26 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             line_width = (*v * scale).max(0.1);
                         }
                     }
-                    "g" | "rg" | "k" => fill = color_from_stack(&stack),
-                    "G" | "RG" | "K" => stroke = color_from_stack(&stack),
-                    "sc" | "scn" => fill = color_from_stack(&stack),
-                    "SC" | "SCN" => stroke = color_from_stack(&stack),
+                    "g" | "rg" | "k" => {
+                        fill_space = ColorKind::Unknown;
+                        fill = color_from_stack(&stack);
+                    }
+                    "G" | "RG" | "K" => {
+                        stroke_space = ColorKind::Unknown;
+                        stroke = color_from_stack(&stack);
+                    }
+                    // Selecting a space also resets the colour to that space's
+                    // initial value, which is black for every space here.
+                    "cs" => {
+                        fill_space = named_space(&stack, &color_spaces);
+                        fill = [0.0, 0.0, 0.0, 1.0];
+                    }
+                    "CS" => {
+                        stroke_space = named_space(&stack, &color_spaces);
+                        stroke = [0.0, 0.0, 0.0, 1.0];
+                    }
+                    "sc" | "scn" => fill = color_in_space(&stack, fill_space),
+                    "SC" | "SCN" => stroke = color_in_space(&stack, stroke_space),
                     "m" => {
                         if let Some([x, y]) = last2(&stack) {
                             close_cur(&mut subpaths, &mut cur);
@@ -1968,6 +2130,32 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             leading = *v;
                         }
                     }
+                    "Tr" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            ts.mode = *v as i64;
+                        }
+                    }
+                    "Tc" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            ts.char_spacing = *v;
+                        }
+                    }
+                    "Tw" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            ts.word_spacing = *v;
+                        }
+                    }
+                    "Tz" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            // Given as a percentage.
+                            ts.h_scale = *v / 100.0;
+                        }
+                    }
+                    "Ts" => {
+                        if let Some(Token::Num(v)) = stack.last() {
+                            ts.rise = *v;
+                        }
+                    }
                     "Td" | "TD" => {
                         if let Some([x, y]) = last2(&stack) {
                             if op == "TD" {
@@ -2001,6 +2189,7 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                 &tm,
                                 &ctm,
                                 fill,
+                                &ts,
                                 &mut ops,
                             );
                             // Advance the text matrix by the run width so the
@@ -2026,11 +2215,19 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                     ArrPart::Str(bytes) => {
                                         if let Some(f) = cur_font {
                                             let before = seg_advs.iter().sum::<f64>();
+                                            let from = seg_advs.len();
                                             f.decode_with_advances(
                                                 bytes,
                                                 &mut seg,
                                                 &mut seg_advs,
                                                 &mut seg_codes,
+                                            );
+                                            ts.space(
+                                                &mut seg_advs,
+                                                &seg_codes,
+                                                from,
+                                                font_size,
+                                                f.two_byte,
                                             );
                                             cursor += seg_advs.iter().sum::<f64>() - before;
                                         } else {
@@ -2090,9 +2287,27 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                                 segs.push((seg_start, seg, seg_advs, seg_codes));
                             }
                             let measured = cur_font.map(|f| !f.has_widths).unwrap_or(true);
-                            for (start, text, advs, codes) in segs {
-                                let seg_tm =
-                                    mat_mul(&[1.0, 0.0, 0.0, 1.0, start * font_size, 0.0], &tm);
+                            // Read before the loop: `text` below shadows the
+                            // state binding.
+                            let visible = ts.visible();
+                            let h_scale = ts.h_scale;
+                            let rise = ts.rise;
+                            for (start, text, mut advs, codes) in segs {
+                                if !visible {
+                                    continue;
+                                }
+                                // Horizontal scaling applies to the whole run:
+                                // the offset to its start, and every advance
+                                // within it.
+                                if h_scale != 1.0 {
+                                    for a in &mut advs {
+                                        *a *= h_scale;
+                                    }
+                                }
+                                let seg_tm = mat_mul(
+                                    &[1.0, 0.0, 0.0, 1.0, start * font_size * h_scale, rise],
+                                    &tm,
+                                );
                                 emit_text_op(
                                     &text,
                                     &cur_font_name,
@@ -2108,7 +2323,11 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
                             }
                             // Advance the text matrix by the total run width so a
                             // following show on the same line lands after it.
-                            tm = mat_mul(&[1.0, 0.0, 0.0, 1.0, cursor * font_size, 0.0], &tm);
+                            // The whole displacement scales, kerns included.
+                            tm = mat_mul(
+                                &[1.0, 0.0, 0.0, 1.0, cursor * font_size * h_scale, 0.0],
+                                &tm,
+                            );
                         }
                     }
                     _ => {}
@@ -2129,6 +2348,76 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
     ops
 }
 
+/// The text-state parameters that move the pen but are not the font or the
+/// matrix: `Tc`, `Tw`, `Tz`, `Ts`, and `Tr`.
+///
+/// Justified text is the common case. Many producers justify a line by setting
+/// a word spacing rather than by emitting `TJ` kerns, so a reader that ignores
+/// `Tw` packs every word against the next and the line ends short.
+#[derive(Debug, Clone, Copy)]
+struct TextState {
+    /// `Tc`, added to every glyph advance, in unscaled text units.
+    char_spacing: f64,
+    /// `Tw`, added to single-byte code 32 only, in unscaled text units.
+    word_spacing: f64,
+    /// `Tz` as a factor: it scales every horizontal displacement.
+    h_scale: f64,
+    /// `Ts`, a baseline offset in unscaled text units.
+    rise: f64,
+    /// `Tr`, the rendering mode.
+    mode: i64,
+}
+
+impl Default for TextState {
+    fn default() -> Self {
+        Self {
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            h_scale: 1.0,
+            rise: 0.0,
+            mode: 0,
+        }
+    }
+}
+
+impl TextState {
+    /// Whether this mode paints anything.
+    ///
+    /// Mode 3 is invisible and mode 7 clips without painting. That is how an
+    /// OCR layer sits over a scanned page: the words are there to be searched
+    /// and selected, not to be seen. Drawing them lays the transcription on
+    /// top of the picture of the same words. Extraction still wants them, so
+    /// only the display list skips them.
+    fn visible(&self) -> bool {
+        self.mode != 3 && self.mode != 7
+    }
+
+    /// Add the per-glyph spacing to advances the font just appended.
+    ///
+    /// `Tc` and `Tw` are in unscaled text units while advances are em
+    /// fractions, so they divide by the font size to match. Zero-advance
+    /// entries are the continuation characters of a decomposed ligature --
+    /// one glyph, several chars -- and spacing is per glyph, so they are
+    /// left alone.
+    fn space(&self, advs: &mut [f64], codes: &[u32], from: usize, font_size: f64, two_byte: bool) {
+        if font_size == 0.0 || (self.char_spacing == 0.0 && self.word_spacing == 0.0) {
+            return;
+        }
+        for (adv, code) in advs.iter_mut().zip(codes.iter()).skip(from) {
+            if *adv == 0.0 {
+                continue;
+            }
+            let mut extra = self.char_spacing;
+            // Word spacing applies to the single-byte code 32 and to nothing
+            // else -- notably not to a two-byte code that happens to be 32.
+            if !two_byte && *code == 32 {
+                extra += self.word_spacing;
+            }
+            *adv += extra / font_size;
+        }
+    }
+}
+
 /// Decodes and emits a single text show, returning its advance (em fractions)
 /// so the caller can move the text matrix forward by the run width.
 #[allow(clippy::too_many_arguments)]
@@ -2140,6 +2429,7 @@ fn push_text_op(
     tm: &Matrix,
     ctm: &Matrix,
     color: [f64; 4],
+    ts: &TextState,
     ops: &mut Vec<RenderOp>,
 ) -> f64 {
     let mut s = String::new();
@@ -2156,11 +2446,30 @@ fn push_text_op(
             }
         }
     }
+    ts.space(
+        &mut advs,
+        &codes,
+        0,
+        font_size,
+        font.map(|f| f.two_byte).unwrap_or(false),
+    );
+    // Horizontal scaling multiplies every horizontal displacement, spacing
+    // included.
+    if ts.h_scale != 1.0 {
+        for a in &mut advs {
+            *a *= ts.h_scale;
+        }
+    }
     let advance: f64 = advs.iter().sum();
     let measured = font.map(|f| !f.has_widths).unwrap_or(true);
-    if !s.trim().is_empty() {
+    // The advance is returned either way: invisible text still moves the pen,
+    // and anything drawn after it on the line depends on that.
+    if ts.visible() && !s.trim().is_empty() {
+        // Rise lifts the run off the baseline -- superscripts and footnote
+        // markers -- without disturbing the line it sits on.
+        let placed = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, ts.rise], tm);
         emit_text_op(
-            &s, font_name, font_size, &advs, &codes, measured, tm, ctm, color, ops,
+            &s, font_name, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
         );
     }
     advance
@@ -3061,8 +3370,6 @@ impl Font {
                     .copied()
                     .unwrap_or(self.default_width);
                 tmp.clear();
-                // An unmapped simple-font code emits nothing (no winansi
-                // fallback), matching `decode`'s behaviour.
                 #[allow(clippy::collapsible_if)]
                 if let Some(s) = self.to_unicode.get(&code) {
                     tmp.push_str(s);
@@ -3072,6 +3379,18 @@ impl Font {
                     }
                 } else if let Some(c) = winansi(b) {
                     tmp.push(c);
+                }
+                if tmp.is_empty() {
+                    // A code the document never says the meaning of still has
+                    // a glyph in the font it came from, and a slot on the
+                    // page. TeX's f-ligatures are the common case: no
+                    // `/ToUnicode`, no `/Differences`, just code 12 and a
+                    // charstring named "fi". Dropping the code dropped the
+                    // ligature and folded its width into the previous letter,
+                    // so "efficiently" came out as "e ciently" with a hole in
+                    // it. The placeholder holds the slot; the renderer picks
+                    // the glyph by code and draws the right thing.
+                    tmp.push(char::REPLACEMENT_CHARACTER);
                 }
                 emit(&tmp, w, code, out, advs, codes_out);
             }
@@ -4913,5 +5232,386 @@ mod standard_14_widths {
                 pair[1].0
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod text_state {
+    /// An OCR layer is invisible text over a picture of the same words. It has
+    /// to be extractable -- that is the entire point of it -- and it must not
+    /// be drawn, or the transcription appears on top of the scan.
+    #[test]
+    fn invisible_text_is_extracted_but_not_drawn() {
+        let visible = build(0);
+        let invisible = build(3);
+        let clipping = build(7);
+
+        let drawn = |pdf: &[u8]| -> usize {
+            super::extract_display_list(pdf, 1)
+                .expect("page 1")
+                .ops
+                .iter()
+                .filter(|op| matches!(op, super::RenderOp::Text { .. }))
+                .count()
+        };
+
+        assert!(drawn(&visible) > 0, "mode 0 should draw");
+        assert_eq!(drawn(&invisible), 0, "mode 3 is invisible");
+        assert_eq!(drawn(&clipping), 0, "mode 7 clips without painting");
+
+        // Extraction is unaffected: the words are why the layer exists.
+        for pdf in [&visible, &invisible, &clipping] {
+            let text = crate::PdfDocument::from_bytes(pdf)
+                .expect("parse")
+                .extract_text();
+            assert!(
+                text.contains("Hidden"),
+                "invisible text must still be extractable, got {text:?}"
+            );
+        }
+    }
+
+    /// Invisible text still moves the pen, so what follows it on the line
+    /// stays where the document put it.
+    #[test]
+    fn invisible_text_still_advances_the_line() {
+        let pdf = build_two_runs();
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let runs: Vec<(f64, String)> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text { x, text, .. } => Some((*x, text.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(runs.len(), 1, "only the visible run should be drawn");
+        // The visible run follows an invisible one, so it must start past it
+        // rather than at the origin.
+        assert!(
+            runs[0].0 > 60.0,
+            "the visible run should start after the invisible one, at {}",
+            runs[0].0
+        );
+    }
+
+    /// `Tr` is graphics state, so `Q` puts back whatever mode was in force
+    /// before the matching `q`. A form or annotation that hides its own text
+    /// must not hide the page's.
+    #[test]
+    fn q_restores_the_previous_render_mode() {
+        let pdf = document(
+            "BT /F1 12 Tf 20 100 Td ET              q BT /F1 12 Tf 3 Tr 20 80 Td (Hidden) Tj ET Q              BT /F1 12 Tf 20 60 Td (Shown) Tj ET",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let drawn: Vec<String> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawn, vec!["Shown".to_string()]);
+    }
+
+    /// `Tc` widens every glyph and `Tw` only the spaces. Both are in unscaled
+    /// text units, so the effect is independent of the font size.
+    #[test]
+    fn character_and_word_spacing_widen_the_run() {
+        let plain = run_width("BT /F1 10 Tf 20 100 Td (ab cd) Tj ET");
+        let charred = run_width("BT /F1 10 Tf 5 Tc 20 100 Td (ab cd) Tj ET");
+        let worded = run_width("BT /F1 10 Tf 5 Tw 20 100 Td (ab cd) Tj ET");
+
+        // Five glyphs carry the character spacing: a, b, space, c, d.
+        assert!(
+            (charred - plain - 25.0).abs() < 0.5,
+            "5 pt on 5 glyphs should add 25 pt, got {}",
+            charred - plain
+        );
+        // Only the single space carries the word spacing.
+        assert!(
+            (worded - plain - 5.0).abs() < 0.5,
+            "5 pt on 1 space should add 5 pt, got {}",
+            worded - plain
+        );
+    }
+
+    /// `Tz` scales horizontal displacement, spacing included.
+    #[test]
+    fn horizontal_scaling_stretches_the_run() {
+        let plain = run_width("BT /F1 10 Tf 20 100 Td (abcd) Tj ET");
+        let wide = run_width("BT /F1 10 Tf 200 Tz 20 100 Td (abcd) Tj ET");
+        assert!(
+            (wide - plain * 2.0).abs() < 0.5,
+            "200% should double {plain}, got {wide}"
+        );
+    }
+
+    /// `Ts` lifts the run off the baseline without moving the line.
+    #[test]
+    fn rise_lifts_the_baseline() {
+        let base = first_text("BT /F1 10 Tf 20 100 Td (x) Tj ET").1;
+        let lifted = first_text("BT /F1 10 Tf 6 Ts 20 100 Td (x) Tj ET").1;
+        assert!(
+            (lifted - base - 6.0).abs() < 0.5,
+            "a 6 pt rise should lift 6 pt, got {}",
+            lifted - base
+        );
+    }
+
+    /// Spacing must survive `TJ` too, which is where justified text lives.
+    #[test]
+    fn spacing_applies_to_positioned_text() {
+        let plain = run_width("BT /F1 10 Tf 20 100 Td [(ab) -200 (cd)] TJ ET");
+        let spaced = run_width("BT /F1 10 Tf 5 Tc 20 100 Td [(ab) -200 (cd)] TJ ET");
+        assert!(
+            spaced > plain + 15.0,
+            "character spacing should widen a TJ run: {plain} -> {spaced}"
+        );
+    }
+
+    /// A code the document never gives a meaning for still occupies a slot.
+    ///
+    /// TeX's f-ligatures arrive with no `/ToUnicode` and no `/Differences`:
+    /// just a byte and a charstring in the embedded font. Dropping the code
+    /// dropped the ligature and folded its width into the letter before it,
+    /// which is how "efficiently" rendered as "e ciently" with a gap.
+    #[test]
+    fn an_unnamed_code_keeps_its_place() {
+        // Byte 12 is a form feed in WinAnsi -- no character -- and is where
+        // Computer Modern keeps "fi". The font gives it a width, as a font
+        // with a glyph there does.
+        let pdf = document_with_widths("BT /F1 12 Tf 20 100 Td (ab) Tj ET");
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let (text, advances, codes) = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text {
+                    text,
+                    advances,
+                    codes,
+                    ..
+                } => Some((text.clone(), advances.clone(), codes.clone())),
+                _ => None,
+            })
+            .expect("a text op");
+
+        assert_eq!(text.chars().count(), 3, "three codes, three slots: {text:?}");
+        assert_eq!(codes[1], 12, "the middle slot keeps the document's code");
+        assert!(
+            (advances[1] - 12.0).abs() < 0.5,
+            "the unnamed code carries its own width rather than swelling its              neighbour: {advances:?}"
+        );
+    }
+
+    /// As `document`, but the font states a width for code 12.
+    fn document_with_widths(content: &str) -> Vec<u8> {
+        document_with_font(
+            content,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica               /FirstChar 12 /LastChar 12 /Widths [1000] >>",
+        )
+    }
+
+    /// A Separation tint of 1 is full ink, not white. Read as a grey level it
+    /// paints white text on white paper -- a page that looks blank while the
+    /// display list insists it drew thousands of glyphs.
+    #[test]
+    fn a_full_tint_is_ink_not_white() {
+        let pdf = spot_color_document("/CS0 cs 1 scn");
+        let color = first_fill(&pdf);
+        assert!(
+            color[0] < 0.1 && color[1] < 0.1 && color[2] < 0.1,
+            "a full tint should be dark, got {color:?}"
+        );
+
+        // And no tint is the paper.
+        let pdf = spot_color_document("/CS0 cs 0 scn");
+        let color = first_fill(&pdf);
+        assert!(color[0] > 0.9, "no tint should be white, got {color:?}");
+
+        // A grey space still reads the old way round.
+        let pdf = spot_color_document("/DeviceGray cs 1 scn");
+        let color = first_fill(&pdf);
+        assert!(color[0] > 0.9, "grey 1 is white, got {color:?}");
+    }
+
+    /// `Q` restores the colour as well as the transform.
+    #[test]
+    fn q_restores_the_fill_colour() {
+        let pdf = spot_color_document("1 0 0 rg q /CS0 cs 1 scn Q");
+        let color = first_fill(&pdf);
+        assert!(
+            color[0] > 0.9 && color[1] < 0.1,
+            "the red set before `q` should survive `Q`, got {color:?}"
+        );
+    }
+
+    fn first_fill(pdf: &[u8]) -> [f64; 4] {
+        let list = super::extract_display_list(pdf, 1).expect("page 1");
+        list.ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("a text op")
+    }
+
+    /// A page whose `/CS0` is a Separation over DeviceCMYK, as a press-ready
+    /// document's black text usually is.
+    fn spot_color_document(prelude: &str) -> Vec<u8> {
+        let content = format!("{prelude} BT /F1 12 Tf 20 100 Td (Ink) Tj ET");
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(b"%PDF-1.4
+");
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(format!("{number} 0 obj
+").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"
+endobj
+");
+        };
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /Resources << /Font << /F1 4 0 R >>               /ColorSpace << /CS0 [/Separation /Black /DeviceCMYK 6 0 R] >> >>               /Contents 5 0 R >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        );
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!("<< /Length {} >>
+stream
+{content}
+endstream", content.len()).as_bytes(),
+        );
+        // The tint transform. Never evaluated -- the tint is read as coverage
+        // -- but a Separation is malformed without one.
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 >>",
+        );
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref
+0 {}
+", offsets.len()).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f 
+");
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n 
+").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{xref}
+%%EOF
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    /// The advance is measured from where the first run starts to where the
+    /// text matrix leaves the pen, which is what the next `Tj` on the line
+    /// would use.
+    fn run_width(content: &str) -> f64 {
+        let pdf = document(&format!("{content} BT /F1 10 Tf 0 0 Td (|) Tj ET"));
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let xs: Vec<f64> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text { x, width, .. } => Some(x + width),
+                _ => None,
+            })
+            .collect();
+        let start = first_text(content).0;
+        xs[0] - start
+    }
+
+    fn first_text(content: &str) -> (f64, f64) {
+        let pdf = document(content);
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        list.ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("a text op")
+    }
+
+    fn build(mode: i64) -> Vec<u8> {
+        document(&format!("BT /F1 12 Tf {mode} Tr 20 100 Td (Hidden words) Tj ET"))
+    }
+
+    fn build_two_runs() -> Vec<u8> {
+        document("BT /F1 12 Tf 20 100 Td 3 Tr (Invisible) Tj 0 Tr (Shown) Tj ET")
+    }
+
+    fn document(content: &str) -> Vec<u8> {
+        document_with_font(
+            content,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        )
+    }
+
+    fn document_with_font(content: &str, font: &[u8]) -> Vec<u8> {
+        let mut pdf: Vec<u8> = Vec::new();
+        let mut offsets = vec![0usize];
+        pdf.extend_from_slice(b"%PDF-1.4\n");
+        let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
+            offsets.push(pdf.len());
+            let number = offsets.len() - 1;
+            pdf.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+            pdf.extend_from_slice(body);
+            pdf.extend_from_slice(b"\nendobj\n");
+        };
+        push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        );
+        push(&mut pdf, &mut offsets, font);
+        push(
+            &mut pdf,
+            &mut offsets,
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).as_bytes(),
+        );
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for &offset in &offsets[1..] {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf
     }
 }

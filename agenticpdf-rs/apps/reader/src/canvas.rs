@@ -166,6 +166,13 @@ fn draw_embedded_glyphs(
         }
     }
 
+    // The size the run is *drawn* at. `size` is in page units, and every
+    // position here goes through the transform on its way to the surface, so a
+    // mask rasterised at the unscaled size is too big for its own advances
+    // whenever the page is not shown at 1:1 -- letters overlap on a page
+    // zoomed out, and stand apart on one zoomed in.
+    let device_size = size * transform.scale as f64;
+
     let (cos, sin) = (rot.cos(), rot.sin());
     let ink = [
         (style.color.r * 255.0).clamp(0.0, 255.0) as u8,
@@ -174,29 +181,47 @@ fn draw_embedded_glyphs(
     ];
     let mut pen = 0.0f64;
     let mut drew = false;
+    // Set where a character is deliberately not drawn rather than failed on.
+    let mut handled = false;
 
     for (index, glyph_char) in chars.iter().enumerate() {
         // A cluster's continuation characters carry no advance and no glyph of
         // their own: the code that opened the cluster drew it.
         let is_continuation = index > 0 && advances[index] == 0.0;
-        if !glyph_char.is_whitespace() && !is_continuation {
+        // A placeholder marks a code the document never named. The face the
+        // document embedded still has the glyph, and the code finds it; a
+        // stand-in face does not, and drawing its idea of U+FFFD would put a
+        // black diamond where a ligature belongs.
+        let unnamed = *glyph_char == char::REPLACEMENT_CHARACTER;
+        if unnamed && substituted {
+            // Nothing to draw, but nothing missing either: the run is handled,
+            // and handing it to the painter's own font would set a run of
+            // black diamonds where the document has letters we cannot name.
+            handled = true;
+        } else if !glyph_char.is_whitespace() && !is_continuation {
             // The document's code, not the Unicode it decodes to. A subset
             // font remaps freely: drawing by Unicode picks a neighbouring
             // glyph, which is how "LLMs" came out as "hhMs".
             let mut sub_pen = pen;
             for code in &expanded[index] {
-                if let Some(raster) = fonts.raster(font, *code, Some(*glyph_char), size, rot, ink) {
+                if let Some(raster) =
+                    fonts.raster(font, *code, Some(*glyph_char), device_size, rot, ink)
+                {
                     // The mask is placed by its own offset from the glyph origin,
                     // which is where the outline actually sits -- a letter with a
                     // descender starts above the baseline and drops below it.
                     let origin_x = x + sub_pen * cos;
                     let origin_y = y + sub_pen * sin;
                     let at = transform.point(origin_x, origin_y);
+                    // The mask may hold several pixels per painter unit; it is
+                    // still placed at the size the text is, so the extra
+                    // pixels become detail rather than a bigger letter.
+                    let rs = fonts.raster_scale() as f32;
                     let rect = Rect::new(
-                        at.x + raster.left,
-                        at.y + raster.top,
-                        raster.width as f32,
-                        raster.height as f32,
+                        at.x + raster.left / rs,
+                        at.y + raster.top / rs,
+                        raster.width as f32 / rs,
+                        raster.height as f32 / rs,
                     );
                     painter.draw_image(
                         rect,
@@ -217,7 +242,7 @@ fn draw_embedded_glyphs(
             false => advances[index],
         };
     }
-    drew
+    drew || handled
 }
 
 /// A decoded image the canvas can draw, keyed by the resource name an
@@ -1024,6 +1049,84 @@ mod substitution_render {
     /// A document that embeds no fonts at all must still draw glyphs, by
     /// standing in a system face. Without that it can only be laid out with
     /// the UI font, which is the approximation this work exists to remove.
+    /// A glyph is drawn at the size the page is shown at, not the size the
+    /// page is written in.
+    ///
+    /// Every position in a recording goes through the transform; the masks
+    /// have to as well. When they did not, a page shown at less than 1:1 --
+    /// which is every page that fits a window, and every page on a phone --
+    /// drew full-size letters against shrunken advances, and the words closed
+    /// up into a solid bar of ink. The two agree here or the text is wrong at
+    /// every zoom but one.
+    #[test]
+    fn glyph_masks_scale_with_the_page() {
+        let Some(pdf) = sample_document() else {
+            eprintln!("skipping: no sample document present");
+            return;
+        };
+        let Ok(session) = crate::session::Session::open(pdf) else {
+            panic!("the document should open");
+        };
+        let list = session.display_list().expect("page geometry");
+
+        // The same page at two sizes, one twice the other.
+        let widths = |scale: f32| -> Vec<f32> {
+            let area = Rect::new(0.0, 0.0, 612.0 * scale, 792.0 * scale);
+            let mut painter = RecordingPainter::new();
+            paint_page(
+                &mut painter,
+                &list,
+                Transform::fit(&list, area, 1.0),
+                &[],
+                session.fonts(),
+            );
+            let json = painter.to_json();
+            json.split("{\"op\":\"image\",")
+                .skip(1)
+                .filter_map(|entry| {
+                    entry
+                        .split("\"w\":")
+                        .nth(1)?
+                        .split([',', '}'])
+                        .next()?
+                        .parse::<f32>()
+                        .ok()
+                })
+                .collect()
+        };
+
+        // Measured at readable sizes: every mask carries a couple of pixels of
+        // anti-aliased edge whatever its size, so the ratio approaches two
+        // from below rather than reaching it. Measuring small letters would
+        // measure mostly edge.
+        let small = widths(4.0);
+        let large = widths(8.0);
+        assert!(!small.is_empty(), "the page should draw glyphs");
+        assert_eq!(small.len(), large.len(), "the same glyphs either way");
+
+        let total_small: f32 = small.iter().sum();
+        let total_large: f32 = large.iter().sum();
+        let ratio = total_large / total_small;
+        assert!(
+            (1.7..2.1).contains(&ratio),
+            "doubling the page should very nearly double the glyphs: {ratio}"
+        );
+    }
+
+    /// A PDF with embedded fonts, wherever the test happens to be run from.
+    fn sample_document() -> Option<Vec<u8>> {
+        for path in [
+            "../../demos/sample.pdf",
+            "../../../demos/sample.pdf",
+            "demos/sample.pdf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
     #[test]
     fn a_document_with_no_embedded_fonts_still_draws_glyphs() {
         let Ok(pdf) = std::fs::read("../../../website/public/shannon1948.pdf")
@@ -1184,7 +1287,7 @@ mod render_sweep {
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };
-            let session = match crate::session::Session::open(bytes) {
+            let mut session = match crate::session::Session::open(bytes) {
                 Ok(session) => session,
                 Err(why) => {
                     eprintln!("{name:40} OPEN FAILED: {why}");
@@ -1193,41 +1296,65 @@ mod render_sweep {
                 }
             };
             opened += 1;
-            let Ok(list) = session.display_list() else {
-                eprintln!("{name:40} no geometry");
-                continue;
-            };
-            let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
-            let mut painter = RecordingPainter::new();
-            paint_page(
-                &mut painter,
-                &list,
-                Transform::fit(&list, area, 1.0),
-                &[],
-                session.fonts(),
-            );
-            let json = painter.to_json();
-            let glyphs = json.matches(r#""op":"image""#).count();
-            let fallback = json.matches(r#""op":"text""#).count();
-            let text_ops = list
-                .ops
-                .iter()
-                .filter(|op| matches!(op, RenderOp::Text { .. }))
-                .count();
 
-            if fallback > 0 {
+            // Several pages, not only the first. A title page is the least
+            // representative page a document has: the tables, figures, maths
+            // and footnotes that stress a renderer are all further in.
+            let pages = session.page_count();
+            let sample: Vec<usize> = [1usize, 2, 5, 11, 23]
+                .into_iter()
+                .filter(|page| *page <= pages)
+                .collect();
+
+            let mut runs_seen = 0usize;
+            let mut glyphs_seen = 0usize;
+            let mut fell_back = 0usize;
+            let mut stray_seen = 0usize;
+            let mut measured_seen = 0usize;
+            let mut worst_seen = 0.0f32;
+            let mut at = 1usize;
+
+            for page in &sample {
+                while at < *page {
+                    session.next_page();
+                    at += 1;
+                }
+                let Ok(list) = session.display_list() else {
+                    continue;
+                };
+                let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
+                let transform = Transform::fit(&list, area, 1.0);
+                let mut painter = RecordingPainter::new();
+                paint_page(&mut painter, &list, transform, &[], session.fonts());
+                let json = painter.to_json();
+
+                runs_seen += list
+                    .ops
+                    .iter()
+                    .filter(|op| matches!(op, RenderOp::Text { .. }))
+                    .count();
+                glyphs_seen += json.matches(r#""op":"image""#).count();
+                fell_back += json.matches(r#""op":"text""#).count();
+
+                let (measured, stray, worst) =
+                    super::measure_placement(&session, &list, transform);
+                measured_seen += measured;
+                stray_seen += stray;
+                worst_seen = worst_seen.max(worst);
+            }
+
+            if fell_back > 0 {
                 with_fallback += 1;
             }
-            if text_ops > 0 && glyphs == 0 {
+            if runs_seen > 0 && glyphs_seen == 0 {
                 blank += 1;
             }
-            let (measured, stray, worst) =
-                super::measure_placement(&session, &list, Transform::fit(&list, area, 1.0));
-            if stray > 0 {
+            if stray_seen > 0 {
                 misplaced += 1;
             }
             eprintln!(
-                "{name:40} runs={text_ops:<5} glyphs={glyphs:<6} fallback={fallback:<3}                  stray={stray}/{measured} worst={worst:.1}px"
+                "{name:36} pages={:<2} runs={runs_seen:<5} glyphs={glyphs_seen:<6} fallback={fell_back:<3} stray={stray_seen}/{measured_seen} worst={worst_seen:.1}px",
+                sample.len()
             );
         }
 
@@ -1680,5 +1807,46 @@ mod recording_size {
             json.matches(r#""op":"image""#).count(),
             json.matches(r#""pixels":""#).count()
         );
+    }
+}
+
+#[cfg(test)]
+mod ligature_probe {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn unresolved_codes() {
+        let path = std::env::var("APDF_RENDER_PDF").unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let session = crate::session::Session::open(bytes).unwrap();
+        let list = session.display_list().unwrap();
+        let fonts = session.fonts();
+        let mut missing: std::collections::BTreeMap<(String, u32, char), usize> =
+            Default::default();
+        for op in &list.ops {
+            let RenderOp::Text { text, codes, font, .. } = op else { continue };
+            for (ch, code) in text.chars().zip(codes.iter()) {
+                if ch.is_whitespace() {
+                    continue;
+                }
+                if fonts.resolve(font, *code, Some(ch)).is_none() {
+                    *missing.entry((font.clone(), *code, ch)).or_default() += 1;
+                }
+            }
+        }
+        for ((font, code, ch), n) in &missing {
+            eprintln!("{font}: code {code} ({ch:?}) x{n}");
+        }
+        eprintln!("{} distinct unresolved", missing.len());
+        for op in &list.ops {
+            let RenderOp::Text { text, codes, advances, .. } = op else { continue };
+            if text.contains("cient") || text.contains("erent") {
+                eprintln!("text: {text:?}");
+                eprintln!("codes: {:?}", &codes[..codes.len().min(30)]);
+                eprintln!("advs: {:?}", &advances[..advances.len().min(30)]);
+                break;
+            }
+        }
     }
 }

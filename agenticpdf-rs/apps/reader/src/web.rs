@@ -108,6 +108,30 @@ impl WebReader {
         json
     }
 
+    /// Tell the reader how many device pixels the host paints per CSS pixel.
+    ///
+    /// The recording is in CSS pixels and the host scales it up by this ratio,
+    /// so a mask rasterised one pixel per CSS pixel is enlarged by the same
+    /// factor and the text goes soft. Passing the ratio through is what makes
+    /// a phone's page as sharp as its screen allows.
+    pub fn set_device_pixel_ratio(&self, ratio: f32) {
+        if let Some(session) = &self.session {
+            session.fonts().set_raster_scale(ratio as f64);
+        }
+    }
+
+    /// Forget which masks the host is believed to hold, so the next recording
+    /// carries their pixels again.
+    ///
+    /// The host calls this when it finds itself asked to draw a mask it does
+    /// not have. The two caches are meant to stay in step, but a host that
+    /// drops one for any reason of its own -- memory pressure, a reload, a
+    /// mask it declined to decode -- would otherwise be sent keys forever and
+    /// show a page with no text on it. One redraw restores it.
+    pub fn forget_images(&self) {
+        self.sent_images.borrow_mut().clear();
+    }
+
     /// The current page number.
     pub fn page(&self) -> usize {
         self.session.as_ref().map_or(0, Session::page)
