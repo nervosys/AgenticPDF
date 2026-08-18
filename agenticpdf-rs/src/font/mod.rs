@@ -111,7 +111,10 @@ impl EmbeddedFont {
             let gid = self.glyph_for_cid(code);
             return match &self.program {
                 FontProgram::TrueType(font) => font.outline(gid),
-                FontProgram::Cff(font) => font.outline(gid),
+                // A CID-keyed CFF maps the character id through its own
+                // charset; a subset font is usually the identity, and one that
+                // is not says so.
+                FontProgram::Cff(font) => font.outline(font.index_for_cid(gid)),
                 // A Type 1 program is never the descendant of a composite
                 // font, but answering by index keeps this total.
                 FontProgram::Type1(_) => None,

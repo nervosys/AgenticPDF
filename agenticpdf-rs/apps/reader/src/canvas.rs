@@ -996,3 +996,60 @@ mod substitution_render {
         );
     }
 }
+
+#[cfg(test)]
+mod render_report {
+    use super::*;
+
+    /// Render a page of any document and report what it took to draw it.
+    ///
+    /// Ignored by default because it needs a path: run with
+    /// `APDF_RENDER_PDF=<file> cargo test -- --ignored render_any`.
+    /// The point is to put documents from the wild through the same path the
+    /// app uses, where fixtures built here cannot reach.
+    #[test]
+    #[ignore = "needs a document; run deliberately"]
+    fn render_any() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            eprintln!("set APDF_RENDER_PDF");
+            return;
+        };
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let bytes = std::fs::read(&path).expect("read the document");
+        let mut session = crate::session::Session::open(bytes).expect("open");
+        for _ in 1..page {
+            session.next_page();
+        }
+
+        let fonts = session.fonts();
+        eprintln!("embedded fonts: {}", fonts.len());
+
+        let list = session.display_list().expect("geometry");
+        let area = Rect::new(0.0, 0.0, 900.0, 1200.0);
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, area, 1.0),
+            &[],
+            fonts,
+        );
+        let json = painter.to_json();
+        let glyphs = json.matches(r#""op":"image""#).count();
+        let fallback = json.matches(r#""op":"text""#).count();
+        let fills = json.matches(r#""op":"fill_path""#).count();
+        eprintln!(
+            "page {page}: {glyphs} glyph masks, {fallback} fallback runs, {fills} vector fills"
+        );
+
+        // A page whose recording is empty drew nothing at all. A page of
+        // images legitimately has no glyphs, so the check is on the recording
+        // rather than on text.
+        let ops = json.matches(r#""op":"#).count();
+        eprintln!("total recorded ops: {ops}");
+        assert!(ops > 1, "the page produced no drawing at all");
+    }
+}

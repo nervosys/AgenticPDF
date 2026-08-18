@@ -32,6 +32,17 @@ pub struct CffFont {
     charstrings: Vec<Vec<u8>>,
     global_subrs: Vec<Vec<u8>>,
     local_subrs: Vec<Vec<u8>>,
+    /// A CID-keyed font keeps a private dictionary per font-dict rather than
+    /// one for the whole file, so its local subroutines are chosen per glyph.
+    /// This is what `/CIDFontType0` descendants normally embed; reading only
+    /// the top-level private dictionary leaves every subroutine call empty,
+    /// and a glyph drawn by subroutines then comes out blank.
+    fd_subrs: Vec<Vec<Vec<u8>>>,
+    /// Glyph index to font-dict index, from `FDSelect`.
+    fd_select: Vec<u8>,
+    /// Character id to glyph index, for a CID-keyed font whose charset is not
+    /// the identity.
+    cid_to_gid: HashMap<u16, u16>,
     /// Glyph name to glyph index, from the charset.
     by_name: HashMap<String, u16>,
     /// Character code to glyph index, from the font's own encoding.
@@ -99,11 +110,58 @@ impl CffFont {
             }
         }
 
+        // `ROS` marks a CID-keyed font. Its private dictionaries live in an
+        // `FDArray`, one per font-dict, and `FDSelect` says which applies to
+        // each glyph. Reading only the top-level private dictionary -- which
+        // such a font does not have -- leaves every local subroutine empty.
+        let cid_keyed = top.contains_key(&0x0C1E);
+        let mut fd_subrs: Vec<Vec<Vec<u8>>> = Vec::new();
+        if let Some(array_at) = top.get(&0x0C24).and_then(|v| v.first())
+            && let Some((font_dicts, _)) = read_index(data, *array_at as usize)
+        {
+            for entry in &font_dicts {
+                let dict = parse_dict(entry);
+                let mut subrs = Vec::new();
+                if let Some(private) = dict.get(&18u16)
+                    && private.len() >= 2
+                {
+                    let size = private[0] as usize;
+                    let offset = private[1] as usize;
+                    if let Some(bytes) = data.get(offset..offset.saturating_add(size))
+                        && let Some(subrs_at) =
+                            parse_dict(bytes).get(&19u16).and_then(|v| v.first())
+                    {
+                        let absolute = offset.saturating_add(*subrs_at as usize);
+                        if let Some((found, _)) = read_index(data, absolute) {
+                            subrs = found;
+                        }
+                    }
+                }
+                fd_subrs.push(subrs);
+            }
+        }
+        let fd_select = match top.get(&0x0C25).and_then(|v| v.first()) {
+            Some(offset) => read_fd_select(data, *offset as usize, charstrings.len()),
+            None => Vec::new(),
+        };
+
         let font_matrix = top
             .get(&0x0C07)
             .filter(|values| values.len() == 6)
             .map(|v| [v[0], v[1], v[2], v[3], v[4], v[5]])
             .unwrap_or([0.001, 0.0, 0.0, 0.001, 0.0, 0.0]);
+
+        // A CID-keyed charset maps glyph index to character id rather than to
+        // a name, so it is read as that instead.
+        let charset_at = top
+            .get(&15u16)
+            .and_then(|v| v.first())
+            .copied()
+            .unwrap_or(0.0) as usize;
+        let cid_to_gid = match cid_keyed {
+            true => read_cid_charset(data, charset_at, charstrings.len()),
+            false => HashMap::new(),
+        };
 
         let by_name = read_charset(
             data,
@@ -127,6 +185,9 @@ impl CffFont {
             charstrings,
             global_subrs,
             local_subrs,
+            fd_subrs,
+            fd_select,
+            cid_to_gid,
             by_name,
             by_code,
             font_matrix,
@@ -137,6 +198,30 @@ impl CffFont {
 
     pub fn glyph_count(&self) -> usize {
         self.charstrings.len()
+    }
+
+    /// The glyph index a character id selects in a CID-keyed font.
+    ///
+    /// A subset font usually has the identity charset, where the two are the
+    /// same; one that does not says so, and following it is the difference
+    /// between the right glyph and a neighbouring one.
+    pub fn index_for_cid(&self, cid: u16) -> u16 {
+        match self.cid_to_gid.is_empty() {
+            true => cid,
+            false => self.cid_to_gid.get(&cid).copied().unwrap_or(0),
+        }
+    }
+
+    /// The local subroutines that apply to a glyph.
+    fn subrs_for(&self, index: u16) -> &[Vec<u8>] {
+        if self.fd_subrs.is_empty() {
+            return &self.local_subrs;
+        }
+        let fd = self.fd_select.get(index as usize).copied().unwrap_or(0) as usize;
+        match self.fd_subrs.get(fd) {
+            Some(subrs) => subrs,
+            None => &self.local_subrs,
+        }
     }
 
     /// The glyph index a name selects.
@@ -158,6 +243,7 @@ impl CffFont {
         let charstring = self.charstrings.get(index as usize)?;
         let mut state = Type2 {
             font: self,
+            local: self.subrs_for(index),
             stack: Vec::new(),
             contours: Vec::new(),
             current: Vec::new(),
@@ -384,6 +470,103 @@ fn read_charset(
     out
 }
 
+/// `FDSelect`: which font-dict applies to each glyph.
+fn read_fd_select(data: &[u8], offset: usize, glyph_count: usize) -> Vec<u8> {
+    let mut out = vec![0u8; glyph_count];
+    let Some(&format) = data.get(offset) else {
+        return out;
+    };
+    match format {
+        0 => {
+            for (gid, slot) in out.iter_mut().enumerate() {
+                if let Some(&fd) = data.get(offset + 1 + gid) {
+                    *slot = fd;
+                }
+            }
+        }
+        3 => {
+            let Some(ranges) = data
+                .get(offset + 1..offset + 3)
+                .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+            else {
+                return out;
+            };
+            let mut at = offset + 3;
+            for _ in 0..ranges {
+                let (Some(first), Some(&fd), Some(next)) = (
+                    data.get(at..at + 2)
+                        .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize),
+                    data.get(at + 2),
+                    data.get(at + 3..at + 5)
+                        .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize),
+                ) else {
+                    break;
+                };
+                if let Some(range) = out.get_mut(first..next.min(glyph_count)) {
+                    range.fill(fd);
+                }
+                at += 3;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// A CID-keyed charset, which maps glyph index to character id rather than to
+/// a name. The same three formats as a name charset, read for their numbers.
+fn read_cid_charset(data: &[u8], offset: usize, glyph_count: usize) -> HashMap<u16, u16> {
+    let mut out = HashMap::new();
+    // The predefined charsets are the identity for this purpose.
+    if offset <= 2 {
+        return out;
+    }
+    let Some(&format) = data.get(offset) else {
+        return out;
+    };
+    out.insert(0, 0);
+    let mut gid = 1usize;
+    let mut at = offset + 1;
+    match format {
+        0 => {
+            while gid < glyph_count {
+                let Some(bytes) = data.get(at..at + 2) else {
+                    break;
+                };
+                out.insert(u16::from_be_bytes([bytes[0], bytes[1]]), gid as u16);
+                gid += 1;
+                at += 2;
+            }
+        }
+        1 | 2 => {
+            let run_bytes = if format == 1 { 1 } else { 2 };
+            while gid < glyph_count {
+                let Some(first) = data.get(at..at + 2) else {
+                    break;
+                };
+                let cid = u16::from_be_bytes([first[0], first[1]]);
+                let left = match run_bytes {
+                    1 => *data.get(at + 2).unwrap_or(&0) as usize,
+                    _ => match data.get(at + 2..at + 4) {
+                        Some(b) => u16::from_be_bytes([b[0], b[1]]) as usize,
+                        None => break,
+                    },
+                };
+                for step in 0..=left {
+                    if gid >= glyph_count {
+                        break;
+                    }
+                    out.insert(cid.saturating_add(step as u16), gid as u16);
+                    gid += 1;
+                }
+                at += 2 + run_bytes;
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// The font's own encoding: character code to glyph index.
 fn read_encoding(data: &[u8], offset: usize, by_name: &HashMap<String, u16>) -> HashMap<u8, u16> {
     let mut out = HashMap::new();
@@ -439,6 +622,9 @@ fn read_encoding(data: &[u8], offset: usize, by_name: &HashMap<String, u16>) -> 
 
 struct Type2<'a> {
     font: &'a CffFont,
+    /// The local subroutines for this glyph, which a CID-keyed font chooses
+    /// per glyph through `FDSelect`.
+    local: &'a [Vec<u8>],
     stack: Vec<f32>,
     contours: Vec<Vec<[f32; 2]>>,
     current: Vec<[f32; 2]>,
@@ -717,7 +903,7 @@ impl Type2<'_> {
                         continue;
                     };
                     let subrs = match byte == 10 {
-                        true => &self.font.local_subrs,
+                        true => self.local,
                         false => &self.font.global_subrs,
                     };
                     let index = raw as i32 + bias(subrs.len());
