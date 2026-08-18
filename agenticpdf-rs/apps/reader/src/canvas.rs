@@ -271,10 +271,24 @@ pub fn paint_page(
     painter.fill_rect(page, Color::WHITE, 0.0);
     painter.push_clip(page);
 
-    // The engine emits Save/Restore/Clip around nested state. Clips are tracked
-    // by depth so an unbalanced Restore — which a damaged file can produce —
-    // cannot pop the page clip and let drawing escape onto the rest of the UI.
+    // The engine emits Save/Restore/Clip around nested state. A clip belongs to
+    // the graphics state that narrowed it: `q` remembers the clip in force, `W
+    // n` narrows it, and `Q` puts back what `q` remembered -- however many
+    // clips were added in between, including none.
+    //
+    // Popping one clip per Restore instead, as this did, goes wrong in both
+    // directions at once. A Restore with no clip of its own releases an
+    // enclosing one early, and artwork the document clipped away is drawn on
+    // top of the page; a state that clipped twice releases only one, and
+    // artwork that should be visible is cut. One assembly manual showed both
+    // in the same picture: safety labels stacked down the middle of a parts
+    // diagram, each missing its first letter.
+    //
+    // The saved levels are a stack rather than a count so an unbalanced
+    // Restore -- which a damaged file can produce -- still cannot pop the page
+    // clip and let drawing escape onto the rest of the UI.
     let mut clip_depth = 0usize;
+    let mut saved_clips: Vec<usize> = Vec::new();
 
     for op in &list.ops {
         match op {
@@ -398,9 +412,14 @@ pub fn paint_page(
                     None => painter.stroke_rect(rect, Color::GRAY, 1.0, 0.0),
                 }
             }
-            RenderOp::Save => {}
+            RenderOp::Save => saved_clips.push(clip_depth),
             RenderOp::Restore => {
-                if clip_depth > 0 {
+                // Back to the clip this state was entered with. An unmatched
+                // Restore goes back to the page clip and no further.
+                // Back to the clip this state was entered with. An unmatched
+                // Restore goes back to the page clip and no further.
+                let level = saved_clips.pop().unwrap_or(0);
+                while clip_depth > level {
                     clip_depth -= 1;
                     painter.pop_clip();
                 }
@@ -804,6 +823,95 @@ mod tests {
         assert!(transform.point(0.0, 100.0).y < 1.0);
         // A point at the document's bottom lands at the screen's bottom.
         assert!(transform.point(0.0, 0.0).y > 99.0);
+    }
+
+    /// A clip belongs to the `q`/`Q` pair that narrowed it.
+    ///
+    /// A `Q` that saved no clip of its own must not release the one around
+    /// it. Popping one clip per Restore let clipped-away artwork escape onto
+    /// the page -- and, where a state clipped twice, cut away artwork that
+    /// belonged there.
+    #[test]
+    fn a_clip_outlives_a_save_and_restore_that_did_not_touch_it() {
+        let ops = vec![
+            RenderOp::Clip {
+                rect: [10.0, 10.0, 40.0, 40.0],
+                subpaths: Vec::new(),
+            },
+            // A state that clips nothing: its Restore is not about that clip.
+            RenderOp::Save,
+            RenderOp::Restore,
+            RenderOp::Fill {
+                subpaths: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0]]],
+                color: [0.0, 0.0, 0.0, 1.0],
+                even_odd: false,
+            },
+        ];
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+            &crate::glyphs::FontSet::without_substitution(b""),
+        );
+        let json = painter.to_json();
+        let fill_at = json.find(r#""op":"fill_path""#).expect("the fill");
+        let before = &json[..fill_at];
+        // One clip for the page and one for the document's own; neither
+        // released before the fill that they contain.
+        assert_eq!(
+            before.matches(r#""op":"push_clip""#).count(),
+            2,
+            "page clip and document clip: {before:.200}"
+        );
+        assert_eq!(
+            before.matches(r#""op":"pop_clip""#).count(),
+            0,
+            "nothing should have been released yet"
+        );
+    }
+
+    /// Whatever the list leaves open is closed, and never more than that.
+    #[test]
+    fn clips_are_balanced_however_the_list_ends() {
+        for ops in [
+            // Clipped and never restored.
+            vec![RenderOp::Clip {
+                rect: [1.0, 1.0, 9.0, 9.0],
+                subpaths: Vec::new(),
+            }],
+            // Restored more often than saved, as a damaged file can be.
+            vec![RenderOp::Restore, RenderOp::Restore, RenderOp::Restore],
+            // Two clips in one state, released together.
+            vec![
+                RenderOp::Save,
+                RenderOp::Clip {
+                    rect: [1.0, 1.0, 9.0, 9.0],
+                    subpaths: Vec::new(),
+                },
+                RenderOp::Clip {
+                    rect: [2.0, 2.0, 8.0, 8.0],
+                    subpaths: Vec::new(),
+                },
+                RenderOp::Restore,
+            ],
+        ] {
+            let mut painter = RecordingPainter::new();
+            paint_page(
+                &mut painter,
+                &list(ops),
+                Transform::fit(&list(Vec::new()), area(), 1.0),
+                &[],
+                &crate::glyphs::FontSet::without_substitution(b""),
+            );
+            let json = painter.to_json();
+            assert_eq!(
+                json.matches(r#""op":"push_clip""#).count(),
+                json.matches(r#""op":"pop_clip""#).count(),
+                "every clip is released exactly once: {json:.300}"
+            );
+        }
     }
 
     #[test]
