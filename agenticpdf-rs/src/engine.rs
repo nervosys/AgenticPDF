@@ -1695,8 +1695,10 @@ pub fn extract_display_list(data: &[u8], page_number: usize) -> Result<DisplayLi
     let pd = page_dicts
         .get(page_number.saturating_sub(1))
         .ok_or_else(|| PdfError::ObjectParseError("page out of range".into()))?;
-    let (width, height) = media_box(&doc, pd);
-    let ops = build_display_ops(&doc, pd);
+    // The page as shown, not the sheet it was imposed on.
+    let view = page_box(&doc, pd);
+    let (width, height) = (view[2] - view[0], view[3] - view[1]);
+    let ops = build_display_ops(&doc, pd, view);
     Ok(DisplayList {
         page_number,
         width,
@@ -1866,7 +1868,7 @@ struct GState {
     stroke_space: ColorKind,
 }
 
-fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
+fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
     let fonts = build_fonts(doc, page);
     let color_spaces = build_color_spaces(doc, page);
     let content = page_contents(doc, page);
@@ -1879,7 +1881,9 @@ fn build_display_ops(doc: &Document, page: &Dict) -> Vec<RenderOp> {
     // state, so `q`/`Q` must restore it. Otherwise an invisible run inside a
     // saved state leaks out and blanks the real text that follows.
     let mut ctm_stack: Vec<GState> = Vec::new();
-    let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    // Content is placed in the media box's coordinates; the display list is
+    // in the visible box's. Where the two differ the whole page shifts.
+    let mut ctm: Matrix = [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]];
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = tm;
     let mut font_size = 0.0f64;
@@ -2964,6 +2968,9 @@ fn filter_names(d: &Dict) -> String {
 #[derive(Default, Clone)]
 struct Inherited {
     media_box: Option<[f64; 4]>,
+    /// The crop box is inheritable too, and a print-ready document commonly
+    /// states it once on the page tree.
+    crop_box: Option<[f64; 4]>,
     resources: Option<Object>,
 }
 
@@ -2983,6 +2990,9 @@ fn collect_pages(
     if let Some(mb) = rect4(doc, node, "MediaBox") {
         inh.media_box = Some(mb);
     }
+    if let Some(cb) = rect4(doc, node, "CropBox") {
+        inh.crop_box = Some(cb);
+    }
     if let Some(res) = node.get("Resources") {
         inh.resources = Some(res.clone());
     }
@@ -2997,6 +3007,14 @@ fn collect_pages(
             page.insert(
                 "MediaBox".into(),
                 Object::Array(mb.iter().map(|v| Object::Real(*v)).collect()),
+            );
+        }
+        if !page.contains_key("CropBox")
+            && let Some(cb) = inh.crop_box
+        {
+            page.insert(
+                "CropBox".into(),
+                Object::Array(cb.iter().map(|v| Object::Real(*v)).collect()),
             );
         }
         if !page.contains_key("Resources")
@@ -3037,6 +3055,40 @@ fn rect4(doc: &Document, dict: &Dict, key: &str) -> Option<[f64; 4]> {
         doc.resolve(&a[2]).as_f64()?,
         doc.resolve(&a[3]).as_f64()?,
     ])
+}
+
+
+/// The rectangle a reader shows, as `[x0, y0, x1, y1]`.
+///
+/// The media box is the sheet the page is printed on; the crop box is the
+/// part meant to be seen. A print-ready file carries registration marks, a
+/// timestamp and trim corners out in the margin of the media box, and every
+/// viewer -- PDF.js, Okular, Acrobat -- shows the crop box instead, so a
+/// reader that shows the media box shows a different page from everyone else.
+///
+/// The crop box is clamped to the media box, as the specification requires,
+/// and ignored if it is degenerate.
+fn page_box(doc: &Document, page: &Dict) -> [f64; 4] {
+    let media = rect4(doc, page, "MediaBox").unwrap_or([0.0, 0.0, 612.0, 792.0]);
+    let media = [
+        media[0].min(media[2]),
+        media[1].min(media[3]),
+        media[0].max(media[2]),
+        media[1].max(media[3]),
+    ];
+    let Some(crop) = rect4(doc, page, "CropBox") else {
+        return media;
+    };
+    let crop = [
+        crop[0].min(crop[2]).max(media[0]),
+        crop[1].min(crop[3]).max(media[1]),
+        crop[0].max(crop[2]).min(media[2]),
+        crop[1].max(crop[3]).min(media[3]),
+    ];
+    if crop[2] - crop[0] < 1.0 || crop[3] - crop[1] < 1.0 {
+        return media;
+    }
+    crop
 }
 
 fn media_box(doc: &Document, page: &Dict) -> (f64, f64) {
@@ -5371,6 +5423,46 @@ mod text_state {
         );
     }
 
+    /// A reader shows the crop box, not the sheet the page was printed on.
+    ///
+    /// Print-ready files put registration marks, trim corners and a plate
+    /// timestamp out in the margin of the media box. Showing the media box
+    /// shows all of that, at a different size and offset from every other
+    /// viewer.
+    #[test]
+    fn the_page_shown_is_the_crop_box() {
+        // A 300x200 sheet cropped to the middle 100x100.
+        let pdf = document_with_page(
+            "BT /F1 12 Tf 120 60 Td (in) Tj ET",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /CropBox [100 50 200 150]               /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        assert_eq!((list.width, list.height), (100.0, 100.0), "the crop box");
+
+        let (x, y) = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .expect("a text op");
+        // Placed at (120, 60) on the sheet, which is (20, 10) inside the crop.
+        assert!((x - 20.0).abs() < 0.5, "x should be crop-relative: {x}");
+        assert!((y - 10.0).abs() < 0.5, "y should be crop-relative: {y}");
+    }
+
+    /// A crop box outside the sheet is clamped to it rather than believed.
+    #[test]
+    fn a_crop_box_is_clamped_to_the_sheet() {
+        let pdf = document_with_page(
+            "BT /F1 12 Tf 10 10 Td (x) Tj ET",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /CropBox [-50 -50 900 900]               /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        assert_eq!((list.width, list.height), (300.0, 200.0));
+    }
+
     /// A code the document never gives a meaning for still occupies a slot.
     ///
     /// TeX's f-ligatures arrive with no `/ToUnicode` and no `/Differences`:
@@ -5574,7 +5666,23 @@ startxref
         )
     }
 
+    fn document_with_page(content: &str, page: &str) -> Vec<u8> {
+        assemble(
+            content,
+            page.as_bytes(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        )
+    }
+
     fn document_with_font(content: &str, font: &[u8]) -> Vec<u8> {
+        assemble(
+            content,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+            font,
+        )
+    }
+
+    fn assemble(content: &str, page: &[u8], font: &[u8]) -> Vec<u8> {
         let mut pdf: Vec<u8> = Vec::new();
         let mut offsets = vec![0usize];
         pdf.extend_from_slice(b"%PDF-1.4\n");
@@ -5587,12 +5695,7 @@ startxref
         };
         push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
         push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-        push(
-            &mut pdf,
-            &mut offsets,
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
-              /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        );
+        push(&mut pdf, &mut offsets, page);
         push(&mut pdf, &mut offsets, font);
         push(
             &mut pdf,
