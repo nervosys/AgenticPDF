@@ -3659,6 +3659,12 @@ impl Font {
                 {
                     tmp.push(c);
                 }
+                // No placeholder here, unlike the simple-font case below. A
+                // composite code that no `/ToUnicode` covers is usually a
+                // document that means something other than what it says --
+                // one in the corpus shows plain ASCII bytes through an
+                // Identity-H font -- and holding the slot open only puts
+                // wrong glyphs, or a fallback face, where nothing was.
                 emit(&tmp, w, code, out, advs, codes_out);
             }
         } else {
