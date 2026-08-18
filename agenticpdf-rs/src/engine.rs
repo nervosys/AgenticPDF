@@ -4041,33 +4041,6 @@ fn mat_mul(a: &Matrix, b: &Matrix) -> Matrix {
     ]
 }
 
-/// The decoded content stream of one page, for diagnosis.
-pub fn page_content_bytes(data: &[u8], page_number: usize) -> Option<Vec<u8>> {
-    let doc = Document::parse(data).ok()?;
-    let root = doc
-        .trailer
-        .get("Root")
-        .map(|o| doc.resolve(o))
-        .and_then(|o| o.as_dict().cloned())
-        .unwrap_or_default();
-    let mut page_dicts: Vec<Dict> = Vec::new();
-    if let Some(pages_obj) = doc.get(&root, "Pages")
-        && let Some(pages_dict) = pages_obj.as_dict()
-    {
-        let mut visited = std::collections::HashSet::new();
-        collect_pages(
-            &doc,
-            pages_dict,
-            &mut page_dicts,
-            &Inherited::default(),
-            0,
-            &mut visited,
-        );
-    }
-    let pd = page_dicts.get(page_number.saturating_sub(1))?;
-    Some(page_contents(&doc, pd))
-}
-
 fn page_contents(doc: &Document, page: &Dict) -> Vec<u8> {
     let mut out = Vec::new();
     let contents = match doc.get(page, "Contents") {
