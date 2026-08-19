@@ -1975,6 +1975,75 @@ fn named_space(stack: &[Token], spaces: &HashMap<String, Space>) -> Space {
 /// Colour rides along with the transform: a form or an annotation that sets
 /// its own colour inside `q`/`Q` must not leave it set for the rest of the
 /// page.
+/// The blend modes we distinguish.
+///
+/// Only the two with a colour that acts as an identity matter for correctness
+/// on a page rendered without a real compositor; everything else is treated as
+/// normal painting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Blend {
+    Normal,
+    Multiply,
+    Screen,
+    Other,
+}
+
+impl Blend {
+    /// The value is a name, or an array of names in order of preference.
+    fn from_object(doc: &Document, obj: &Object) -> Blend {
+        let resolved = doc.resolve(obj);
+        let name = match resolved.as_name() {
+            Some(n) => n.to_string(),
+            None => match resolved.as_array().and_then(|a| a.first()) {
+                Some(first) => match doc.resolve(first).as_name() {
+                    Some(n) => n.to_string(),
+                    None => return Blend::Other,
+                },
+                None => return Blend::Other,
+            },
+        };
+        match name.as_str() {
+            "Normal" | "Compatible" => Blend::Normal,
+            "Multiply" => Blend::Multiply,
+            "Screen" => Blend::Screen,
+            _ => Blend::Other,
+        }
+    }
+}
+
+/// The `/ExtGState` entry a `gs` operator names, if it resolves to a dictionary.
+fn ext_gstate(doc: &Document, resources: &Dict, name: &str) -> Option<Dict> {
+    let states = doc
+        .get(resources, "ExtGState")
+        .and_then(|o| o.as_dict().cloned())?;
+    let resolved = doc.resolve(states.get(name)?);
+    resolved.as_dict().cloned()
+}
+
+/// Fold a constant alpha into a colour's own alpha channel.
+fn with_alpha(mut color: [f64; 4], alpha: f64) -> [f64; 4] {
+    color[3] *= alpha.clamp(0.0, 1.0);
+    color
+}
+
+/// True when painting `color` under `blend` cannot change the page.
+///
+/// White is the identity of multiply and black is the identity of screen: a
+/// producer that paints one is saying "leave the backdrop alone", and often
+/// does so over a large area. Painting it normally instead erases whatever is
+/// underneath -- which is exactly how a tinted panel behind a stack of white
+/// boxes vanishes. Fully transparent paint is the same case.
+fn blend_is_noop(color: [f64; 4], blend: Blend) -> bool {
+    if color[3] <= 0.0 {
+        return true;
+    }
+    match blend {
+        Blend::Multiply => color[0] >= 0.999 && color[1] >= 0.999 && color[2] >= 0.999,
+        Blend::Screen => color[0] <= 0.001 && color[1] <= 0.001 && color[2] <= 0.001,
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
 struct GState<'a> {
     ctm: Matrix,
@@ -1989,6 +2058,10 @@ struct GState<'a> {
     font_name: String,
     font_size: f64,
     leading: f64,
+    /// Constant alpha and blend mode, set by `gs` from an `/ExtGState`.
+    fill_alpha: f64,
+    stroke_alpha: f64,
+    blend: Blend,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -2136,6 +2209,10 @@ fn run_content(
     let mut fill_space = Space::default();
     let mut stroke_space = Space::default();
     let mut line_width = 1.0f64;
+    // Constant alpha and blend mode, both graphics state, both set by `gs`.
+    let mut fill_alpha = 1.0f64;
+    let mut stroke_alpha = 1.0f64;
+    let mut blend = Blend::Normal;
 
     // Path state, in device space.
     let mut subpaths: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -2170,6 +2247,9 @@ fn run_content(
                             font_name: cur_font_name.clone(),
                             font_size,
                             leading,
+                            fill_alpha,
+                            stroke_alpha,
+                            blend,
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -2191,6 +2271,9 @@ fn run_content(
                             cur_font_name = state.font_name;
                             font_size = state.font_size;
                             leading = state.leading;
+                            fill_alpha = state.fill_alpha;
+                            stroke_alpha = state.stroke_alpha;
+                            blend = state.blend;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -2320,17 +2403,19 @@ fn run_content(
                             matches!(op.as_str(), "f" | "F" | "f*" | "B" | "B*" | "b" | "b*");
                         let strokes = matches!(op.as_str(), "S" | "s" | "B" | "B*" | "b" | "b*");
                         if !paths.is_empty() {
-                            if fills {
+                            let fill_color = with_alpha(fill, fill_alpha);
+                            let stroke_color = with_alpha(stroke, stroke_alpha);
+                            if fills && !blend_is_noop(fill_color, blend) {
                                 ops.push(RenderOp::Fill {
                                     subpaths: paths.clone(),
-                                    color: fill,
+                                    color: fill_color,
                                     even_odd: op.ends_with('*'),
                                 });
                             }
-                            if strokes {
+                            if strokes && !blend_is_noop(stroke_color, blend) {
                                 ops.push(RenderOp::Stroke {
                                     subpaths: paths,
-                                    color: stroke,
+                                    color: stroke_color,
                                     width: line_width,
                                 });
                             }
@@ -2339,6 +2424,24 @@ fn run_content(
                     "n" => {
                         cur.clear();
                         subpaths.clear();
+                    }
+                    "gs" => {
+                        if let Some(Token::Name(name)) = stack.last()
+                            && let Some(state) = ext_gstate(doc, resources, name)
+                        {
+                            if let Some(v) = doc.get(&state, "ca").and_then(|o| o.as_f64()) {
+                                fill_alpha = v.clamp(0.0, 1.0);
+                            }
+                            if let Some(v) = doc.get(&state, "CA").and_then(|o| o.as_f64()) {
+                                stroke_alpha = v.clamp(0.0, 1.0);
+                            }
+                            if let Some(v) = doc.get(&state, "LW").and_then(|o| o.as_f64()) {
+                                line_width = v;
+                            }
+                            if let Some(v) = state.get("BM") {
+                                blend = Blend::from_object(doc, v);
+                            }
+                        }
                     }
                     "Do" => {
                         if let Some(Token::Name(name)) = stack.last() {
@@ -2581,7 +2684,7 @@ fn run_content(
                                     measured,
                                     &seg_tm,
                                     &ctm,
-                                    fill,
+                                    with_alpha(fill, fill_alpha),
                                     ops,
                                 );
                             }
@@ -3247,9 +3350,12 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         _ => return,
     };
     let (sd, sraw) = smask;
-    // Soft masks are DeviceGray; skip JPEG-coded masks (no in-engine decoder).
     let sfilter = filter_names(&sd);
-    if sfilter.contains("DCTDecode") || sfilter.contains("JPXDecode") {
+    // JPEG 2000 masks have no in-engine decoder; a JPEG-coded one does, and
+    // producers use it freely -- a photograph cut out of its background
+    // usually carries a photographic mask. Dropping those masks paints the
+    // whole rectangle, background included.
+    if sfilter.contains("JPXDecode") {
         return;
     }
     let sw = doc.get(&sd, "Width").and_then(|o| o.as_int()).unwrap_or(0) as usize;
@@ -3265,11 +3371,26 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         Ok(b) => b,
         Err(_) => return,
     };
-    let samples = match unpack_samples(&decoded, sw, sh, sbpc) {
-        Some(s) => s,
-        None => return,
+    // A JPEG mask arrives still coded -- `decode_stream` undoes the wrappers
+    // and leaves the codec alone -- so it decodes here, to one byte a pixel.
+    let (samples, max) = if sfilter.contains("DCTDecode") {
+        let Some(image) = crate::image::jpeg::decode(&decoded) else {
+            return;
+        };
+        if image.width as usize != sw || image.height as usize != sh {
+            return;
+        }
+        // The mask is grey: every channel of the decoded pixel is the same.
+        (
+            image.rgb.chunks_exact(3).map(|p| p[0] as u32).collect(),
+            255u32,
+        )
+    } else {
+        let Some(samples) = unpack_samples(&decoded, sw, sh, sbpc) else {
+            return;
+        };
+        (samples, ((1u32 << sbpc as usize) - 1).max(1))
     };
-    let max = ((1u32 << sbpc as usize) - 1).max(1);
     for y in 0..h {
         let sy = y * sh / h;
         for x in 0..w {
@@ -6683,5 +6804,45 @@ startxref
             .as_bytes(),
         );
         pdf
+    }
+}
+
+#[cfg(test)]
+mod transparency {
+    use super::{Blend, blend_is_noop, with_alpha};
+
+    /// Multiplying by white and screening by black leave the page exactly as
+    /// it was. A producer that paints one means "keep the backdrop", and often
+    /// covers a whole panel doing it -- so painting it normally instead is not
+    /// a small error, it erases everything underneath.
+    #[test]
+    fn identity_blends_paint_nothing() {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let black = [0.0, 0.0, 0.0, 1.0];
+        assert!(blend_is_noop(white, Blend::Multiply));
+        assert!(blend_is_noop(black, Blend::Screen));
+        // Only the identity colour of each mode is a no-op.
+        assert!(!blend_is_noop(black, Blend::Multiply));
+        assert!(!blend_is_noop(white, Blend::Screen));
+        // Under normal painting white covers the page, and must be drawn.
+        assert!(!blend_is_noop(white, Blend::Normal));
+    }
+
+    /// Fully transparent paint changes nothing whatever the mode.
+    #[test]
+    fn zero_alpha_paints_nothing() {
+        for blend in [Blend::Normal, Blend::Multiply, Blend::Screen, Blend::Other] {
+            assert!(blend_is_noop([0.2, 0.4, 0.6, 0.0], blend));
+        }
+    }
+
+    /// `ca` multiplies the colour's own alpha rather than replacing it, and is
+    /// held to the unit range however the document writes it.
+    #[test]
+    fn constant_alpha_multiplies_and_clamps() {
+        assert_eq!(with_alpha([0.0, 0.0, 0.0, 1.0], 0.5)[3], 0.5);
+        assert_eq!(with_alpha([0.0, 0.0, 0.0, 0.5], 0.5)[3], 0.25);
+        assert_eq!(with_alpha([0.0, 0.0, 0.0, 1.0], 4.0)[3], 1.0);
+        assert_eq!(with_alpha([0.0, 0.0, 0.0, 1.0], -1.0)[3], 0.0);
     }
 }
