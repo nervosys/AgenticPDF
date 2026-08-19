@@ -27,6 +27,12 @@ type RasterCache =
 /// looked for once rather than per glyph.
 type SubstituteCache = Mutex<HashMap<String, Option<Arc<EmbeddedFont>>>>;
 
+/// How much rasterised glyph the cache may hold before it starts again.
+///
+/// Enough for a page of text at several sizes; far less than a reading
+/// session's worth of zooming, which is unbounded.
+const MAX_RASTER_BYTES: usize = 32 << 20;
+
 /// The fonts one document draws with, and their glyphs, cached.
 ///
 /// Shared behind locks rather than cells because the mobile shells keep the
@@ -49,6 +55,9 @@ pub struct FontSet {
     /// the system. False in the browser, which has no filesystem to read, and
     /// in tests that need the fallback path to be the one taken.
     substitution: bool,
+    /// What the rasterised masks currently weigh, so the cache can be kept
+    /// to a budget without walking it on every insertion.
+    raster_bytes: std::sync::atomic::AtomicUsize,
     /// Mask pixels per painter unit, as hundredths.
     ///
     /// A painter working in logical units on a display with more pixels than
@@ -74,6 +83,7 @@ impl FontSet {
             embedded,
             substitution: true,
             raster_scale: std::sync::atomic::AtomicU32::new(100),
+            raster_bytes: std::sync::atomic::AtomicUsize::new(0),
             ..FontSet::default()
         }
     }
@@ -87,6 +97,7 @@ impl FontSet {
         FontSet {
             substitution: false,
             raster_scale: std::sync::atomic::AtomicU32::new(100),
+            raster_bytes: std::sync::atomic::AtomicUsize::new(0),
             ..FontSet::load(data)
         }
     }
@@ -229,6 +240,28 @@ impl FontSet {
         self.raster_scale.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0
     }
 
+    /// A font set with system stand-ins, for tests that need something to
+    /// rasterise. `None` where the machine has no usable face.
+    #[cfg(test)]
+    fn for_tests() -> Option<FontSet> {
+        let fonts = FontSet::load(b"");
+        fonts.face("Times-Roman")?;
+        Some(fonts)
+    }
+
+    /// How much the rasterised glyphs currently weigh, in bytes.
+    ///
+    /// The masks are the only part of this that grows with use rather than
+    /// with the document, so it is the number worth watching.
+    pub fn raster_bytes(&self) -> usize {
+        self.raster_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many rasterised glyphs are held.
+    pub fn raster_count(&self) -> usize {
+        self.rasters.lock().map(|cache| cache.len()).unwrap_or(0)
+    }
+
     /// A rasterised glyph, cached.
     ///
     /// Size is quantised to a quarter pixel so that a zoom animation reuses
@@ -275,9 +308,68 @@ impl FontSet {
             })
             .map(Arc::new);
         if let Ok(mut cache) = self.rasters.lock() {
+            let weight = raster.as_ref().map(|g| g.pixels.len()).unwrap_or(0);
+            let held = self
+                .raster_bytes
+                .fetch_add(weight, std::sync::atomic::Ordering::Relaxed)
+                + weight;
+            // Bounded, because this is the one cache that grows with use
+            // rather than with the document: every zoom step asks for a new
+            // size of every letter, and a page zoomed through twenty steps
+            // holds sixteen megabytes of masks that will never be asked for
+            // again. Clearing wholesale suits the way they go stale -- a zoom
+            // retires every size at once -- and costs the one frame that
+            // rasterises what is on screen now.
+            if held > MAX_RASTER_BYTES {
+                cache.clear();
+                self.raster_bytes
+                    .store(weight, std::sync::atomic::Ordering::Relaxed);
+            }
             cache.insert(key, raster.clone());
         }
         raster
+    }
+}
+
+#[cfg(test)]
+mod bounded {
+    use super::*;
+
+    /// The raster cache is the one that grows with use rather than with the
+    /// document: every zoom step asks for a new size of every letter. Left
+    /// unbounded it held sixteen megabytes after twenty zoom steps of a single
+    /// page, and would have kept going for as long as someone kept reading.
+    #[test]
+    fn rasterised_glyphs_are_kept_to_a_budget() {
+        let Some(fonts) = FontSet::for_tests() else {
+            eprintln!("skipping: no face to rasterise with");
+            return;
+        };
+        // Ask for many sizes of a few letters, as zooming does.
+        // Big glyphs, so the budget is reached in a second rather than a
+        // minute: one letter at 600 points is a third of a megabyte.
+        let mut asked = 0usize;
+        for step in 0..240 {
+            let size = 400.0 + (step % 60) as f64 * 4.0;
+            for code in *b"MW" {
+                let _ = fonts.raster(
+                    "Times-Roman",
+                    code as u32,
+                    Some(code as char),
+                    size,
+                    0.0,
+                    [0, 0, 0],
+                );
+                asked += 1;
+            }
+            if fonts.raster_bytes() > MAX_RASTER_BYTES {
+                panic!(
+                    "cache reached {} bytes after {asked} glyphs",
+                    fonts.raster_bytes()
+                );
+            }
+        }
+        assert!(asked > 400, "the sweep should have asked for plenty");
     }
 }
 
