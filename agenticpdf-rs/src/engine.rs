@@ -1755,14 +1755,19 @@ fn color_from_stack(stack: &[Token]) -> [f64; 4] {
 /// way: 1 means the colorant at full strength, which is usually black ink.
 /// Read as grey, `1 scn` paints white, and a page of white text on white
 /// paper looks exactly like a page that failed to render.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 enum ColorKind {
     Gray,
     Rgb,
     Cmyk,
     /// Separation or DeviceN: the operands are colorant tints.
     Tint,
+    /// Indexed: the operand is a row of the space's own lookup table, not a
+    /// colour at all. Read as a grey level, `1 scn` in such a space paints
+    /// white, and a page's whole background panel disappears.
+    Indexed,
     /// A pattern or something unrecognised; fall back to operand count.
+    #[default]
     Unknown,
 }
 
@@ -1780,7 +1785,8 @@ impl ColorKind {
             },
             Object::Array(a) => match a.first().and_then(|o| o.as_name()) {
                 Some("Separation") | Some("DeviceN") => ColorKind::Tint,
-                Some("Indexed") | Some("Pattern") => ColorKind::Unknown,
+                Some("Indexed") => ColorKind::Indexed,
+                Some("Pattern") => ColorKind::Unknown,
                 Some("CalGray") => ColorKind::Gray,
                 Some("CalRGB") | Some("Lab") => ColorKind::Rgb,
                 Some("ICCBased") => match color_space_components(doc, cs) {
@@ -1801,8 +1807,16 @@ impl ColorKind {
 /// the space's tint transform into its alternate would be exact, but coverage
 /// is the right sense of the number, and the sense is what matters -- the
 /// alternative is text painted in the inverse of its own colour.
-fn color_in_space(stack: &[Token], kind: ColorKind) -> [f64; 4] {
+fn color_in_space(stack: &[Token], space: &Space) -> [f64; 4] {
     let nums: Vec<f64> = stack.iter().rev().map_while(|t| t.as_num()).collect();
+    if space.kind == ColorKind::Indexed
+        && let Some(palette) = &space.palette
+        && let Some(index) = nums.last()
+    {
+        // The operand names a row of the space's own table.
+        return palette.entry(*index as usize);
+    }
+    let kind = space.kind;
     if kind == ColorKind::Tint && !nums.is_empty() {
         // DeviceN carries one tint per colorant; the heaviest governs.
         let ink = nums.iter().cloned().fold(0.0f64, f64::max).clamp(0.0, 1.0);
@@ -1814,7 +1828,7 @@ fn color_in_space(stack: &[Token], kind: ColorKind) -> [f64; 4] {
 
 
 /// The colour spaces a resource dictionary names.
-fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, ColorKind> {
+fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, Space> {
     let mut out = HashMap::new();
     let Some(spaces) = doc.get(rd, "ColorSpace").map(|o| doc.resolve(&o)) else {
         return out;
@@ -1824,22 +1838,40 @@ fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, ColorKind
     };
     for (name, obj) in sd.iter() {
         let resolved = doc.resolve(obj);
-        out.insert(name.clone(), ColorKind::of(doc, &resolved));
+        out.insert(
+            name.clone(),
+            Space {
+                kind: ColorKind::of(doc, &resolved),
+                palette: palette_from_space(doc, &resolved),
+            },
+        );
     }
     out
 }
 
+/// A named colour space: how to read its operands, and its lookup table where
+/// it has one.
+#[derive(Clone, Default)]
+struct Space {
+    kind: ColorKind,
+    palette: Option<Palette>,
+}
+
 /// Resolve the name `cs` was given against the page's spaces, treating the
 /// device names as themselves.
-fn named_space(stack: &[Token], spaces: &HashMap<String, ColorKind>) -> ColorKind {
+fn named_space(stack: &[Token], spaces: &HashMap<String, Space>) -> Space {
     let Some(Token::Name(name)) = stack.last() else {
-        return ColorKind::Unknown;
+        return Space::default();
     };
-    match name.as_str() {
+    let kind = match name.as_str() {
         "DeviceGray" | "CalGray" | "G" => ColorKind::Gray,
         "DeviceRGB" | "CalRGB" | "RGB" => ColorKind::Rgb,
         "DeviceCMYK" | "CMYK" => ColorKind::Cmyk,
-        other => spaces.get(other).copied().unwrap_or(ColorKind::Unknown),
+        other => return spaces.get(other).cloned().unwrap_or_default(),
+    };
+    Space {
+        kind,
+        palette: None,
     }
 }
 
@@ -1855,8 +1887,8 @@ struct GState<'a> {
     text: TextState,
     fill: [f64; 4],
     stroke: [f64; 4],
-    fill_space: ColorKind,
-    stroke_space: ColorKind,
+    fill_space: Space,
+    stroke_space: Space,
     /// The font is text state, and text state is graphics state: `Tf` inside
     /// `q`/`Q` lasts only until the `Q`.
     font: Option<&'a Font>,
@@ -2007,8 +2039,8 @@ fn run_content(
     let mut stroke: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
     // Which space those numbers are in, so `1 scn` can mean full ink rather
     // than white.
-    let mut fill_space = ColorKind::Unknown;
-    let mut stroke_space = ColorKind::Unknown;
+    let mut fill_space = Space::default();
+    let mut stroke_space = Space::default();
     let mut line_width = 1.0f64;
 
     // Path state, in device space.
@@ -2038,8 +2070,8 @@ fn run_content(
                             text: ts,
                             fill,
                             stroke,
-                            fill_space,
-                            stroke_space,
+                            fill_space: fill_space.clone(),
+                            stroke_space: stroke_space.clone(),
                             font: cur_font,
                             font_name: cur_font_name.clone(),
                             font_size,
@@ -2105,11 +2137,11 @@ fn run_content(
                         }
                     }
                     "g" | "rg" | "k" => {
-                        fill_space = ColorKind::Unknown;
+                        fill_space = Space::default();
                         fill = color_from_stack(&stack);
                     }
                     "G" | "RG" | "K" => {
-                        stroke_space = ColorKind::Unknown;
+                        stroke_space = Space::default();
                         stroke = color_from_stack(&stack);
                     }
                     // Selecting a space also resets the colour to that space's
@@ -2122,8 +2154,8 @@ fn run_content(
                         stroke_space = named_space(&stack, &color_spaces);
                         stroke = [0.0, 0.0, 0.0, 1.0];
                     }
-                    "sc" | "scn" => fill = color_in_space(&stack, fill_space),
-                    "SC" | "SCN" => stroke = color_in_space(&stack, stroke_space),
+                    "sc" | "scn" => fill = color_in_space(&stack, &fill_space),
+                    "SC" | "SCN" => stroke = color_in_space(&stack, &stroke_space),
                     "m" => {
                         if let Some([x, y]) = last2(&stack) {
                             close_cur(&mut subpaths, &mut cur);
@@ -2687,6 +2719,34 @@ pub struct CcittParams {
     pub black_is_1: bool,
 }
 
+impl Palette {
+    /// The colour a row of the table stands for, as RGBA.
+    ///
+    /// An index past the end is black, which is what a reader shows for a
+    /// table shorter than the content claims.
+    fn entry(&self, index: usize) -> [f64; 4] {
+        let n = self.base_components.max(1) as usize;
+        let at = index * n;
+        let Some(row) = self.data.get(at..at + n) else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        let v = |i: usize| row.get(i).map(|b| *b as f64 / 255.0).unwrap_or(0.0);
+        match n {
+            1 => [v(0), v(0), v(0), 1.0],
+            4 => {
+                let k = v(3);
+                [
+                    (1.0 - v(0)) * (1.0 - k),
+                    (1.0 - v(1)) * (1.0 - k),
+                    (1.0 - v(2)) * (1.0 - k),
+                    1.0,
+                ]
+            }
+            _ => [v(0), v(1), v(2), 1.0],
+        }
+    }
+}
+
 /// An Indexed color-space palette: each entry is `base_components` bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Palette {
@@ -3179,6 +3239,11 @@ pub fn b64e(data: &[u8]) -> String {
 /// Parse an Indexed color-space palette from an image dict, if present.
 fn extract_palette(doc: &Document, d: &Dict) -> Option<Palette> {
     let cs = doc.get(d, "ColorSpace").or_else(|| doc.get(d, "CS"))?;
+    palette_from_space(doc, &cs)
+}
+
+/// The lookup table of an `Indexed` colour space, whatever names it.
+fn palette_from_space(doc: &Document, cs: &Object) -> Option<Palette> {
     let arr = cs.as_array()?;
     let head = arr.first().and_then(|o| o.as_name())?;
     if head != "Indexed" && head != "I" {
@@ -6280,6 +6345,30 @@ startxref
             content,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica               /FirstChar 12 /LastChar 12 /Widths [1000] >>",
         )
+    }
+
+    /// In an Indexed space the operand is a row of the space's own table, not
+    /// a colour. Read as a grey level, `1 scn` paints white.
+    #[test]
+    fn an_indexed_colour_is_a_row_of_its_table() {
+        // Two entries: black, then a mid grey.
+        let pdf = document_with_page(
+            "/CS0 cs 1 scn BT /F1 12 Tf 20 100 Td (indexed) Tj ET",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /Resources << /Font << /F1 4 0 R >>               /ColorSpace << /CS0 [/Indexed /DeviceRGB 1 <000000808080>] >> >>               /Contents 5 0 R >>",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let colour = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                super::RenderOp::Text { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("a text op");
+        assert!(
+            (colour[0] - 0.5).abs() < 0.02 && (colour[1] - 0.5).abs() < 0.02,
+            "index 1 is the table's second entry, a mid grey: {colour:?}"
+        );
     }
 
     /// A Separation tint of 1 is full ink, not white. Read as a grey level it
