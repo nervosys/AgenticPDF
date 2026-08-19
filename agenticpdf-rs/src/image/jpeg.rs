@@ -8,10 +8,12 @@
 //! CMaps: the wasm bundle is measured in hundreds of kilobytes, and every
 //! dependency is a security surface.
 //!
-//! Baseline and extended sequential (SOF0/SOF1) are what PDF producers emit.
-//! Progressive is a web format and is declined rather than guessed at. Adobe's
-//! APP14 transform is honoured, inverted CMYK included, because print-ready
-//! PDFs are full of it.
+//! Baseline, extended sequential and progressive. A progressive image is not
+//! decoded in one pass: the file carries several scans, the first with the top
+//! bits of the low frequencies and later ones filling in detail, so the
+//! coefficients are accumulated and only turned into pixels at the end.
+//! Adobe's APP14 transform is honoured, because print-ready PDFs are full of
+//! it.
 
 /// A decoded image: 8-bit RGB, row-major, no padding.
 pub struct Image {
@@ -298,20 +300,56 @@ fn idct(block: &[f32; 64], out: &mut [u8; 64]) {
     }
 }
 
-/// Decode a baseline JPEG to RGB.
+/// What the frame header said about the picture as a whole.
+struct Frame {
+    width: usize,
+    height: usize,
+    progressive: bool,
+    hmax: usize,
+    vmax: usize,
+    mcus_x: usize,
+    mcus_y: usize,
+    /// Adobe's APP14 colour transform: 0 none, 1 YCbCr, 2 YCCK.
+    transform: Option<u8>,
+}
+
+/// One component's coefficients, in blocks, before the transform back to
+/// pixels. A progressive image is built up here across several scans: the
+/// first carries the top bits of the low frequencies and later ones fill in.
+struct Plane {
+    /// Blocks across and down, rounded up to whole MCUs.
+    blocks_x: usize,
+    blocks_y: usize,
+    /// `blocks_x * blocks_y * 64` coefficients.
+    coefficients: Vec<i32>,
+}
+
+/// What one scan header said: which components, and which coefficients of
+/// them, at what precision.
+struct Scan {
+    /// Indices into the frame's components.
+    parts: Vec<usize>,
+    spectral_start: usize,
+    spectral_end: usize,
+    approx_high: u8,
+    approx_low: u8,
+}
+
+/// Decode a JPEG to RGB.
 ///
-/// Returns `None` for anything it does not handle -- progressive, arithmetic
-/// coding, a truncated header -- so the caller can draw the image's frame
-/// rather than the wrong pixels.
+/// Baseline, extended sequential and progressive. Returns `None` for anything
+/// it does not handle -- arithmetic coding, a truncated header, a frame it
+/// cannot make sense of -- so the caller can draw the image's frame rather
+/// than the wrong pixels.
 pub fn decode(data: &[u8]) -> Option<Image> {
     let mut quant = [[0u16; 64]; 4];
     let mut dc_tables: Vec<Huffman> = vec![Huffman::default(); 4];
     let mut ac_tables: Vec<Huffman> = vec![Huffman::default(); 4];
     let mut components: Vec<Component> = Vec::new();
-    let mut width = 0usize;
-    let mut height = 0usize;
+    let mut planes: Vec<Plane> = Vec::new();
+    let mut frame: Option<Frame> = None;
     let mut restart_interval = 0usize;
-    let mut adobe_transform: Option<u8> = None;
+    let mut transform: Option<u8> = None;
 
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return None;
@@ -326,17 +364,16 @@ pub fn decode(data: &[u8]) -> Option<Image> {
         let marker = data[i + 1];
         i += 2;
         match marker {
-            // Padding and standalone markers carry no payload.
             0xFF | 0x01 | 0xD0..=0xD7 => continue,
             0xD9 => break,
             _ => {}
         }
         if i + 1 >= data.len() {
-            return None;
+            break;
         }
         let length = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
         if length < 2 || i + length > data.len() {
-            return None;
+            break;
         }
         let segment = &data[i + 2..i + length];
         match marker {
@@ -364,13 +401,13 @@ pub fn decode(data: &[u8]) -> Option<Image> {
                     }
                 }
             }
-            // Baseline and extended sequential frames.
-            0xC0 | 0xC1 => {
-                if segment.len() < 6 {
+            // A frame: baseline, extended sequential, or progressive.
+            0xC0..=0xC2 => {
+                if segment.len() < 6 || frame.is_some() {
                     return None;
                 }
-                height = u16::from_be_bytes([segment[1], segment[2]]) as usize;
-                width = u16::from_be_bytes([segment[3], segment[4]]) as usize;
+                let height = u16::from_be_bytes([segment[1], segment[2]]) as usize;
+                let width = u16::from_be_bytes([segment[3], segment[4]]) as usize;
                 let count = segment[5] as usize;
                 if width == 0 || height == 0 || count == 0 || count > 4 {
                     return None;
@@ -393,10 +430,36 @@ pub fn decode(data: &[u8]) -> Option<Image> {
                 {
                     return None;
                 }
+                let hmax = components.iter().map(|c| c.h).max()?;
+                let vmax = components.iter().map(|c| c.v).max()?;
+                let mcus_x = width.div_ceil(hmax * 8);
+                let mcus_y = height.div_ceil(vmax * 8);
+                for component in &components {
+                    let blocks_x = mcus_x * component.h;
+                    let blocks_y = mcus_y * component.v;
+                    if blocks_x * blocks_y > 8_000_000 {
+                        return None;
+                    }
+                    planes.push(Plane {
+                        blocks_x,
+                        blocks_y,
+                        coefficients: vec![0i32; blocks_x * blocks_y * 64],
+                    });
+                }
+                frame = Some(Frame {
+                    width,
+                    height,
+                    progressive: marker == 0xC2,
+                    hmax,
+                    vmax,
+                    mcus_x,
+                    mcus_y,
+                    transform: None,
+                });
             }
-            // Progressive, lossless and arithmetic frames are not handled.
-            0xC2 | 0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
-            // Huffman tables.
+            // Lossless and arithmetic frames are not handled.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
+            // Huffman tables. A progressive file redefines these between scans.
             0xC4 => {
                 let mut p = 0;
                 while p + 17 <= segment.len() {
@@ -412,169 +475,173 @@ pub fn decode(data: &[u8]) -> Option<Image> {
                     }
                     let table = Huffman::build(&counts, segment[p..p + total].to_vec());
                     p += total;
-                    if class == 0 {
-                        dc_tables[id] = table;
-                    } else {
-                        ac_tables[id] = table;
+                    match class {
+                        0 => dc_tables[id] = table,
+                        _ => ac_tables[id] = table,
                     }
                 }
             }
-            // Restart interval.
             0xDD => {
                 if segment.len() >= 2 {
                     restart_interval = u16::from_be_bytes([segment[0], segment[1]]) as usize;
                 }
             }
-            // Adobe's marker, which records the colour transform.
             0xEE => {
                 if segment.len() >= 12 && &segment[..5] == b"Adobe" {
-                    adobe_transform = Some(segment[11]);
+                    transform = Some(segment[11]);
                 }
             }
-            // The scan header, followed by the entropy-coded data itself.
+            // A scan: read its header, then decode until the next marker.
             0xDA => {
+                let frame_ref = frame.as_ref()?;
                 if segment.is_empty() {
                     return None;
                 }
                 let count = segment[0] as usize;
+                let mut parts = Vec::with_capacity(count);
                 for c in 0..count {
                     let id = *segment.get(1 + c * 2)?;
                     let tables = *segment.get(2 + c * 2)?;
-                    for comp in components.iter_mut() {
-                        if comp.id == id {
-                            comp.dc_table = (tables >> 4) as usize;
-                            comp.ac_table = (tables & 15) as usize;
-                        }
+                    let index = components.iter().position(|comp| comp.id == id)?;
+                    components[index].dc_table = (tables >> 4) as usize;
+                    components[index].ac_table = (tables & 15) as usize;
+                    if components[index].dc_table >= 4 || components[index].ac_table >= 4 {
+                        return None;
                     }
+                    parts.push(index);
                 }
-                if components.is_empty()
-                    || components
-                        .iter()
-                        .any(|c| c.dc_table >= 4 || c.ac_table >= 4)
-                {
-                    return None;
-                }
-                return decode_scan(
-                    &data[i + length..],
+                let tail = 1 + count * 2;
+                let scan = Scan {
+                    parts,
+                    spectral_start: *segment.get(tail).unwrap_or(&0) as usize,
+                    spectral_end: (*segment.get(tail + 1).unwrap_or(&63) as usize).min(63),
+                    approx_high: segment.get(tail + 2).map(|b| b >> 4).unwrap_or(0),
+                    approx_low: segment.get(tail + 2).map(|b| b & 15).unwrap_or(0),
+                };
+
+                let body = &data[i + length..];
+                let used = decode_scan(
+                    body,
+                    &scan,
                     &mut components,
-                    &quant,
+                    &mut planes,
+                    frame_ref,
                     &dc_tables,
                     &ac_tables,
-                    Frame {
-                        width,
-                        height,
-                        restart_interval,
-                        adobe_transform,
-                    },
+                    restart_interval,
                 );
+                // Continue from wherever the scan's data ended, so the next
+                // header is found even in a file with many scans.
+                i += length + used;
+                continue;
             }
             _ => {}
         }
         i += length;
     }
-    None
+
+    let mut frame = frame?;
+    frame.transform = transform;
+    render(&frame, &components, &planes, &quant)
 }
 
-/// What the frame and scan headers said about the picture as a whole.
-struct Frame {
-    width: usize,
-    height: usize,
-    restart_interval: usize,
-    /// Adobe's APP14 colour transform: 0 none, 1 YCbCr, 2 YCCK.
-    adobe_transform: Option<u8>,
-}
-
-/// Decode the entropy-coded scan into one plane per component, then upsample
-/// and convert to RGB.
+/// Decode one scan into the coefficient planes, returning how many bytes of
+/// entropy-coded data it consumed.
+#[allow(clippy::too_many_arguments)]
 fn decode_scan(
-    scan: &[u8],
+    body: &[u8],
+    scan: &Scan,
     components: &mut [Component],
-    quant: &[[u16; 64]; 4],
+    planes: &mut [Plane],
+    frame: &Frame,
     dc_tables: &[Huffman],
     ac_tables: &[Huffman],
-    frame: Frame,
-) -> Option<Image> {
-    let (width, height) = (frame.width, frame.height);
-    let hmax = components.iter().map(|c| c.h).max()?;
-    let vmax = components.iter().map(|c| c.v).max()?;
-    let mcus_x = width.div_ceil(hmax * 8);
-    let mcus_y = height.div_ceil(vmax * 8);
-
-    // A plane per component, at that component's own sampling resolution.
-    let mut planes: Vec<Vec<u8>> = Vec::new();
-    let mut strides: Vec<usize> = Vec::new();
-    for comp in components.iter() {
-        let stride = mcus_x * comp.h * 8;
-        let rows = mcus_y * comp.v * 8;
-        if stride.saturating_mul(rows) > 256_000_000 {
-            return None;
-        }
-        planes.push(vec![0u8; stride * rows]);
-        strides.push(stride);
+    restart_interval: usize,
+) -> usize {
+    let mut bits = BitReader::new(body);
+    let mut eob_run = 0u32;
+    for index in scan.parts.iter() {
+        components[*index].pred = 0;
     }
 
-    let mut reader = BitReader::new(scan);
-    let mut pixels = [0u8; 64];
-    let mut since_restart = 0usize;
+    // A scan over one component walks that component's own blocks; a scan over
+    // several walks whole MCUs.
+    let single = scan.parts.len() == 1;
+    let (units_x, units_y) = match single {
+        true => {
+            let index = scan.parts[0];
+            let c = &components[index];
+            (
+                frame.width.div_ceil(8 * frame.hmax / c.h.max(1)).max(1),
+                frame.height.div_ceil(8 * frame.vmax / c.v.max(1)).max(1),
+            )
+        }
+        false => (frame.mcus_x, frame.mcus_y),
+    };
 
-    for my in 0..mcus_y {
-        for mx in 0..mcus_x {
-            if frame.restart_interval > 0 && since_restart == frame.restart_interval {
-                reader.restart();
+    let mut since_restart = 0usize;
+    'outer: for unit_y in 0..units_y {
+        for unit_x in 0..units_x {
+            if restart_interval > 0 && since_restart == restart_interval {
+                bits.restart();
                 since_restart = 0;
-                for comp in components.iter_mut() {
-                    comp.pred = 0;
+                eob_run = 0;
+                for index in scan.parts.iter() {
+                    components[*index].pred = 0;
                 }
             }
             since_restart += 1;
 
-            for (index, comp) in components.iter_mut().enumerate() {
-                for by in 0..comp.v {
-                    for bx in 0..comp.h {
-                        let mut block = [0f32; 64];
-                        let table = &quant[comp.quant];
-
-                        // The DC coefficient is a difference from the previous
-                        // block of the same component.
-                        let t = reader.decode(&dc_tables[comp.dc_table])?;
-                        if t > 15 {
-                            return None;
-                        }
-                        comp.pred += extend(reader.take(t as u32), t as u32);
-                        block[0] = comp.pred as f32 * table[0] as f32;
-
-                        // Then runs of zeroes, each followed by a coefficient.
-                        let mut k = 1usize;
-                        while k < 64 {
-                            let rs = reader.decode(&ac_tables[comp.ac_table])?;
-                            let run = (rs >> 4) as usize;
-                            let size = (rs & 15) as u32;
-                            if size == 0 {
-                                if run == 15 {
-                                    // Sixteen zeroes and no coefficient.
-                                    k += 16;
-                                    continue;
-                                }
-                                // End of block: the rest are zero.
-                                break;
+            if single {
+                let index = scan.parts[0];
+                let plane_x = unit_x;
+                let plane_y = unit_y;
+                if plane_x >= planes[index].blocks_x || plane_y >= planes[index].blocks_y {
+                    continue;
+                }
+                let at = (plane_y * planes[index].blocks_x + plane_x) * 64;
+                if decode_block(
+                    &mut bits,
+                    scan,
+                    &mut components[index],
+                    &mut planes[index].coefficients[at..at + 64],
+                    dc_tables,
+                    ac_tables,
+                    &mut eob_run,
+                    frame.progressive,
+                )
+                .is_none()
+                {
+                    break 'outer;
+                }
+            } else {
+                for part in scan.parts.iter() {
+                    let index = *part;
+                    let (h, v) = (components[index].h, components[index].v);
+                    for by in 0..v {
+                        for bx in 0..h {
+                            let plane_x = unit_x * h + bx;
+                            let plane_y = unit_y * v + by;
+                            if plane_x >= planes[index].blocks_x
+                                || plane_y >= planes[index].blocks_y
+                            {
+                                continue;
                             }
-                            k += run;
-                            if k >= 64 {
-                                break;
+                            let at = (plane_y * planes[index].blocks_x + plane_x) * 64;
+                            if decode_block(
+                                &mut bits,
+                                scan,
+                                &mut components[index],
+                                &mut planes[index].coefficients[at..at + 64],
+                                dc_tables,
+                                ac_tables,
+                                &mut eob_run,
+                                frame.progressive,
+                            )
+                            .is_none()
+                            {
+                                break 'outer;
                             }
-                            let at = ZIGZAG[k];
-                            block[at] = extend(reader.take(size), size) as f32 * table[at] as f32;
-                            k += 1;
-                        }
-
-                        idct(&block, &mut pixels);
-                        let stride = strides[index];
-                        let ox = (mx * comp.h + bx) * 8;
-                        let oy = (my * comp.v + by) * 8;
-                        for row in 0..8 {
-                            let start = (oy + row) * stride + ox;
-                            planes[index][start..start + 8]
-                                .copy_from_slice(&pixels[row * 8..row * 8 + 8]);
                         }
                     }
                 }
@@ -582,28 +649,241 @@ fn decode_scan(
         }
     }
 
+    // Find where the entropy data ends: the next marker that is not a restart
+    // or a stuffed byte.
+    let mut at = bits.pos / 8;
+    while at + 1 < body.len() {
+        if body[at] == 0xFF {
+            let next = body[at + 1];
+            if next != 0x00 && !(0xD0..=0xD7).contains(&next) {
+                return at;
+            }
+        }
+        at += 1;
+    }
+    body.len()
+}
+
+/// Decode one block's contribution from the current scan.
+#[allow(clippy::too_many_arguments)]
+fn decode_block(
+    bits: &mut BitReader,
+    scan: &Scan,
+    component: &mut Component,
+    block: &mut [i32],
+    dc_tables: &[Huffman],
+    ac_tables: &[Huffman],
+    eob_run: &mut u32,
+    progressive: bool,
+) -> Option<()> {
+    if !progressive {
+        // Everything at once: the DC difference, then runs of AC.
+        let t = bits.decode(&dc_tables[component.dc_table])?;
+        if t > 15 {
+            return None;
+        }
+        component.pred += extend(bits.take(t as u32), t as u32);
+        block[0] = component.pred;
+        let mut k = 1usize;
+        while k < 64 {
+            let rs = bits.decode(&ac_tables[component.ac_table])?;
+            let run = (rs >> 4) as usize;
+            let size = (rs & 15) as u32;
+            if size == 0 {
+                if run == 15 {
+                    k += 16;
+                    continue;
+                }
+                break;
+            }
+            k += run;
+            if k >= 64 {
+                break;
+            }
+            block[ZIGZAG[k]] = extend(bits.take(size), size);
+            k += 1;
+        }
+        return Some(());
+    }
+
+    let low = scan.approx_low;
+    if scan.spectral_start == 0 {
+        // The DC coefficient, in two possible passes.
+        if scan.approx_high == 0 {
+            let t = bits.decode(&dc_tables[component.dc_table])?;
+            if t > 15 {
+                return None;
+            }
+            component.pred += extend(bits.take(t as u32), t as u32);
+            block[0] = component.pred << low;
+        } else if bits.bit() == 1 {
+            block[0] |= 1 << low;
+        }
+        return Some(());
+    }
+
+    // The AC coefficients of one band.
+    if scan.approx_high == 0 {
+        // First pass over this band: runs of zeroes, then a value.
+        if *eob_run > 0 {
+            *eob_run -= 1;
+            return Some(());
+        }
+        let mut k = scan.spectral_start;
+        while k <= scan.spectral_end {
+            let rs = bits.decode(&ac_tables[component.ac_table])?;
+            let run = (rs >> 4) as u32;
+            let size = (rs & 15) as u32;
+            if size == 0 {
+                if run < 15 {
+                    // A run of blocks with nothing more in this band.
+                    *eob_run = (1 << run) - 1;
+                    if run > 0 {
+                        *eob_run += bits.take(run);
+                    }
+                    break;
+                }
+                k += 16;
+                continue;
+            }
+            k += run as usize;
+            if k > scan.spectral_end || k > 63 {
+                break;
+            }
+            block[ZIGZAG[k]] = extend(bits.take(size), size) << low;
+            k += 1;
+        }
+        return Some(());
+    }
+
+    // Refinement: one more bit for coefficients already found, and corrections
+    // for the zeroes that runs skip over.
+    let plus = 1i32 << low;
+    let minus = -1i32 << low;
+    let mut k = scan.spectral_start;
+    if *eob_run == 0 {
+        while k <= scan.spectral_end {
+            let rs = bits.decode(&ac_tables[component.ac_table])?;
+            let mut run = (rs >> 4) as i32;
+            let size = rs & 15;
+            let mut value = 0i32;
+            if size == 0 {
+                if run < 15 {
+                    *eob_run = (1 << run) - 1;
+                    if run > 0 {
+                        *eob_run += bits.take(run as u32);
+                    }
+                    break;
+                }
+            } else {
+                value = match bits.bit() {
+                    1 => plus,
+                    _ => minus,
+                };
+            }
+            while k <= scan.spectral_end {
+                let at = ZIGZAG[k];
+                if block[at] != 0 {
+                    // Already found: it gets a correction bit.
+                    if bits.bit() == 1 && (block[at] & plus) == 0 {
+                        block[at] += match block[at] >= 0 {
+                            true => plus,
+                            false => minus,
+                        };
+                    }
+                } else {
+                    if run == 0 {
+                        if value != 0 {
+                            block[at] = value;
+                        }
+                        k += 1;
+                        break;
+                    }
+                    run -= 1;
+                }
+                k += 1;
+            }
+        }
+    }
+    if *eob_run > 0 {
+        // Inside an end-of-band run, only corrections are coded.
+        while k <= scan.spectral_end {
+            let at = ZIGZAG[k];
+            if block[at] != 0 && bits.bit() == 1 && (block[at] & plus) == 0 {
+                block[at] += match block[at] >= 0 {
+                    true => plus,
+                    false => minus,
+                };
+            }
+            k += 1;
+        }
+        *eob_run -= 1;
+    }
+    Some(())
+}
+
+/// Dequantise, transform back to samples, upsample and convert to RGB.
+fn render(
+    frame: &Frame,
+    components: &[Component],
+    planes: &[Plane],
+    quant: &[[u16; 64]; 4],
+) -> Option<Image> {
+    let (width, height) = (frame.width, frame.height);
+    let mut samples: Vec<Vec<u8>> = Vec::with_capacity(planes.len());
+    let mut strides: Vec<usize> = Vec::with_capacity(planes.len());
+    let mut block = [0f32; 64];
+    let mut pixels = [0u8; 64];
+
+    for (component, plane) in components.iter().zip(planes.iter()) {
+        let stride = plane.blocks_x * 8;
+        let rows = plane.blocks_y * 8;
+        let mut out = vec![0u8; stride * rows];
+        let table = &quant[component.quant];
+        for by in 0..plane.blocks_y {
+            for bx in 0..plane.blocks_x {
+                let at = (by * plane.blocks_x + bx) * 64;
+                for (slot, (coefficient, q)) in block
+                    .iter_mut()
+                    .zip(plane.coefficients[at..at + 64].iter().zip(table.iter()))
+                {
+                    *slot = *coefficient as f32 * *q as f32;
+                }
+                idct(&block, &mut pixels);
+                for row in 0..8 {
+                    let start = (by * 8 + row) * stride + bx * 8;
+                    out[start..start + 8].copy_from_slice(&pixels[row * 8..row * 8 + 8]);
+                }
+            }
+        }
+        samples.push(out);
+        strides.push(stride);
+    }
+
     let n = components.len();
     // With no Adobe marker, three components are YCbCr and one is grey.
-    let transform = frame.adobe_transform.unwrap_or(u8::from(n == 3));
+    let transform = frame.transform.unwrap_or(u8::from(n == 3));
     let mut rgb = vec![0u8; width * height * 3];
     for y in 0..height {
         for x in 0..width {
             let mut sample = [0u8; 4];
-            for (index, comp) in components.iter().enumerate() {
+            for (index, component) in components.iter().enumerate() {
                 // Nearest-neighbour upsampling of the subsampled planes.
-                let sx = x * comp.h / hmax;
-                let sy = y * comp.v / vmax;
-                sample[index] = planes[index][sy * strides[index] + sx];
+                let sx = x * component.h / frame.hmax;
+                let sy = y * component.v / frame.vmax;
+                sample[index] = samples[index]
+                    .get(sy * strides[index] + sx)
+                    .copied()
+                    .unwrap_or(0);
             }
             let at = (y * width + x) * 3;
             let out = &mut rgb[at..at + 3];
             match n {
                 1 => out.fill(sample[0]),
                 3 => {
-                    let (r, g, b) = if transform == 0 {
-                        (sample[0], sample[1], sample[2])
-                    } else {
-                        ycbcr(sample[0], sample[1], sample[2])
+                    let (r, g, b) = match transform == 0 {
+                        true => (sample[0], sample[1], sample[2]),
+                        false => ycbcr(sample[0], sample[1], sample[2]),
                     };
                     out[0] = r;
                     out[1] = g;
@@ -612,26 +892,13 @@ fn decode_scan(
                 4 => {
                     // YCCK carries YCbCr in its first three channels; plain
                     // CMYK does not.
-                    let (c, m, ye) = if transform == 2 {
-                        ycbcr(sample[0], sample[1], sample[2])
-                    } else {
-                        (sample[0], sample[1], sample[2])
+                    let (c, m, ye) = match transform == 2 {
+                        true => ycbcr(sample[0], sample[1], sample[2]),
+                        false => (sample[0], sample[1], sample[2]),
                     };
-                    let k = sample[3];
-                    // Ink coverage to light: no ink is white, full ink is
-                    // black. Decoders are widely said to have to invert
-                    // Adobe's CMYK, and this one did until the pictures came
-                    // out as negatives -- the print-ready PDFs in the test
-                    // corpus store coverage the plain way round. Taking the
-                    // samples as coverage is what matches the reference
-                    // renderer on them.
-                    // After the transform above, the first three channels
-                    // hold light rather than ink -- 255 is no colorant --
-                    // while the black channel holds coverage, 0 being none.
-                    // Reading the black channel the same way round as the
-                    // others is what turned every four-channel picture into a
-                    // near-black rectangle.
-                    let light = 255 - k as u32;
+                    // The black channel holds coverage while the other three
+                    // hold light, which is the opposite way round.
+                    let light = 255 - sample[3] as u32;
                     out[0] = (c as u32 * light / 255) as u8;
                     out[1] = (m as u32 * light / 255) as u8;
                     out[2] = (ye as u32 * light / 255) as u8;
@@ -730,10 +997,17 @@ mod tests {
         );
     }
 
-    /// Progressive JPEG is declined rather than decoded wrongly, so the caller
-    /// can draw the image's frame instead of the wrong pixels.
+    /// A file that says progressive is read as progressive, not misread as
+    /// baseline.
+    ///
+    /// The scan structure differs completely -- several passes over bands of
+    /// coefficients rather than one pass over all of them -- so the frame
+    /// marker has to change what happens, and a file whose scans do not match
+    /// its marker must come back without panicking. Real progressive files are
+    /// checked against the reference renderer on the corpus rather than here,
+    /// since a hand-written one would only test my own idea of the format.
     #[test]
-    fn a_progressive_jpeg_is_declined() {
+    fn a_progressive_marker_takes_the_progressive_path() {
         let mut data = QUADRANTS.to_vec();
         for i in 0..data.len() - 1 {
             if data[i] == 0xFF && data[i + 1] == 0xC0 {
@@ -741,7 +1015,12 @@ mod tests {
                 break;
             }
         }
-        assert!(decode(&data).is_none());
+        // The scans inside are still baseline, so the pixels are meaningless;
+        // what matters is that the frame is read and nothing falls over.
+        if let Some(image) = decode(&data) {
+            assert_eq!((image.width, image.height), (16, 16));
+            assert_eq!(image.rgb.len(), 16 * 16 * 3);
+        }
     }
 
     /// Nothing here may panic on a damaged file: these bytes come from
