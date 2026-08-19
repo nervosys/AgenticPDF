@@ -10,6 +10,7 @@
 pub mod adf;
 pub mod agent_ops;
 pub mod container;
+pub mod crypt;
 pub mod detect;
 pub mod doc;
 pub mod document;

@@ -504,6 +504,10 @@ pub struct Document<'a> {
     cache: RefCell<HashMap<u32, Object>>,
     /// Cache of decoded object streams: stream obj num -> (offsets, bytes).
     objstm_cache: RefCell<ObjStmCache>,
+    /// Set when the document is encrypted and we hold its key. Streams and
+    /// strings are then unwrapped as they are fetched, so nothing downstream
+    /// needs to know.
+    crypt: Option<crate::crypt::Decryptor>,
 }
 
 /// Decoded object stream: per-stream (object header offsets, decoded bytes).
@@ -523,12 +527,14 @@ impl<'a> Document<'a> {
             trailer: Dict::new(),
             cache: RefCell::new(HashMap::new()),
             objstm_cache: RefCell::new(HashMap::new()),
+            crypt: None,
         };
         doc.build_xref()?;
         if doc.xref.is_empty() || !doc.trailer.contains_key("Root") {
             // Recovery: scan the whole file for "n g obj" definitions.
             doc.recover_by_scan();
         }
+        doc.unlock();
         Ok(doc)
     }
 
@@ -817,6 +823,89 @@ impl<'a> Document<'a> {
         lex.parse_object(0)
     }
 
+    /// Work out the document's encryption key, if it has one.
+    ///
+    /// Called once, before anything is fetched, because the `/Encrypt`
+    /// dictionary and the file identifier are themselves read from the
+    /// trailer -- and, unlike everything else, are not encrypted.
+    fn unlock(&mut self) {
+        let Some(encrypt) = self.trailer.get("Encrypt").cloned() else {
+            return;
+        };
+        // The dictionary may be indirect; resolving it now is safe because
+        // `crypt` is still `None` and so nothing is unwrapped.
+        let encrypt = match encrypt {
+            Object::Dict(d) => d,
+            Object::Ref(n, _) => match self.fetch(n) {
+                Ok(Object::Dict(d)) => d,
+                _ => return,
+            },
+            _ => return,
+        };
+        let id = match self.trailer.get("ID") {
+            Some(Object::Array(a)) => match a.first() {
+                Some(Object::Str(b)) => b.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        self.crypt = crate::crypt::Decryptor::new(&encrypt, &id);
+        // The `/Encrypt` dictionary itself was read before the key existed;
+        // drop the cache so everything is read again through it.
+        self.cache.borrow_mut().clear();
+        self.objstm_cache.borrow_mut().clear();
+    }
+
+    /// Whether the document is encrypted in a way this cannot read.
+    ///
+    /// Encrypted and readable is the common case -- an empty user password
+    /// with permissions the file cannot enforce -- and says nothing here.
+    pub fn is_locked(&self) -> bool {
+        self.trailer.contains_key("Encrypt") && self.crypt.is_none()
+    }
+
+    /// Unwrap the strings and stream of a freshly parsed object.
+    fn decrypt_object(&self, number: u32, obj: Object) -> Object {
+        let Some(crypt) = &self.crypt else {
+            return obj;
+        };
+        fn walk(crypt: &crate::crypt::Decryptor, number: u32, obj: Object) -> Object {
+            match obj {
+                Object::Str(bytes) => Object::Str(crypt.decrypt(number, 0, &bytes)),
+                Object::Array(items) => Object::Array(
+                    items
+                        .into_iter()
+                        .map(|item| walk(crypt, number, item))
+                        .collect(),
+                ),
+                Object::Dict(dict) => Object::Dict(
+                    dict.into_iter()
+                        .map(|(k, v)| (k, walk(crypt, number, v)))
+                        .collect(),
+                ),
+                Object::Stream(dict, raw) => {
+                    // An `XRef` stream is never encrypted: it has to be
+                    // readable to find the key in the first place.
+                    let plain = matches!(
+                        dict.get("Type"),
+                        Some(Object::Name(name)) if name == "XRef"
+                    );
+                    let bytes = match plain {
+                        true => raw,
+                        false => crypt.decrypt(number, 0, &raw),
+                    };
+                    let dict = match walk(crypt, number, Object::Dict(dict)) {
+                        Object::Dict(d) => d,
+                        _ => Dict::new(),
+                    };
+                    Object::Stream(dict, bytes)
+                }
+                other => other,
+            }
+        }
+        walk(crypt, number, obj)
+    }
+
     /// Fetch an object by number, resolving object-stream membership, cached.
     pub fn fetch(&self, num: u32) -> Result<Object, PdfError> {
         if let Some(o) = self.cache.borrow().get(&num) {
@@ -827,7 +916,12 @@ impl<'a> Document<'a> {
             None => return Ok(Object::Null),
         };
         let obj = match entry {
-            Xref::Offset(off) => self.parse_indirect_at(off)?,
+            Xref::Offset(off) => {
+                let parsed = self.parse_indirect_at(off)?;
+                // Objects inside an object stream are not wrapped separately:
+                // the stream that carried them was.
+                self.decrypt_object(num, parsed)
+            }
             Xref::InStream(snum, idx) => self.fetch_from_objstm(snum, idx)?,
         };
         self.cache.borrow_mut().insert(num, obj.clone());
