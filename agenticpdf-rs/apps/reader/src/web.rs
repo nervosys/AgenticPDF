@@ -95,7 +95,9 @@ impl WebReader {
         let known = self.sent_images.borrow().clone();
         let mut painter = RecordingPainter::with_known_images(known)
             .with_raster_scale(session.fonts().raster_scale() as f32);
-        let textures = session.textures();
+        let scale = session.fonts().raster_scale();
+        let budget = (width as f64 * height as f64 * scale * scale).max(1.0) as usize;
+        let textures = session.textures(budget);
         crate::canvas::paint_page(&mut painter, &list, transform, &textures, session.fonts());
         let json = painter.to_json();
         let mut sent = painter.image_keys();

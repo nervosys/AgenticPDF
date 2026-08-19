@@ -150,20 +150,7 @@ fn read_run(bits: &mut Bits, white: bool, tables: &Tables) -> Option<usize> {
             true => &tables.white,
             false => &tables.black,
         };
-        let mut matched = None;
-        // Codes are prefix-free, so the first length that matches is the code.
-        for len in 2..=13u8 {
-            let probe = bits.peek(len);
-            if let Some(code) = table
-                .iter()
-                .chain(tables.extended.iter())
-                .find(|c| c.len == len && c.bits == probe)
-            {
-                matched = Some((len, code.run));
-                break;
-            }
-        }
-        let (len, run) = matched?;
+        let (len, run) = table.get(bits.peek(MAX_CODE_BITS))?;
         bits.skip(len);
         total += run as usize;
         // A make-up code is a multiple of 64 and must be followed by a
@@ -177,10 +164,47 @@ fn read_run(bits: &mut Bits, white: bool, tables: &Tables) -> Option<usize> {
     }
 }
 
+/// The longest run-length code, and so the width of the lookup below.
+const MAX_CODE_BITS: u8 = 13;
+
+/// A direct lookup from the next thirteen bits to the code they begin with.
+///
+/// Every entry whose leading bits match a code is filled with that code, so a
+/// run costs one indexed read. The alternative -- walking the table by length
+/// and comparing -- is about thirteen hundred comparisons per run, and a
+/// scanned page has hundreds of thousands of runs.
+struct Lookup {
+    /// `(length, run)`, or length 0 where no code matches.
+    entries: Vec<(u8, u16)>,
+}
+
+impl Lookup {
+    fn build(codes: &[Code], shared: &[Code]) -> Lookup {
+        let mut entries = vec![(0u8, 0u16); 1 << MAX_CODE_BITS];
+        for code in codes.iter().chain(shared.iter()) {
+            if code.len == 0 || code.len > MAX_CODE_BITS {
+                continue;
+            }
+            let spare = MAX_CODE_BITS - code.len;
+            let base = (code.bits as usize) << spare;
+            for slot in 0..(1usize << spare) {
+                entries[base + slot] = (code.len, code.run);
+            }
+        }
+        Lookup { entries }
+    }
+
+    fn get(&self, probe: u16) -> Option<(u8, u16)> {
+        match self.entries[probe as usize] {
+            (0, _) => None,
+            found => Some(found),
+        }
+    }
+}
+
 struct Tables {
-    white: Vec<Code>,
-    black: Vec<Code>,
-    extended: Vec<Code>,
+    white: Lookup,
+    black: Lookup,
 }
 
 /// Decode a CCITT fax image to one bit per pixel, `1` white and `0` black,
@@ -194,10 +218,10 @@ pub fn decode(data: &[u8], params: &Params) -> Option<Vec<u8>> {
     if columns == 0 || columns > 1 << 16 {
         return None;
     }
+    let shared = table(EXTENDED);
     let tables = Tables {
-        white: table(WHITE),
-        black: table(BLACK),
-        extended: table(EXTENDED),
+        white: Lookup::build(&table(WHITE), &shared),
+        black: Lookup::build(&table(BLACK), &shared),
     };
     let stride = columns.div_ceil(8);
     let mut out: Vec<u8> = Vec::new();
@@ -235,16 +259,16 @@ pub fn decode(data: &[u8], params: &Params) -> Option<Vec<u8>> {
             break;
         };
 
-        // Paint the row: runs alternate, starting white.
+        // Paint the row: runs alternate, starting white. Whole bytes at a
+        // time -- a page is four million pixels, and setting them one bit at a
+        // time is most of the time this decoder spends.
         let mut row = vec![0u8; stride];
         let mut colour_white = true;
         let mut at = 0usize;
         for &change in current.iter() {
             let end = change.min(columns);
             if colour_white {
-                for x in at..end {
-                    row[x / 8] |= 0x80 >> (x % 8);
-                }
+                set_white(&mut row, at, end);
             }
             at = end;
             colour_white = !colour_white;
@@ -253,9 +277,7 @@ pub fn decode(data: &[u8], params: &Params) -> Option<Vec<u8>> {
             }
         }
         if colour_white {
-            for x in at..columns {
-                row[x / 8] |= 0x80 >> (x % 8);
-            }
+            set_white(&mut row, at, columns);
         }
         out.extend_from_slice(&row);
         row_count += 1;
@@ -273,6 +295,25 @@ pub fn decode(data: &[u8], params: &Params) -> Option<Vec<u8>> {
         out.resize(stride * params.rows, 0xFF);
     }
     Some(out)
+}
+
+/// Set bits `[from, to)` of a packed row, a byte at a time where it can.
+fn set_white(row: &mut [u8], from: usize, to: usize) {
+    if from >= to {
+        return;
+    }
+    let first = from / 8;
+    let last = (to - 1) / 8;
+    if first == last {
+        let mask = (0xFFu8 >> (from % 8)) & !(0x7Fu8 >> ((to - 1) % 8));
+        row[first] |= mask;
+        return;
+    }
+    row[first] |= 0xFFu8 >> (from % 8);
+    if last > first + 1 {
+        row[first + 1..last].fill(0xFF);
+    }
+    row[last] |= !(0x7Fu8 >> ((to - 1) % 8));
 }
 
 /// Decode one row into its changing-element positions.

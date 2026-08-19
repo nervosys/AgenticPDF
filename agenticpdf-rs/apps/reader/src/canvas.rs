@@ -493,18 +493,19 @@ const MAX_INLINE_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 /// slower than picking one of them and far better looking, which matters
 /// because the alternative -- letting the host scale it -- is what we are
 /// avoiding by not sending it at full size in the first place.
-fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(u32, u32, Vec<u8>)> {
-    let want_w = (rect.width.abs() * raster_scale).ceil().max(1.0) as u32;
-    let want_h = (rect.height.abs() * raster_scale).ceil().max(1.0) as u32;
-    let (src_w, src_h) = (image.width, image.height);
-    // Only worth doing when it saves real weight, and never an enlargement.
-    if src_w <= want_w || src_h <= want_h || src_w * src_h <= 4 * want_w * want_h {
+pub fn sample_rgba(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    want_w: u32,
+    want_h: u32,
+) -> Option<Vec<u8>> {
+    if want_w == 0 || want_h == 0 || src_w == 0 || src_h == 0 {
         return None;
     }
-    if image.pixels.len() < (src_w as usize * src_h as usize * 4) {
+    if src.len() < src_w as usize * src_h as usize * 4 {
         return None;
     }
-
     let mut out = vec![0u8; want_w as usize * want_h as usize * 4];
     for y in 0..want_h {
         let y0 = (y as usize * src_h as usize) / want_h as usize;
@@ -519,7 +520,7 @@ fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(
                 for sx in x0..x1.min(src_w as usize) {
                     let at = (row + sx) * 4;
                     for (channel, total) in sum.iter_mut().enumerate() {
-                        *total += image.pixels[at + channel] as u32;
+                        *total += src[at + channel] as u32;
                     }
                     n += 1;
                 }
@@ -533,12 +534,62 @@ fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(
             }
         }
     }
+    Some(out)
+}
+
+fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(u32, u32, Vec<u8>)> {
+    let want_w = (rect.width.abs() * raster_scale).ceil().max(1.0) as u32;
+    let want_h = (rect.height.abs() * raster_scale).ceil().max(1.0) as u32;
+    let (src_w, src_h) = (image.width, image.height);
+    // Never an enlargement, and not for a saving too small to pay for the
+    // work. The threshold was four times the pixels, which sounds harmless
+    // and is not: a full-page scan drawn at nine hundred pixels wide is only
+    // 3.6 times its drawn size, so it was sent whole, blew the inline bound,
+    // and the host drew an empty frame where the page should be. Anything
+    // past a half again is worth sampling -- it is the difference between
+    // fifteen megabytes and four.
+    if src_w <= want_w
+        || src_h <= want_h
+        || (src_w as u64 * src_h as u64) * 2 <= (want_w as u64 * want_h as u64) * 3
+    {
+        return None;
+    }
+    let out = sample_rgba(image.pixels, src_w, src_h, want_w, want_h)?;
     Some((want_w, want_h, out))
 }
 
 /// A short content hash, so identical pixels are sent once.
+/// A short key standing for these pixels, so the host decodes them once.
+///
+/// A glyph mask is a few hundred bytes and is hashed whole. A page image is
+/// megabytes, and hashing it whole costs about twenty milliseconds -- on every
+/// frame, since a recording is rebuilt each time and the key is how the
+/// painter knows the host already has the picture. That is a fifth of a
+/// scroll's budget spent proving something we already knew.
+///
+/// So a large buffer is hashed by its length together with its head, its tail
+/// and a stride through the middle. This is cache identity, not integrity:
+/// the cost of a collision is a stale picture, not a wrong document, and the
+/// same length with matching head, tail and sample is not something two
+/// different renderings of a page produce by accident.
 fn content_key(pixels: &[u8]) -> String {
-    let digest = agenticpdf::adf::sha256::sha256(pixels);
+    const WHOLE: usize = 64 * 1024;
+    if pixels.len() <= WHOLE {
+        let digest = agenticpdf::adf::sha256::sha256(pixels);
+        return agenticpdf::adf::sha256::hex(&digest[..8]);
+    }
+    let mut probe: Vec<u8> = Vec::with_capacity(48 * 1024);
+    probe.extend_from_slice(&(pixels.len() as u64).to_le_bytes());
+    probe.extend_from_slice(&pixels[..8 * 1024]);
+    probe.extend_from_slice(&pixels[pixels.len() - 8 * 1024..]);
+    // An odd stride so a run of identical rows cannot align with it.
+    let stride = (pixels.len() / 16_384).max(1) | 1;
+    let mut at = 0usize;
+    while at < pixels.len() {
+        probe.push(pixels[at]);
+        at += stride;
+    }
+    let digest = agenticpdf::adf::sha256::sha256(&probe);
     agenticpdf::adf::sha256::hex(&digest[..8])
 }
 
@@ -1705,7 +1756,7 @@ mod page_image {
         let area = Rect::new(0.0, 0.0, width as f32, height as f32);
 
         let mut painter = ImagePainter::new(width, height);
-        let textures = session.textures();
+        let textures = session.textures(width as usize * height as usize);
         paint_page(
             &mut painter,
             &list,

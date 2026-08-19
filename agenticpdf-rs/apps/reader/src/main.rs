@@ -408,7 +408,9 @@ impl App {
                         .with_property("page", serde_json::json!(session.page()))
                         .with_property("ops", serde_json::json!(list.ops.len())),
                 );
-                let textures = session.textures();
+                // Only as many pixels as the page area can show.
+                let budget = (area.width as f64 * area.height as f64).max(1.0) as usize;
+                let textures = session.textures(budget);
                 canvas::paint_page(
                     frame.painter(),
                     &list,

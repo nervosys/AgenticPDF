@@ -36,6 +36,10 @@ pub struct Hit {
 }
 
 /// An open document and everything the app knows about it.
+/// A page together with the pixel budget it was decoded for: the same page
+/// shown in a bigger window is a different set of textures.
+type TextureKey = (usize, usize);
+
 pub struct Session {
     document: Document,
     /// The document's own embedded fonts, so text is drawn with the glyphs
@@ -59,7 +63,7 @@ pub struct Session {
     /// reader unusable on exactly the documents that need it most. A mutex
     /// rather than a cell because the mobile shells keep the session in a
     /// `static` and so require `Send`.
-    textures: Mutex<HashMap<usize, Arc<Vec<crate::canvas::Texture>>>>,
+    textures: Mutex<HashMap<TextureKey, Arc<Vec<crate::canvas::Texture>>>>,
 }
 
 impl Session {
@@ -171,32 +175,67 @@ impl Session {
     /// codec we cannot read -- JPEG 2000, or a progressive JPEG -- where the
     /// painter draws the frame instead. A page that is one big photograph is
     /// then a page with a box on it, which is at least honest.
-    pub fn textures(&self) -> Arc<Vec<crate::canvas::Texture>> {
-        let page = self.page;
+    pub fn textures(&self, budget_pixels: usize) -> Arc<Vec<crate::canvas::Texture>> {
+        // Bucketed so a window resized by a pixel does not decode the page
+        // again, and so the key is stable while a user drags a corner. Round
+        // *down*: rounding up hands the painter more pixels than the view can
+        // show, and it samples them away again on every frame.
+        let wanted = budget_pixels.max(1 << 16);
+        let budget = 1usize << (usize::BITS - 1 - wanted.leading_zeros()) as usize;
+        let key = (self.page, budget);
         if let Ok(cache) = self.textures.lock()
-            && let Some(hit) = cache.get(&page)
+            && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
         let decoded: Vec<crate::canvas::Texture> =
-            agenticpdf::engine::extract_page_textures(&self.source, page)
+            agenticpdf::engine::extract_page_textures(&self.source, self.page)
                 .unwrap_or_default()
                 .into_iter()
-                .map(|t| crate::canvas::Texture {
-                    name: t.name,
-                    width: t.width,
-                    height: t.height,
-                    rgba: t.rgba,
+                .map(|t| {
+                    // Sampled down to what the view can show, once, here.
+                    // A scanned page is four megapixels; a window shows one.
+                    // Keeping the other three costs eleven megabytes of
+                    // memory per page and, when the surface is a recording,
+                    // a fresh box filter over all of them on every frame.
+                    let pixels = t.width as usize * t.height as usize;
+                    if pixels > budget && pixels > 0 {
+                        let scale = (budget as f64 / pixels as f64).sqrt();
+                        let w = ((t.width as f64 * scale) as u32).max(1);
+                        let h = ((t.height as f64 * scale) as u32).max(1);
+                        if let Some(rgba) =
+                            crate::canvas::sample_rgba(&t.rgba, t.width, t.height, w, h)
+                        {
+                            return crate::canvas::Texture {
+                                name: t.name,
+                                width: w,
+                                height: h,
+                                rgba,
+                            };
+                        }
+                    }
+                    crate::canvas::Texture {
+                        name: t.name,
+                        width: t.width,
+                        height: t.height,
+                        rgba: t.rgba,
+                    }
                 })
                 .collect();
         let shared = Arc::new(decoded);
         if let Ok(mut cache) = self.textures.lock() {
-            // Bounded: a long document read end to end would otherwise hold
-            // every page it has ever shown.
-            if cache.len() > 8 {
+            // Bounded by weight rather than by page count: eight pages of a
+            // scanned document is a hundred megabytes, and eight pages of a
+            // text document is nothing.
+            let held: usize = cache
+                .values()
+                .flat_map(|v| v.iter())
+                .map(|t| t.rgba.len())
+                .sum();
+            if held > 64 << 20 {
                 cache.clear();
             }
-            cache.insert(page, shared.clone());
+            cache.insert(key, shared.clone());
         }
         shared
     }
