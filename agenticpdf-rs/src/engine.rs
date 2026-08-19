@@ -2012,7 +2012,7 @@ fn run_content(
     let mut pt = [0.0f64, 0.0];
 
     let mut stack: Vec<Token> = Vec::new();
-    let mut lex = ContentLexer::new(&content);
+    let mut lex = ContentLexer::new(content);
 
     let close_cur = |subpaths: &mut Vec<Vec<[f64; 2]>>, cur: &mut Vec<[f64; 2]>| {
         if cur.len() > 1 {
@@ -4008,69 +4008,166 @@ fn parse_codespace(data: &[u8]) -> Vec<(u32, u32, u8)> {
     out
 }
 
-/// Parse a ToUnicode CMap: bfchar and bfrange sections.
+/// Parse a ToUnicode CMap: `bfchar` and `bfrange` sections.
+///
+/// Read as a token stream rather than line by line. Producers pack several
+/// pairs onto one line, and reading one pair per line silently dropped the
+/// rest: a document whose subset font packs two letters into each two-byte
+/// code lost most of its map, and with it whole runs of text -- a page title
+/// and half a footer, gone from the render and from extraction alike, with no
+/// error anywhere.
 fn parse_tounicode(data: &[u8], map: &mut HashMap<u32, String>) {
     let text = String::from_utf8_lossy(data);
     let bytes = text.as_bytes();
 
-    // bfchar
-    let mut search_from = 0;
-    while let Some(rel) = find_sub(&bytes[search_from..], b"beginbfchar") {
-        let start = search_from + rel + b"beginbfchar".len();
+    // `<src> <dst>` pairs, however they are laid out.
+    let mut from = 0;
+    while let Some(rel) = find_sub(&bytes[from..], b"beginbfchar") {
+        let start = from + rel + b"beginbfchar".len();
         let end = find_sub(&bytes[start..], b"endbfchar")
             .map(|p| start + p)
             .unwrap_or(bytes.len());
-        let section = &text[start..end];
-        for line in section.lines() {
-            let toks = tokenize_cmap(line);
-            if toks.len() >= 2
-                && let (Some(code), Some(dst)) =
-                    (hex_to_u32(&toks[0]), Some(hex_to_string(&toks[1])))
+        let toks = tokenize_cmap(&text[start..end]);
+        for pair in toks.chunks(2) {
+            if let [src, dst] = pair
+                && let Some(code) = hex_to_u32(src)
             {
-                map.insert(code, dst);
+                map.insert(code, hex_to_string(dst));
             }
         }
-        search_from = end + b"endbfchar".len();
-        if search_from >= bytes.len() {
+        from = end + b"endbfchar".len();
+        if from >= bytes.len() {
             break;
         }
     }
 
-    // bfrange
-    let mut search_from = 0;
-    while let Some(rel) = find_sub(&bytes[search_from..], b"beginbfrange") {
-        let start = search_from + rel + b"beginbfrange".len();
+    // `<lo> <hi> <dst>`, or `<lo> <hi> [ <d0> <d1> ... ]` naming each code.
+    let mut from = 0;
+    while let Some(rel) = find_sub(&bytes[from..], b"beginbfrange") {
+        let start = from + rel + b"beginbfrange".len();
         let end = find_sub(&bytes[start..], b"endbfrange")
             .map(|p| start + p)
             .unwrap_or(bytes.len());
-        let section = &text[start..end];
-        for line in section.lines() {
-            let toks = tokenize_cmap(line);
-            if toks.len() >= 3 {
-                let lo = hex_to_u32(&toks[0]);
-                let hi = hex_to_u32(&toks[1]);
-                if let (Some(lo), Some(hi)) = (lo, hi) {
-                    if toks[2].starts_with('[') {
-                        // array form handled separately below; skip simple path
-                    } else if let Some(base) = hex_to_u32(&toks[2]) {
-                        let count = hi.saturating_sub(lo);
-                        for k in 0..=count.min(65535) {
-                            if let Some(c) = char::from_u32(base + k) {
-                                map.insert(lo + k, c.to_string());
-                            }
-                        }
+        let toks = tokenize_cmap(&text[start..end]);
+        let mut i = 0;
+        while i + 2 < toks.len() {
+            let (Some(lo), Some(hi)) = (hex_to_u32(&toks[i]), hex_to_u32(&toks[i + 1])) else {
+                i += 1;
+                continue;
+            };
+            if hi < lo || hi - lo > 65_535 {
+                i += 3;
+                continue;
+            }
+            if toks[i + 2] == "[" {
+                let mut code = lo;
+                let mut j = i + 3;
+                while j < toks.len() && toks[j] != "]" {
+                    if code <= hi {
+                        map.insert(code, hex_to_string(&toks[j]));
                     }
+                    code += 1;
+                    j += 1;
                 }
+                i = j + 1;
+            } else {
+                let base = hex_to_string(&toks[i + 2]);
+                for k in 0..=(hi - lo) {
+                    // Consecutive codes take consecutive destinations, and it
+                    // is the last unit that counts up: a range mapping to
+                    // "ffi" walks the third letter, not the first.
+                    let mut chars: Vec<char> = base.chars().collect();
+                    if let Some(last) = chars.last_mut()
+                        && let Some(next) = char::from_u32(*last as u32 + k)
+                    {
+                        *last = next;
+                    } else {
+                        break;
+                    }
+                    map.insert(lo + k, chars.into_iter().collect());
+                }
+                i += 3;
             }
         }
-        search_from = end + b"endbfrange".len();
-        if search_from >= bytes.len() {
+        from = end + b"endbfrange".len();
+        if from >= bytes.len() {
             break;
         }
     }
 }
 
-/// Split a CMap line into `<...>` / `[...]` / bare tokens.
+#[cfg(test)]
+mod tounicode {
+    use std::collections::HashMap;
+
+    /// Producers pack several pairs onto one line. Reading a pair per line
+    /// kept the first and silently dropped the rest, which deletes text from
+    /// the page: one document's subset font packs two letters into each
+    /// two-byte code, and losing most of the map lost a page title and half a
+    /// footer, from the render and from extraction alike.
+    #[test]
+    fn every_pair_on_a_line_is_read() {
+        let cmap = b"begincmap
+4 beginbfchar
+<0041> <0041> <0042> <0042> <414E> <0041004E> <5343> <00530043>
+endbfchar
+endcmap";
+        let mut map = HashMap::new();
+        super::parse_tounicode(cmap, &mut map);
+        assert_eq!(map.get(&0x41).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&0x42).map(String::as_str), Some("B"));
+        // A code standing for two letters at once.
+        assert_eq!(map.get(&0x414E).map(String::as_str), Some("AN"));
+        assert_eq!(map.get(&0x5343).map(String::as_str), Some("SC"));
+    }
+
+    /// A range names consecutive destinations from a base.
+    #[test]
+    fn a_range_counts_up_from_its_base() {
+        let cmap = b"begincmap
+1 beginbfrange
+<0003> <0005> <0041>
+endbfrange
+endcmap";
+        let mut map = HashMap::new();
+        super::parse_tounicode(cmap, &mut map);
+        assert_eq!(map.get(&3).map(String::as_str), Some("A"));
+        assert_eq!(map.get(&4).map(String::as_str), Some("B"));
+        assert_eq!(map.get(&5).map(String::as_str), Some("C"));
+    }
+
+    /// The array form names each code in the range separately, and was
+    /// previously skipped outright.
+    #[test]
+    fn a_range_may_name_each_destination() {
+        let cmap = b"begincmap
+1 beginbfrange
+<0010> <0012> [<0058> <0059005A> <005B>]
+endbfrange
+endcmap";
+        let mut map = HashMap::new();
+        super::parse_tounicode(cmap, &mut map);
+        assert_eq!(map.get(&0x10).map(String::as_str), Some("X"));
+        assert_eq!(map.get(&0x11).map(String::as_str), Some("YZ"));
+        assert_eq!(map.get(&0x12).map(String::as_str), Some("["));
+    }
+
+    /// A malformed map must not hang or panic: these come from documents
+    /// nobody vouched for.
+    #[test]
+    fn damage_is_survivable() {
+        for cmap in [
+            &b"beginbfchar <0041>"[..],
+            &b"beginbfrange <0005> <0001> <0041> endbfrange"[..],
+            &b"beginbfrange <0000> <FFFFFFFF> <0041> endbfrange"[..],
+            &b"beginbfrange <0010> <0012> [ endbfrange"[..],
+        ] {
+            let mut map = HashMap::new();
+            super::parse_tounicode(cmap, &mut map);
+        }
+    }
+}
+
 fn tokenize_cmap(line: &str) -> Vec<String> {
     let mut toks = Vec::new();
     let mut chars = line.chars().peekable();
@@ -4333,7 +4430,7 @@ fn read_content(
     // Operand stack of content-stream tokens.
     let mut stack: Vec<Token> = Vec::new();
 
-    let mut lex = ContentLexer::new(&content);
+    let mut lex = ContentLexer::new(content);
     while let Some(tok) = lex.next_token() {
         match tok {
             Token::Op(op) => {
