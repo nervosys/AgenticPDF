@@ -2791,6 +2791,45 @@ pub struct PageTexture {
     pub rgba: Vec<u8>,
 }
 
+/// Gather the image XObjects a resource dictionary can reach, following forms.
+///
+/// Outer names win: where a form gives a different image the same name as the
+/// page does, the page's is the one the page's own operators mean.
+fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, depth: usize) {
+    if depth > MAX_FORM_DEPTH {
+        return;
+    }
+    let Some(xobjects) = doc
+        .get(resources, "XObject")
+        .and_then(|o| o.as_dict().cloned())
+    else {
+        return;
+    };
+    for (name, entry) in xobjects.iter() {
+        let resolved = doc.resolve(entry);
+        let Object::Stream(d, _) = &resolved else {
+            continue;
+        };
+        match doc
+            .get(d, "Subtype")
+            .and_then(|o| o.as_name().map(String::from))
+            .as_deref()
+        {
+            Some("Image") => {
+                if !out.contains_key(name) {
+                    out.insert(name.clone(), entry.clone());
+                }
+            }
+            Some("Form") => {
+                if let Some(inner) = doc.get(d, "Resources").and_then(|o| o.as_dict().cloned()) {
+                    collect_image_xobjects(doc, &inner, out, depth + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Decode every image a page draws, by resource name.
 pub fn extract_page_textures(
     data: &[u8],
@@ -2820,12 +2859,16 @@ pub fn extract_page_textures(
     let Some(pd) = page_dicts.get(page_number.saturating_sub(1)) else {
         return Ok(Vec::new());
     };
-    let xobjects = doc
+    let resources = doc
         .get(pd, "Resources")
         .and_then(|o| o.as_dict().cloned())
-        .and_then(|r| doc.get(&r, "XObject"))
-        .and_then(|o| o.as_dict().cloned())
         .unwrap_or_default();
+    // A form's images are drawn under the form's own names, so they have to be
+    // collected the way the interpreter reaches them. Without this a page that
+    // wraps its artwork in a form draws an op naming an image nobody has, and
+    // a photograph the size of the page simply does not appear.
+    let mut xobjects = Dict::new();
+    collect_image_xobjects(&doc, &resources, &mut xobjects, 0);
 
     let mut out = Vec::new();
     for (name, obj) in xobjects.iter() {
@@ -5933,6 +5976,82 @@ mod text_state {
             ],
             "the face from before `q` should be back"
         );
+    }
+
+    /// An image inside a form is still an image on the page.
+    ///
+    /// The textures are gathered by name from the page's resources, and a
+    /// form brings its own; without following them a page that wraps its
+    /// artwork in a form draws an operator naming an image nobody has, and a
+    /// photograph the size of the page simply does not appear.
+    #[test]
+    fn an_image_inside_a_form_is_found() {
+        let pdf = form_document(
+            "/Fm0 Do",
+            "/BBox [0 0 200 100]              /Resources << /XObject << /Im0 7 0 R >> >>",
+            "q 100 0 0 50 10 10 cm /Im0 Do Q",
+        );
+        // The form names an image the page never mentions.
+        let pdf = with_image(&pdf);
+        let textures = super::extract_page_textures(&pdf, 1).expect("textures");
+        assert!(
+            textures.iter().any(|t| t.name == "Im0"),
+            "the form's image should be collected: {:?}",
+            textures.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Append a tiny image as object 7 and repair the cross-reference table.
+    fn with_image(pdf: &[u8]) -> Vec<u8> {
+        let text = String::from_utf8_lossy(pdf).into_owned();
+        let body = "<< /Type /XObject /Subtype /Image /Width 2 /Height 2                      /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>
+                    stream
+ @ÿ
+endstream";
+        let xref_at = text.rfind("xref").expect("an xref");
+        let mut out = pdf[..xref_at].to_vec();
+        let offset = out.len();
+        out.extend_from_slice(format!("7 0 obj
+{body}
+endobj
+").as_bytes());
+        let start = out.len();
+        // Rebuild the table with the extra entry.
+        let mut offsets: Vec<usize> = Vec::new();
+        let mut at = 0usize;
+        for number in 1..=7 {
+            let needle = format!("
+{number} 0 obj");
+            match text[at..].find(&needle) {
+                Some(found) => {
+                    offsets.push(at + found + 1);
+                    at += found + 1;
+                }
+                None => offsets.push(offset),
+            }
+        }
+        out.extend_from_slice(format!("xref
+0 {}
+", offsets.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f 
+");
+        for at in &offsets {
+            out.extend_from_slice(format!("{at:010} 00000 n 
+").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer
+<< /Size {} /Root 1 0 R >>
+startxref
+{start}
+%%EOF
+",
+                offsets.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
     }
 
     /// A form XObject is a content stream and must be run, not drawn.

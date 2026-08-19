@@ -41,12 +41,29 @@ impl<'a> PdfParser<'a> {
             return Err(PdfError::StreamError("stream too large".into()));
         }
 
-        let decompressed = decompress_to_vec_zlib(data)
-            .or_else(|_| {
+        let decompressed = match decompress_to_vec_zlib(data) {
+            Ok(out) => out,
+            Err(zlib) => match miniz_oxide::inflate::decompress_to_vec(data) {
                 // Some producers omit the zlib header; try raw inflate.
-                miniz_oxide::inflate::decompress_to_vec(data)
-            })
-            .map_err(|e| PdfError::DecompressError(format!("{:?}", e)))?;
+                Ok(out) => out,
+                Err(raw) => {
+                    // Damaged part way through. Every reader keeps what came
+                    // out before the fault rather than dropping the stream:
+                    // half a page of content is a page with a gap in it, and
+                    // none is a blank sheet. One document in the test corpus
+                    // is exactly this -- a form whose entire printed template
+                    // lives in a stream that stops early.
+                    let salvaged = match zlib.output.len() >= raw.output.len() {
+                        true => zlib.output,
+                        false => raw.output,
+                    };
+                    if salvaged.is_empty() {
+                        return Err(PdfError::DecompressError(format!("{:?}", zlib.status)));
+                    }
+                    salvaged
+                }
+            },
+        };
 
         match predictor {
             Some(p) if p >= 10 => {
@@ -118,6 +135,33 @@ impl<'a> PdfParser<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A Flate stream that stops part way keeps what it produced.
+    ///
+    /// Dropping it instead loses whole pages: one document in the corpus
+    /// keeps its entire printed form template in a stream that ends early,
+    /// and without the salvage the page renders as a handful of signatures
+    /// floating on white.
+    #[test]
+    fn a_truncated_flate_stream_keeps_what_it_had() {
+        let body = b"BT /F1 12 Tf 10 10 Td (recoverable) Tj ET 0 0 100 100 re f";
+        let whole = miniz_oxide::deflate::compress_to_vec_zlib(body, 6);
+        // Cut the tail off, as a damaged or truncated file has.
+        let cut = &whole[..whole.len() * 3 / 4];
+        let out = PdfParser::decompress_stream(cut, None, None);
+        let out = out.expect("a truncated stream should still yield its start");
+        assert!(!out.is_empty(), "something should survive");
+        assert!(
+            body.starts_with(&out[..out.len().min(16)]),
+            "what survives should be the start of the stream"
+        );
+    }
+
+    /// Nothing recoverable is still an error, not an empty success.
+    #[test]
+    fn rubbish_is_still_an_error() {
+        assert!(PdfParser::decompress_stream(b"not deflate at all", None, None).is_err());
+    }
     use super::*;
 
     #[test]
