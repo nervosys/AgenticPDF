@@ -2472,7 +2472,7 @@ fn run_content(
                                 y: bottom,
                                 w: right - left,
                                 h: top - bottom,
-                                name: name.clone(),
+                                name: image_key_in(doc, resources, name),
                             });
                         }
                     }
@@ -3052,6 +3052,29 @@ pub struct PageTexture {
 ///
 /// Outer names win: where a form gives a different image the same name as the
 /// page does, the page's is the one the page's own operators mean.
+/// A key for an image resource that is unique across the document.
+///
+/// A resource name is only unique inside one resource dictionary. A page and a
+/// form it draws may each call a different picture `/Im0`, and keying the
+/// texture table by name alone hands one of them the other's image -- which is
+/// how a page banner ends up wearing a photograph from the middle of the page.
+/// The object number is unique across the file, so it is preferred; a picture
+/// written inline in the resource dictionary has no number and keeps its name.
+fn image_key(entry: &Object, name: &str) -> String {
+    match entry.as_ref() {
+        Some((num, generation)) => format!("{num} {generation} R"),
+        None => name.to_string(),
+    }
+}
+
+/// The same key, looked up by the name a `Do` operator gives.
+fn image_key_in(doc: &Document, resources: &Dict, name: &str) -> String {
+    doc.get(resources, "XObject")
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|xobjects| xobjects.get(name).map(|entry| image_key(entry, name)))
+        .unwrap_or_else(|| name.to_string())
+}
+
 fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, depth: usize) {
     if depth > MAX_FORM_DEPTH {
         return;
@@ -3073,8 +3096,9 @@ fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, dept
             .as_deref()
         {
             Some("Image") => {
-                if !out.contains_key(name) {
-                    out.insert(name.clone(), entry.clone());
+                let key = image_key(entry, name);
+                if !out.contains_key(&key) {
+                    out.insert(key, entry.clone());
                 }
             }
             Some("Form") => {
@@ -6274,10 +6298,45 @@ mod text_state {
         // The form names an image the page never mentions.
         let pdf = with_image(&pdf);
         let textures = super::extract_page_textures(&pdf, 1).expect("textures");
+        // The contract is that every name the display list draws resolves to a
+        // texture, not that the key is spelled any particular way -- the key is
+        // private between the two and has to be unique across the document,
+        // which a resource name is not.
+        let list = super::extract_display_list(&pdf, 1).expect("geometry");
+        let drawn: Vec<&String> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Image { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawn.len(), 1, "the form draws one image");
         assert!(
-            textures.iter().any(|t| t.name == "Im0"),
-            "the form's image should be collected: {:?}",
+            textures.iter().any(|t| &&t.name == drawn.first().unwrap()),
+            "the form's image should be collected: drew {drawn:?}, have {:?}",
             textures.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Two pictures both called `/Im0` are two pictures.
+    ///
+    /// A page and a form it draws each have their own resource dictionary, and
+    /// producers reuse the short names freely. Keyed by name, the second one
+    /// collected is dropped and whichever operator asks gets the first -- so a
+    /// banner is drawn with a photograph from further down the page.
+    #[test]
+    fn images_with_the_same_name_keep_separate_keys() {
+        let page_im0 = super::Object::Ref(7, 0);
+        let form_im0 = super::Object::Ref(11, 0);
+        assert_ne!(
+            super::image_key(&page_im0, "Im0"),
+            super::image_key(&form_im0, "Im0")
+        );
+        // The same picture reached by either name is still one picture.
+        assert_eq!(
+            super::image_key(&page_im0, "Im0"),
+            super::image_key(&page_im0, "X")
         );
     }
 
