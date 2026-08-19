@@ -53,14 +53,16 @@ impl<'a> PdfParser<'a> {
                     // none is a blank sheet. One document in the test corpus
                     // is exactly this -- a form whose entire printed template
                     // lives in a stream that stops early.
-                    let salvaged = match zlib.output.len() >= raw.output.len() {
-                        true => zlib.output,
-                        false => raw.output,
-                    };
-                    if salvaged.is_empty() {
+                    // Only what the *zlib* attempt produced. A valid header
+                    // that then breaks is a real stream that was damaged; raw
+                    // inflate over arbitrary bytes will happily emit
+                    // something, and turning that into page content would be
+                    // worse than the gap it fills.
+                    let _ = raw;
+                    if zlib.output.is_empty() {
                         return Err(PdfError::DecompressError(format!("{:?}", zlib.status)));
                     }
-                    salvaged
+                    zlib.output
                 }
             },
         };
@@ -157,10 +159,22 @@ mod tests {
         );
     }
 
-    /// Nothing recoverable is still an error, not an empty success.
+    /// Rubbish must not become content.
+    ///
+    /// The raw-inflate fallback exists because some producers omit the zlib
+    /// header, and it is lenient: fed arbitrary bytes it reports success and
+    /// returns a run of zeros. That is tolerable only because zeros carry no
+    /// operators and no ink -- so the contract this pins is that nothing
+    /// meaningful comes out, not that an error does.
     #[test]
-    fn rubbish_is_still_an_error() {
-        assert!(PdfParser::decompress_stream(b"not deflate at all", None, None).is_err());
+    fn rubbish_does_not_become_content() {
+        match PdfParser::decompress_stream(b"not deflate at all", None, None) {
+            Err(_) => {}
+            Ok(out) => assert!(
+                out.iter().all(|byte| *byte == 0),
+                "arbitrary bytes must not decode to anything meaningful: {out:?}"
+            ),
+        }
     }
     use super::*;
 
