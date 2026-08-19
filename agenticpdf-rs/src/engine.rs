@@ -2975,7 +2975,30 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
         let bytes = decode_stream(d, raw).ok()?;
         return Some(("jpeg".into(), w as u32, h as u32, bytes));
     }
-    let decoded = decode_stream(d, raw).ok()?;
+    let mut decoded = decode_stream(d, raw).ok()?;
+    // A fax image arrives run-length coded. Decoding it here turns it into an
+    // ordinary one-bit grey image, which the rest of this function already
+    // knows how to paint.
+    if filter.contains("CCITTFaxDecode") {
+        let params = extract_ccitt(doc, d)?;
+        let byte_align = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
+            Some(Object::Dict(p)) => matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true))),
+            Some(Object::Array(a)) => a.iter().any(|o| match doc.resolve(o) {
+                Object::Dict(p) => matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true))),
+                _ => false,
+            }),
+            _ => false,
+        };
+        decoded = crate::image::ccitt::decode(
+            &decoded,
+            &crate::image::ccitt::Params {
+                k: params.k,
+                columns: params.columns as usize,
+                rows: if params.rows == 0 { h } else { params.rows as usize },
+                byte_align,
+            },
+        )?;
+    }
     let bpc = doc
         .get(d, "BitsPerComponent")
         .and_then(|o| o.as_int())
