@@ -1849,14 +1849,20 @@ fn named_space(stack: &[Token], spaces: &HashMap<String, ColorKind>) -> ColorKin
 /// Colour rides along with the transform: a form or an annotation that sets
 /// its own colour inside `q`/`Q` must not leave it set for the rest of the
 /// page.
-#[derive(Debug, Clone, Copy)]
-struct GState {
+#[derive(Clone)]
+struct GState<'a> {
     ctm: Matrix,
     text: TextState,
     fill: [f64; 4],
     stroke: [f64; 4],
     fill_space: ColorKind,
     stroke_space: ColorKind,
+    /// The font is text state, and text state is graphics state: `Tf` inside
+    /// `q`/`Q` lasts only until the `Q`.
+    font: Option<&'a Font>,
+    font_name: String,
+    font_size: f64,
+    leading: f64,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -1984,7 +1990,7 @@ fn run_content(
     // The text rendering mode rides along with the transform: it is graphics
     // state, so `q`/`Q` must restore it. Otherwise an invisible run inside a
     // saved state leaks out and blanks the real text that follows.
-    let mut ctm_stack: Vec<GState> = Vec::new();
+    let mut ctm_stack: Vec<GState<'_>> = Vec::new();
     let mut ctm: Matrix = start_ctm;
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = tm;
@@ -2034,6 +2040,10 @@ fn run_content(
                             stroke,
                             fill_space,
                             stroke_space,
+                            font: cur_font,
+                            font_name: cur_font_name.clone(),
+                            font_size,
+                            leading,
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -2045,6 +2055,16 @@ fn run_content(
                             stroke = state.stroke;
                             fill_space = state.fill_space;
                             stroke_space = state.stroke_space;
+                            // A `Tf` inside the saved state does not outlive
+                            // it. Documents rely on this: one sets a symbol
+                            // font for a separator, restores, and shows the
+                            // next words with no `Tf` at all -- decoded with
+                            // the symbol font, those words are gibberish or
+                            // nothing.
+                            cur_font = state.font;
+                            cur_font_name = state.font_name;
+                            font_size = state.font_size;
+                            leading = state.leading;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -4413,7 +4433,11 @@ fn read_content(
     let mut placed: Vec<(String, [f64; 4])> = Vec::new();
 
     // Graphics + text state.
-    let mut ctm_stack: Vec<Matrix> = Vec::new();
+    // The font travels with the transform: `Tf` inside `q`/`Q` lasts only
+    // until the `Q`, and text shown after it uses whatever was in force
+    // before. Reading it with the wrong font yields gibberish or nothing.
+    #[allow(clippy::type_complexity)]
+    let mut ctm_stack: Vec<(Matrix, Option<&Font>, String, f64, f64)> = Vec::new();
     let mut ctm: Matrix = start_ctm;
     let mut tm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut tlm: Matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -4435,10 +4459,20 @@ fn read_content(
         match tok {
             Token::Op(op) => {
                 match op.as_str() {
-                    "q" => ctm_stack.push(ctm),
+                    "q" => ctm_stack.push((
+                        ctm,
+                        cur_font,
+                        cur_font_name.clone(),
+                        font_size,
+                        leading,
+                    )),
                     "Q" => {
-                        if let Some(m) = ctm_stack.pop() {
+                        if let Some((m, font, name, size, lead)) = ctm_stack.pop() {
                             ctm = m;
+                            cur_font = font;
+                            cur_font_name = name;
+                            font_size = size;
+                            leading = lead;
                         }
                     }
                     "cm" => {
@@ -5819,6 +5853,65 @@ mod text_state {
         );
     }
 
+    /// The font is graphics state: a `Tf` inside `q`/`Q` ends at the `Q`.
+    ///
+    /// Documents rely on it. One sets a symbol font for a separator, restores,
+    /// and shows the next words with no `Tf` at all; read with the symbol
+    /// font, those words decode to nothing and vanish from the page and from
+    /// extraction. A page title and half a footer went that way in one
+    /// document, a bulleted list in another.
+    #[test]
+    fn a_font_set_inside_a_saved_state_does_not_outlive_it() {
+        let pdf = document(
+            "BT /F1 12 Tf 20 150 Td (one) Tj ET              q BT /F1 24 Tf 20 100 Td (two) Tj ET Q              BT 20 50 Td (three) Tj ET",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let sizes: Vec<(String, f64)> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text { text, size, .. } => Some((text.trim().to_string(), *size)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sizes.len(), 3, "three runs: {sizes:?}");
+        assert_eq!(sizes[0].0, "one");
+        assert!((sizes[0].1 - 12.0).abs() < 0.5, "{sizes:?}");
+        assert!((sizes[1].1 - 24.0).abs() < 0.5, "the saved state's own size");
+        // The third run names no font at all and must inherit the first's.
+        assert_eq!(sizes[2].0, "three");
+        assert!(
+            (sizes[2].1 - 12.0).abs() < 0.5,
+            "the size from before `q` should be back: {sizes:?}"
+        );
+
+        // And the face itself, not just its size.
+        let pdf = assemble_with(
+            "BT /F1 12 Tf 20 150 Td (one) Tj ET              q BT /F2 12 Tf 20 100 Td (two) Tj ET Q              BT 20 50 Td (three) Tj ET",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+        );
+        let list = super::extract_display_list(&pdf, 1).expect("page 1");
+        let faces: Vec<String> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                super::RenderOp::Text { font, .. } => Some(font.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            faces,
+            vec![
+                "Helvetica".to_string(),
+                "Courier".to_string(),
+                "Helvetica".to_string()
+            ],
+            "the face from before `q` should be back"
+        );
+    }
+
     /// A form XObject is a content stream and must be run, not drawn.
     ///
     /// A page whose whole content is one form is a real shape -- imposition
@@ -6224,6 +6317,11 @@ startxref
     }
 
     fn assemble(content: &str, page: &[u8], font: &[u8]) -> Vec<u8> {
+        assemble_with(content, page, font, b"")
+    }
+
+    /// As `assemble`, with one more object appended as number 6.
+    fn assemble_with(content: &str, page: &[u8], font: &[u8], extra: &[u8]) -> Vec<u8> {
         let mut pdf: Vec<u8> = Vec::new();
         let mut offsets = vec![0usize];
         pdf.extend_from_slice(b"%PDF-1.4\n");
@@ -6243,6 +6341,9 @@ startxref
             &mut offsets,
             format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).as_bytes(),
         );
+        if !extra.is_empty() {
+            push(&mut pdf, &mut offsets, extra);
+        }
         let xref = pdf.len();
         pdf.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
         pdf.extend_from_slice(b"0000000000 65535 f \n");
