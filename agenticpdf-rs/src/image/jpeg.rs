@@ -987,9 +987,21 @@ mod tests {
             let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
             d(got.0, want.0) < 48 && d(got.1, want.1) < 48 && d(got.2, want.2) < 48
         };
-        assert!(near(at(3, 3), (255, 0, 0)), "top left red, got {:?}", at(3, 3));
-        assert!(near(at(12, 3), (0, 255, 0)), "top right green, got {:?}", at(12, 3));
-        assert!(near(at(3, 12), (0, 0, 255)), "bottom left blue, got {:?}", at(3, 12));
+        assert!(
+            near(at(3, 3), (255, 0, 0)),
+            "top left red, got {:?}",
+            at(3, 3)
+        );
+        assert!(
+            near(at(12, 3), (0, 255, 0)),
+            "top right green, got {:?}",
+            at(12, 3)
+        );
+        assert!(
+            near(at(3, 12), (0, 0, 255)),
+            "bottom left blue, got {:?}",
+            at(3, 12)
+        );
         assert!(
             near(at(12, 12), (255, 255, 255)),
             "bottom right white, got {:?}",

@@ -1841,7 +1841,6 @@ fn color_from_stack(stack: &[Token]) -> [f64; 4] {
     }
 }
 
-
 /// How to read the operands of `sc`/`scn` for the space currently selected.
 ///
 /// Arity alone is not enough. A single number is a grey level in DeviceGray
@@ -1920,7 +1919,6 @@ fn color_in_space(stack: &[Token], space: &Space) -> [f64; 4] {
     color_from_stack(stack)
 }
 
-
 /// The colour spaces a resource dictionary names.
 fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, Space> {
     let mut out = HashMap::new();
@@ -1968,7 +1966,6 @@ fn named_space(stack: &[Token], spaces: &HashMap<String, Space>) -> Space {
         palette: None,
     }
 }
-
 
 /// What `q` saves and `Q` puts back.
 ///
@@ -3172,10 +3169,7 @@ pub fn extract_page_textures(
         // approximation the fill colours use, and for the one-ink and
         // process-ink spaces these documents use it lands on the right side of
         // black and white.
-        let tint = matches!(
-            color_space_name(&doc, d).as_str(),
-            "Separation" | "DeviceN"
-        );
+        let tint = matches!(color_space_name(&doc, d).as_str(), "Separation" | "DeviceN");
         let mut rgba = match format.as_str() {
             "rgba" => bytes,
             "jpeg" => {
@@ -3323,9 +3317,13 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
     if filter.contains("CCITTFaxDecode") {
         let params = extract_ccitt(doc, d)?;
         let byte_align = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
-            Some(Object::Dict(p)) => matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true))),
+            Some(Object::Dict(p)) => {
+                matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true)))
+            }
             Some(Object::Array(a)) => a.iter().any(|o| match doc.resolve(o) {
-                Object::Dict(p) => matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true))),
+                Object::Dict(p) => {
+                    matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true)))
+                }
                 _ => false,
             }),
             _ => false,
@@ -3335,7 +3333,11 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
             &crate::image::ccitt::Params {
                 k: params.k,
                 columns: params.columns as usize,
-                rows: if params.rows == 0 { h } else { params.rows as usize },
+                rows: if params.rows == 0 {
+                    h
+                } else {
+                    params.rows as usize
+                },
                 byte_align,
             },
         )?;
@@ -3720,7 +3722,6 @@ fn rect4(doc: &Document, dict: &Dict, key: &str) -> Option<[f64; 4]> {
         doc.resolve(&a[3]).as_f64()?,
     ])
 }
-
 
 /// The rectangle a reader shows, as `[x0, y0, x1, y1]`.
 ///
@@ -6278,7 +6279,10 @@ mod text_state {
         assert_eq!(sizes.len(), 3, "three runs: {sizes:?}");
         assert_eq!(sizes[0].0, "one");
         assert!((sizes[0].1 - 12.0).abs() < 0.5, "{sizes:?}");
-        assert!((sizes[1].1 - 24.0).abs() < 0.5, "the saved state's own size");
+        assert!(
+            (sizes[1].1 - 24.0).abs() < 0.5,
+            "the saved state's own size"
+        );
         // The third run names no font at all and must inherit the first's.
         assert_eq!(sizes[2].0, "three");
         assert!(
@@ -6381,17 +6385,24 @@ endstream";
         let xref_at = text.rfind("xref").expect("an xref");
         let mut out = pdf[..xref_at].to_vec();
         let offset = out.len();
-        out.extend_from_slice(format!("7 0 obj
+        out.extend_from_slice(
+            format!(
+                "7 0 obj
 {body}
 endobj
-").as_bytes());
+"
+            )
+            .as_bytes(),
+        );
         let start = out.len();
         // Rebuild the table with the extra entry.
         let mut offsets: Vec<usize> = Vec::new();
         let mut at = 0usize;
         for number in 1..=7 {
-            let needle = format!("
-{number} 0 obj");
+            let needle = format!(
+                "
+{number} 0 obj"
+            );
             match text[at..].find(&needle) {
                 Some(found) => {
                     offsets.push(at + found + 1);
@@ -6400,14 +6411,27 @@ endobj
                 None => offsets.push(offset),
             }
         }
-        out.extend_from_slice(format!("xref
+        out.extend_from_slice(
+            format!(
+                "xref
 0 {}
-", offsets.len() + 1).as_bytes());
-        out.extend_from_slice(b"0000000000 65535 f 
-");
+",
+                offsets.len() + 1
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
         for at in &offsets {
-            out.extend_from_slice(format!("{at:010} 00000 n 
-").as_bytes());
+            out.extend_from_slice(
+                format!(
+                    "{at:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
         }
         out.extend_from_slice(
             format!(
@@ -6498,20 +6522,33 @@ startxref
     fn form_document(content: &str, form_dict: &str, form_content: &str) -> Vec<u8> {
         let mut pdf: Vec<u8> = Vec::new();
         let mut offsets = vec![0usize];
-        pdf.extend_from_slice(b"%PDF-1.4
-");
+        pdf.extend_from_slice(
+            b"%PDF-1.4
+",
+        );
         let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
             offsets.push(pdf.len());
             let number = offsets.len() - 1;
-            pdf.extend_from_slice(format!("{number} 0 obj
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{number} 0 obj
+"
+                )
+                .as_bytes(),
+            );
             pdf.extend_from_slice(body);
-            pdf.extend_from_slice(b"
+            pdf.extend_from_slice(
+                b"
 endobj
-");
+",
+            );
         };
         push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
-        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
         push(
             &mut pdf,
             &mut offsets,
@@ -6525,34 +6562,54 @@ endobj
         push(
             &mut pdf,
             &mut offsets,
-            format!("<< /Length {} >>
+            format!(
+                "<< /Length {} >>
 stream
 {content}
-endstream", content.len()).as_bytes(),
+endstream",
+                content.len()
+            )
+            .as_bytes(),
         );
         push(
             &mut pdf,
             &mut offsets,
             {
-                let header =
-                    format!("<< /Type /XObject /Subtype /Form {form_dict} /Length {} >>",
-                            form_content.len());
-                format!("{header}
+                let header = format!(
+                    "<< /Type /XObject /Subtype /Form {form_dict} /Length {} >>",
+                    form_content.len()
+                );
+                format!(
+                    "{header}
 stream
 {form_content}
-endstream")
+endstream"
+                )
             }
             .as_bytes(),
         );
         let xref = pdf.len();
-        pdf.extend_from_slice(format!("xref
+        pdf.extend_from_slice(
+            format!(
+                "xref
 0 {}
-", offsets.len()).as_bytes());
-        pdf.extend_from_slice(b"0000000000 65535 f 
-");
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
         for &offset in &offsets[1..] {
-            pdf.extend_from_slice(format!("{offset:010} 00000 n 
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{offset:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
         }
         pdf.extend_from_slice(
             format!(
@@ -6662,7 +6719,11 @@ startxref
             })
             .expect("a text op");
 
-        assert_eq!(text.chars().count(), 3, "three codes, three slots: {text:?}");
+        assert_eq!(
+            text.chars().count(),
+            3,
+            "three codes, three slots: {text:?}"
+        );
         assert_eq!(codes[1], 12, "the middle slot keeps the document's code");
         assert!(
             (advances[1] - 12.0).abs() < 0.5,
@@ -6753,20 +6814,33 @@ startxref
         let content = format!("{prelude} BT /F1 12 Tf 20 100 Td (Ink) Tj ET");
         let mut pdf: Vec<u8> = Vec::new();
         let mut offsets = vec![0usize];
-        pdf.extend_from_slice(b"%PDF-1.4
-");
+        pdf.extend_from_slice(
+            b"%PDF-1.4
+",
+        );
         let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
             offsets.push(pdf.len());
             let number = offsets.len() - 1;
-            pdf.extend_from_slice(format!("{number} 0 obj
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{number} 0 obj
+"
+                )
+                .as_bytes(),
+            );
             pdf.extend_from_slice(body);
-            pdf.extend_from_slice(b"
+            pdf.extend_from_slice(
+                b"
 endobj
-");
+",
+            );
         };
         push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
-        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
         push(
             &mut pdf,
             &mut offsets,
@@ -6780,10 +6854,14 @@ endobj
         push(
             &mut pdf,
             &mut offsets,
-            format!("<< /Length {} >>
+            format!(
+                "<< /Length {} >>
 stream
 {content}
-endstream", content.len()).as_bytes(),
+endstream",
+                content.len()
+            )
+            .as_bytes(),
         );
         // The tint transform. Never evaluated -- the tint is read as coverage
         // -- but a Separation is malformed without one.
@@ -6793,14 +6871,27 @@ endstream", content.len()).as_bytes(),
             b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 0 0 1] /N 1 >>",
         );
         let xref = pdf.len();
-        pdf.extend_from_slice(format!("xref
+        pdf.extend_from_slice(
+            format!(
+                "xref
 0 {}
-", offsets.len()).as_bytes());
-        pdf.extend_from_slice(b"0000000000 65535 f 
-");
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
         for &offset in &offsets[1..] {
-            pdf.extend_from_slice(format!("{offset:010} 00000 n 
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{offset:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
         }
         pdf.extend_from_slice(
             format!(
@@ -6848,7 +6939,9 @@ startxref
     }
 
     fn build(mode: i64) -> Vec<u8> {
-        document(&format!("BT /F1 12 Tf {mode} Tr 20 100 Td (Hidden words) Tj ET"))
+        document(&format!(
+            "BT /F1 12 Tf {mode} Tr 20 100 Td (Hidden words) Tj ET"
+        ))
     }
 
     fn build_two_runs() -> Vec<u8> {
@@ -6895,13 +6988,21 @@ startxref
             pdf.extend_from_slice(b"\nendobj\n");
         };
         push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
-        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
         push(&mut pdf, &mut offsets, page);
         push(&mut pdf, &mut offsets, font);
         push(
             &mut pdf,
             &mut offsets,
-            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()).as_bytes(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            )
+            .as_bytes(),
         );
         if !extra.is_empty() {
             push(&mut pdf, &mut offsets, extra);

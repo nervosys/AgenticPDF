@@ -537,7 +537,11 @@ pub fn sample_rgba(
     Some(out)
 }
 
-fn fit_to_draw(image: &ImageData<'_>, rect: Rect, raster_scale: f32) -> Option<(u32, u32, Vec<u8>)> {
+fn fit_to_draw(
+    image: &ImageData<'_>,
+    rect: Rect,
+    raster_scale: f32,
+) -> Option<(u32, u32, Vec<u8>)> {
     let want_w = (rect.width.abs() * raster_scale).ceil().max(1.0) as u32;
     let want_h = (rect.height.abs() * raster_scale).ceil().max(1.0) as u32;
     let (src_w, src_h) = (image.width, image.height);
@@ -1613,8 +1617,7 @@ mod render_sweep {
                 glyphs_seen += json.matches(r#""op":"image""#).count();
                 fell_back += json.matches(r#""op":"text""#).count();
 
-                let (measured, stray, worst) =
-                    super::measure_placement(&session, &list, transform);
+                let (measured, stray, worst) = super::measure_placement(&session, &list, transform);
                 measured_seen += measured;
                 stray_seen += stray;
                 worst_seen = worst_seen.max(worst);
@@ -2155,7 +2158,12 @@ mod ligature_probe {
         let mut missing: std::collections::BTreeMap<(String, u32, char), usize> =
             Default::default();
         for op in &list.ops {
-            let RenderOp::Text { text, codes, font, .. } = op else { continue };
+            let RenderOp::Text {
+                text, codes, font, ..
+            } = op
+            else {
+                continue;
+            };
             for (ch, code) in text.chars().zip(codes.iter()) {
                 if ch.is_whitespace() {
                     continue;
@@ -2170,7 +2178,15 @@ mod ligature_probe {
         }
         eprintln!("{} distinct unresolved", missing.len());
         for op in &list.ops {
-            let RenderOp::Text { text, codes, advances, .. } = op else { continue };
+            let RenderOp::Text {
+                text,
+                codes,
+                advances,
+                ..
+            } = op
+            else {
+                continue;
+            };
             if text.contains("cient") || text.contains("erent") {
                 eprintln!("text: {text:?}");
                 eprintln!("codes: {:?}", &codes[..codes.len().min(30)]);

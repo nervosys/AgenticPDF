@@ -228,26 +228,37 @@ mod tests {
         // Object 5 carries the page's content, wrapped under its own key.
         let content = b"BT /F1 24 Tf 20 100 Td (Unlocked) Tj ET";
         let wrapped = crypt.decrypt(5, 0, content);
-        let hex = |bytes: &[u8]| -> String {
-            bytes.iter().map(|b| format!("{b:02x}")).collect()
-        };
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
 
         let mut pdf: Vec<u8> = Vec::new();
         let mut offsets = vec![0usize];
-        pdf.extend_from_slice(b"%PDF-1.4
-");
+        pdf.extend_from_slice(
+            b"%PDF-1.4
+",
+        );
         let push = |pdf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: &[u8]| {
             offsets.push(pdf.len());
             let number = offsets.len() - 1;
-            pdf.extend_from_slice(format!("{number} 0 obj
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{number} 0 obj
+"
+                )
+                .as_bytes(),
+            );
             pdf.extend_from_slice(body);
-            pdf.extend_from_slice(b"
+            pdf.extend_from_slice(
+                b"
 endobj
-");
+",
+            );
         };
         push(&mut pdf, &mut offsets, b"<< /Type /Catalog /Pages 2 0 R >>");
-        push(&mut pdf, &mut offsets, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            &mut pdf,
+            &mut offsets,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
         push(
             &mut pdf,
             &mut offsets,
@@ -258,12 +269,18 @@ endobj
             &mut offsets,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         );
-        let mut stream = format!("<< /Length {} >>
+        let mut stream = format!(
+            "<< /Length {} >>
 stream
-", wrapped.len()).into_bytes();
+",
+            wrapped.len()
+        )
+        .into_bytes();
         stream.extend_from_slice(&wrapped);
-        stream.extend_from_slice(b"
-endstream");
+        stream.extend_from_slice(
+            b"
+endstream",
+        );
         push(&mut pdf, &mut offsets, &stream);
         push(
             &mut pdf,
@@ -277,14 +294,27 @@ endstream");
         );
 
         let xref = pdf.len();
-        pdf.extend_from_slice(format!("xref
+        pdf.extend_from_slice(
+            format!(
+                "xref
 0 {}
-", offsets.len()).as_bytes());
-        pdf.extend_from_slice(b"0000000000 65535 f 
-");
+",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            b"0000000000 65535 f 
+",
+        );
         for offset in &offsets[1..] {
-            pdf.extend_from_slice(format!("{offset:010} 00000 n 
-").as_bytes());
+            pdf.extend_from_slice(
+                format!(
+                    "{offset:010} 00000 n 
+"
+                )
+                .as_bytes(),
+            );
         }
         pdf.extend_from_slice(
             format!(

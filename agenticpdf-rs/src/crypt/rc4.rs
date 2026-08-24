@@ -15,9 +15,7 @@ pub fn apply(key: &[u8], data: &[u8]) -> Vec<u8> {
     }
     let mut j = 0u8;
     for i in 0..256 {
-        j = j
-            .wrapping_add(s[i])
-            .wrapping_add(key[i % key.len()]);
+        j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
         s.swap(i, j as usize);
     }
 

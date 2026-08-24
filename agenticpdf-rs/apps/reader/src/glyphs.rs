@@ -222,7 +222,6 @@ impl FontSet {
         found
     }
 
-
     /// How many mask pixels to rasterise per painter unit.
     ///
     /// Set by the host from its device pixel ratio. Glyphs are placed at the
