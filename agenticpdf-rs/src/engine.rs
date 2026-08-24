@@ -3097,9 +3097,7 @@ fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, dept
         {
             Some("Image") => {
                 let key = image_key(entry, name);
-                if !out.contains_key(&key) {
-                    out.insert(key, entry.clone());
-                }
+                out.entry(key).or_insert_with(|| entry.clone());
             }
             Some("Form") => {
                 if let Some(inner) = doc.get(d, "Resources").and_then(|o| o.as_dict().cloned()) {
@@ -3294,8 +3292,27 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
         return None;
     }
     let filter = filter_names(d);
-    if filter.contains("DCTDecode") || filter.contains("JPXDecode") {
-        // Hand the JPEG/JPX bytes to the browser/decoder unchanged.
+    if filter.contains("JPXDecode") {
+        // JPEG 2000 is the one codec no browser but Safari decodes, so the
+        // bytes have to become pixels here or the page renders blank.
+        let bytes = decode_stream(d, raw).ok()?;
+        let image = crate::image::jpx::decode(&bytes)?;
+        if image.width as usize != w || image.height as usize != h {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for p in image.data.chunks_exact(image.components) {
+            if image.components >= 3 {
+                rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
+            } else {
+                rgba.extend_from_slice(&[p[0], p[0], p[0], 255]);
+            }
+        }
+        apply_smask(doc, d, &mut rgba, w, h);
+        return Some(("rgba".into(), w as u32, h as u32, rgba));
+    }
+    if filter.contains("DCTDecode") {
+        // Hand the JPEG bytes to the browser, which decodes them natively.
         let bytes = decode_stream(d, raw).ok()?;
         return Some(("jpeg".into(), w as u32, h as u32, bytes));
     }
@@ -3375,13 +3392,6 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
     };
     let (sd, sraw) = smask;
     let sfilter = filter_names(&sd);
-    // JPEG 2000 masks have no in-engine decoder; a JPEG-coded one does, and
-    // producers use it freely -- a photograph cut out of its background
-    // usually carries a photographic mask. Dropping those masks paints the
-    // whole rectangle, background included.
-    if sfilter.contains("JPXDecode") {
-        return;
-    }
     let sw = doc.get(&sd, "Width").and_then(|o| o.as_int()).unwrap_or(0) as usize;
     let sh = doc.get(&sd, "Height").and_then(|o| o.as_int()).unwrap_or(0) as usize;
     let sbpc = doc
@@ -3395,8 +3405,9 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         Ok(b) => b,
         Err(_) => return,
     };
-    // A JPEG mask arrives still coded -- `decode_stream` undoes the wrappers
-    // and leaves the codec alone -- so it decodes here, to one byte a pixel.
+    // A mask coded as JPEG or JPEG 2000 arrives still coded -- `decode_stream`
+    // undoes the wrappers and leaves the codec alone -- so it decodes here,
+    // down to one byte a pixel.
     let (samples, max) = if sfilter.contains("DCTDecode") {
         let Some(image) = crate::image::jpeg::decode(&decoded) else {
             return;
@@ -3407,6 +3418,21 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         // The mask is grey: every channel of the decoded pixel is the same.
         (
             image.rgb.chunks_exact(3).map(|p| p[0] as u32).collect(),
+            255u32,
+        )
+    } else if sfilter.contains("JPXDecode") {
+        let Some(image) = crate::image::jpx::decode(&decoded) else {
+            return;
+        };
+        if image.width as usize != sw || image.height as usize != sh {
+            return;
+        }
+        (
+            image
+                .data
+                .chunks_exact(image.components)
+                .map(|p| p[0] as u32)
+                .collect(),
             255u32,
         )
     } else {

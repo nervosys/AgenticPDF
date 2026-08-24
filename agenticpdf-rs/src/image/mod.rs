@@ -3,3 +3,4 @@
 
 pub mod ccitt;
 pub mod jpeg;
+pub mod jpx;
