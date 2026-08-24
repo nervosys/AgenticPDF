@@ -3303,6 +3303,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
             }
         }
         apply_smask(doc, d, &mut rgba, w, h);
+        apply_stencil_mask(doc, d, &mut rgba, w, h);
         return Some(("rgba".into(), w as u32, h as u32, rgba));
     }
     if filter.contains("DCTDecode") {
@@ -3341,6 +3342,11 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
                 byte_align,
             },
         )?;
+    }
+    // A JBIG2 image arrives as its own little document of segments. Decoding
+    // it here turns it into an ordinary one-bit grey image.
+    if filter.contains("JBIG2Decode") {
+        decoded = decode_jbig2(doc, d, &decoded, w, h)?;
     }
     let bpc = doc
         .get(d, "BitsPerComponent")
@@ -3382,6 +3388,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
         return None;
     }
     apply_smask(doc, d, &mut rgba, w, h);
+    apply_stencil_mask(doc, d, &mut rgba, w, h);
     Some(("rgba".into(), w as u32, h as u32, rgba))
 }
 
@@ -3539,15 +3546,7 @@ fn extract_ccitt(doc: &Document, d: &Dict) -> Option<CcittParams> {
     }
     let width = doc.get(d, "Width").and_then(|o| o.as_int()).unwrap_or(1728) as u32;
     let height = doc.get(d, "Height").and_then(|o| o.as_int()).unwrap_or(0) as u32;
-    // /DecodeParms may be a dict or (parallel to a filter array) an array.
-    let parms = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
-        Some(Object::Dict(p)) => Some(p),
-        Some(Object::Array(a)) => a.iter().find_map(|o| match doc.resolve(o) {
-            Object::Dict(p) => Some(p),
-            _ => None,
-        }),
-        _ => None,
-    };
+    let parms = decode_parms(doc, d);
     let g = |key: &str| parms.as_ref().and_then(|p| doc.get(p, key));
     Some(CcittParams {
         k: g("K").and_then(|o| o.as_int()).unwrap_or(0),
@@ -3561,6 +3560,90 @@ fn extract_ccitt(doc: &Document, d: &Dict) -> Option<CcittParams> {
             .unwrap_or(height),
         black_is_1: matches!(g("BlackIs1"), Some(Object::Bool(true))),
     })
+}
+
+/// The `/DecodeParms` dictionary, whether it was written as one dict or as
+/// an array parallel to a filter array.
+fn decode_parms(doc: &Document, d: &Dict) -> Option<Dict> {
+    match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
+        Some(Object::Dict(p)) => Some(p),
+        Some(Object::Array(a)) => a.iter().find_map(|o| match doc.resolve(o) {
+            Object::Dict(p) => Some(p),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// Decode a JBIG2 image to packed one-bit rows, in PDF's sense of the bits.
+///
+/// JBIG2 counts a set bit as black; a PDF image sample counts zero as black,
+/// as every other filter's output does. The inversion here is what makes a
+/// JBIG2 stencil behave like any other one-bit image downstream.
+fn decode_jbig2(doc: &Document, d: &Dict, coded: &[u8], w: usize, h: usize) -> Option<Vec<u8>> {
+    let globals = decode_parms(doc, d)
+        .and_then(|p| match doc.get(&p, "JBIG2Globals") {
+            Some(Object::Stream(gd, graw)) => decode_stream(&gd, &graw).ok(),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let bitmap = crate::image::jbig2::decode_embedded(&globals, coded, w, h)?;
+    let stride = w.div_ceil(8);
+    let mut out = vec![0u8; stride * h];
+    for y in 0..h {
+        for x in 0..w {
+            if bitmap.bits[y * w + x] == 0 {
+                out[y * stride + x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Apply an image's stencil `/Mask` as the alpha channel of `rgba`.
+///
+/// A stencil mask is a one-bit image where a set sample masks the pixel out.
+/// Scanned pages lean on it: the sharp foreground layer is drawn over the
+/// photographic background through a stencil of the text, and without the
+/// stencil the foreground covers the page as an opaque rectangle.
+fn apply_stencil_mask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
+    // The colour-key form of `/Mask` is an array of sample ranges, not a
+    // stencil, and is a separate feature.
+    let Some(Object::Stream(md, mraw)) = doc.get(d, "Mask") else {
+        return;
+    };
+    let mw = doc.get(&md, "Width").and_then(|o| o.as_int()).unwrap_or(0) as usize;
+    let mh = doc.get(&md, "Height").and_then(|o| o.as_int()).unwrap_or(0) as usize;
+    if mw == 0 || mh == 0 {
+        return;
+    }
+    let Ok(decoded) = decode_stream(&md, &mraw) else {
+        return;
+    };
+    let decoded = if filter_names(&md).contains("JBIG2Decode") {
+        match decode_jbig2(doc, &md, &decoded, mw, mh) {
+            Some(bits) => bits,
+            None => return,
+        }
+    } else {
+        decoded
+    };
+    let Some(samples) = unpack_samples(&decoded, mw, mh, 1) else {
+        return;
+    };
+    // `/Decode [1 0]` swaps which sample value masks.
+    let invert = matches!(doc.get(&md, "Decode"), Some(Object::Array(a))
+        if a.first().and_then(|o| doc.resolve(o).as_f64()) == Some(1.0));
+    for y in 0..h {
+        let sy = y * mh / h;
+        for x in 0..w {
+            let sx = x * mw / w;
+            let masked = (samples[sy * mw + sx] != 0) != invert;
+            if masked {
+                rgba[(y * w + x) * 4 + 3] = 0;
+            }
+        }
+    }
 }
 
 /// Number of color components for a base color space object.

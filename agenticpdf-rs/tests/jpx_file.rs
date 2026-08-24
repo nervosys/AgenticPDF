@@ -32,3 +32,34 @@ fn decode_a_jpx_file() {
     std::fs::write(&out, ppm).expect("write");
     eprintln!("wrote {out}");
 }
+
+/// Decode a raw JBIG2 embedded stream named by `APDF_JBIG2` and write it as
+/// a PBM. Ignored by default, for the same reason as the JPX probe.
+#[test]
+#[ignore]
+fn decode_a_jbig2_file() {
+    let Ok(path) = std::env::var("APDF_JBIG2") else {
+        eprintln!("set APDF_JBIG2, APDF_W and APDF_H");
+        return;
+    };
+    let w: usize = std::env::var("APDF_W").unwrap().parse().unwrap();
+    let h: usize = std::env::var("APDF_H").unwrap().parse().unwrap();
+    let data = std::fs::read(&path).expect("read the file");
+    let start = std::time::Instant::now();
+    let bitmap = agenticpdf::image::jbig2::decode_embedded(&[], &data, w, h).expect("decode");
+    let set = bitmap.bits.iter().filter(|&&b| b != 0).count();
+    eprintln!(
+        "{}x{} in {:?}, {:.1}% set",
+        bitmap.w,
+        bitmap.h,
+        start.elapsed(),
+        100.0 * set as f64 / bitmap.bits.len() as f64
+    );
+    let mut ppm = format!("P6\n{} {}\n255\n", bitmap.w, bitmap.h).into_bytes();
+    for &b in &bitmap.bits {
+        let v = if b != 0 { 0u8 } else { 255 };
+        ppm.extend_from_slice(&[v, v, v]);
+    }
+    std::fs::write(format!("{path}.ppm"), ppm).expect("write");
+    eprintln!("wrote {path}.ppm");
+}
