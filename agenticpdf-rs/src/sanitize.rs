@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
-    /// Positioned outside the visible page (MediaBox) by a clear margin.
+    /// Positioned outside the visible page (the crop box) by a clear margin.
     OffPage,
     /// Rendered at a sub-perceptible font size.
     TinyText,

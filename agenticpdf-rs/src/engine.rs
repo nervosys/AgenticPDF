@@ -1168,7 +1168,7 @@ pub fn parse_document(data: &[u8]) -> Result<PdfDocument, PdfError> {
     let mut pages = Vec::with_capacity(page_dicts.len());
     let mut annotations = Vec::new();
     for (idx, pd) in page_dicts.iter().enumerate() {
-        let (w, h) = media_box(&doc, pd);
+        let (w, h) = view_size(&doc, pd);
         let content = extract_page_content(&doc, pd, idx + 1);
         let mut text = content.text;
         crate::text_norm::merge_positional_accents(&mut text);
@@ -1671,7 +1671,7 @@ pub fn extract_graphics(data: &[u8]) -> Result<Vec<PageGraphics>, PdfError> {
     }
     let mut out = Vec::with_capacity(page_dicts.len());
     for (idx, pd) in page_dicts.iter().enumerate() {
-        let (w, h) = media_box(&doc, pd);
+        let (w, h) = view_size(&doc, pd);
         let content = extract_page_content(&doc, pd, idx + 1);
         out.push(PageGraphics {
             page_number: idx + 1,
@@ -3729,12 +3729,10 @@ fn page_box(doc: &Document, page: &Dict) -> [f64; 4] {
     crop
 }
 
-fn media_box(doc: &Document, page: &Dict) -> (f64, f64) {
-    if let Some(mb) = rect4(doc, page, "MediaBox") {
-        ((mb[2] - mb[0]).abs(), (mb[3] - mb[1]).abs())
-    } else {
-        (612.0, 792.0)
-    }
+/// The size of the page a reader shows, in points.
+fn view_size(doc: &Document, page: &Dict) -> (f64, f64) {
+    let view = page_box(doc, page);
+    (view[2] - view[0], view[3] - view[1])
 }
 
 /// Decode a PDF text string (handles UTF-16BE BOM and PDFDocEncoding-ish).
@@ -4753,6 +4751,12 @@ fn flush_path(path: &mut Vec<Seg>, h: &mut Vec<Seg>, v: &mut Vec<Seg>) {
 }
 
 /// Extract positioned text fragments and ruling lines from a page.
+/// Text and rulings for one page, in the coordinates a reader shows.
+///
+/// The origin is the bottom-left of the crop box, not of the media box, so a
+/// bounding box reported here names the same spot as the display list draws
+/// it. On an imposed sheet the two differ by the trim margin, and a citation
+/// that quotes media-box coordinates points off the page the reader sees.
 fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> PageContent {
     let content = page_contents(doc, page);
     let mut found = PageContent {
@@ -4768,11 +4772,12 @@ fn extract_page_content(doc: &Document, page: &Dict, page_number: usize) -> Page
         .get(page, "Resources")
         .and_then(|o| o.as_dict().cloned())
         .unwrap_or_default();
+    let view = page_box(doc, page);
     read_content(
         doc,
         &content,
         &resources,
-        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]],
         page_number,
         &mut found,
         0,
@@ -6565,6 +6570,32 @@ startxref
         // Placed at (120, 60) on the sheet, which is (20, 10) inside the crop.
         assert!((x - 20.0).abs() < 0.5, "x should be crop-relative: {x}");
         assert!((y - 10.0).abs() < 0.5, "y should be crop-relative: {y}");
+    }
+
+    /// Extraction reports the same coordinates rendering draws at.
+    ///
+    /// A citation is a page number and a box. If extraction measures from the
+    /// sheet while the renderer measures from the crop, the box a search hit
+    /// hands back is offset by the trim margin and highlights empty paper.
+    #[test]
+    fn extracted_boxes_share_the_rendered_origin() {
+        let pdf = document_with_page(
+            "BT /F1 12 Tf 120 60 Td (in) Tj ET",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200]               /CropBox [100 50 200 150]               /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        );
+        let doc = super::parse_document(&pdf).expect("parse");
+        let page = &doc.pages[0];
+        assert_eq!((page.width, page.height), (100.0, 100.0), "the crop box");
+        let block = page
+            .text_content
+            .iter()
+            .find(|b| b.text.contains("in"))
+            .expect("the text");
+        assert!(
+            (block.x - 20.0).abs() < 0.5,
+            "x should be crop-relative: {}",
+            block.x
+        );
     }
 
     /// A crop box outside the sheet is clamped to it rather than believed.
