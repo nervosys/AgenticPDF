@@ -257,19 +257,42 @@ impl Decoder {
                     decode_generic(&mut mq, &mut gb, w, h, template, &at, false, None)?
                 } else {
                     let instances = arith.int(&mut mq, IAAI)?;
-                    if instances != 1 {
-                        // Aggregate symbols are coded as a whole text region.
-                        // No producer emits them; a wrong guess here would
-                        // corrupt every symbol after it.
-                        return None;
+                    if instances == 1 {
+                        // One instance is a plain refinement of an existing
+                        // symbol, which T.88 6.5.8.2.2 spells out directly
+                        // rather than going through the text region.
+                        let id = arith.iaid(&mut mq) as usize;
+                        let rdx = arith.int(&mut mq, IARDX)?;
+                        let rdy = arith.int(&mut mq, IARDY)?;
+                        let reference = input
+                            .get(id)
+                            .or_else(|| new_symbols.get(id.wrapping_sub(input.len())))?;
+                        decode_refinement(
+                            &mut mq, &mut gr, w, h, rtemplate, reference, rdx, rdy, &rat,
+                        )?
+                    } else {
+                        // More than one: the symbol is itself a little text
+                        // region placing symbols already known, decoded with
+                        // the parameters 6.5.8.2 fixes -- one strip, top-left
+                        // corner, OR, no offset -- and sharing this coder.
+                        if instances < 0 {
+                            return None;
+                        }
+                        let known: Vec<&Bitmap> = input.iter().chain(new_symbols.iter()).collect();
+                        let params = TextParams {
+                            instances: instances as u32,
+                            log_strips: 0,
+                            corner: 1,
+                            transposed: false,
+                            comb_op: 0,
+                            default_pixel: 0,
+                            ds_offset: 0,
+                            refine: true,
+                            rtemplate,
+                            rat,
+                        };
+                        decode_text(&mut mq, &mut arith, &mut gr, &known, &params, w, h)?
                     }
-                    let id = arith.iaid(&mut mq) as usize;
-                    let rdx = arith.int(&mut mq, IARDX)?;
-                    let rdy = arith.int(&mut mq, IARDY)?;
-                    let reference = input
-                        .get(id)
-                        .or_else(|| new_symbols.get(id.wrapping_sub(input.len())))?;
-                    decode_refinement(&mut mq, &mut gr, w, h, rtemplate, reference, rdx, rdy, &rat)?
                 };
                 new_symbols.push(bitmap);
             }
@@ -322,23 +345,25 @@ impl Decoder {
             // Huffman-coded text region; see the module note.
             return;
         }
-        let refine = (flags >> 1) & 1 != 0;
-        let log_strips = ((flags >> 2) & 3) as u32;
-        let strips = 1i32 << log_strips;
-        let corner = ((flags >> 4) & 3) as u8;
-        let transposed = (flags >> 6) & 1 != 0;
-        let comb_op = ((flags >> 7) & 3) as u8;
-        let default_pixel = ((flags >> 9) & 1) as u8;
-        // A five-bit signed field.
-        let ds_offset = {
-            let v = ((flags >> 10) & 0x1F) as i32;
-            if v > 15 { v - 32 } else { v }
+        let mut params = TextParams {
+            instances: 0,
+            log_strips: ((flags >> 2) & 3) as u32,
+            corner: ((flags >> 4) & 3) as u8,
+            transposed: (flags >> 6) & 1 != 0,
+            comb_op: ((flags >> 7) & 3) as u8,
+            default_pixel: ((flags >> 9) & 1) as u8,
+            // A five-bit signed field.
+            ds_offset: {
+                let v = ((flags >> 10) & 0x1F) as i32;
+                if v > 15 { v - 32 } else { v }
+            },
+            refine: (flags >> 1) & 1 != 0,
+            rtemplate: ((flags >> 15) & 1) as u8,
+            rat: [(0i8, 0i8); 2],
         };
-        let rtemplate = ((flags >> 15) & 1) as u8;
         let mut off = 19usize;
-        let mut rat = [(0i8, 0i8); 2];
-        if refine && rtemplate == 0 {
-            for slot in rat.iter_mut() {
+        if params.refine && params.rtemplate == 0 {
+            for slot in params.rat.iter_mut() {
                 let (Some(&x), Some(&y)) = (d.get(off), d.get(off + 1)) else {
                     return;
                 };
@@ -346,7 +371,7 @@ impl Decoder {
                 off += 2;
             }
         }
-        let Some(ninstances) = d
+        let Some(instances) = d
             .get(off..off + 4)
             .and_then(|b| b.try_into().ok())
             .map(u32::from_be_bytes)
@@ -354,122 +379,140 @@ impl Decoder {
             return;
         };
         off += 4;
-        if ninstances > 1_000_000 {
+        if instances > 1_000_000 {
             return;
         }
+        params.instances = instances;
 
         let symbols = self.input_symbols(segment);
         if symbols.is_empty() {
             return;
         }
-        let code_len = code_length(symbols.len());
         let Some(coded) = d.get(off..) else { return };
         let mut mq = Mq::new(coded);
-        let mut arith = Arith::new(code_len);
+        let mut arith = Arith::new(code_length(symbols.len()));
         let mut gr = vec![0u8; 1 << 13];
-        let mut region = Bitmap::new(info.w, info.h, default_pixel);
-
-        let Some(first) = arith.int(&mut mq, IADT) else {
+        let Some(region) = decode_text(
+            &mut mq, &mut arith, &mut gr, &symbols, &params, info.w, info.h,
+        ) else {
             return;
         };
-        let mut stript = -first * strips;
-        let mut firsts = 0i32;
-        let mut placed = 0u32;
-        while placed < ninstances {
-            let Some(dt) = arith.int(&mut mq, IADT) else {
-                return;
-            };
-            stript += dt * strips;
-            let Some(dfs) = arith.int(&mut mq, IAFS) else {
-                return;
-            };
-            firsts += dfs;
-            let mut curs = firsts;
-            let mut first_of_strip = true;
-            loop {
-                if !first_of_strip {
-                    match arith.int(&mut mq, IADS) {
-                        Some(ids) => curs += ids + ds_offset,
-                        None => break, // out of band: the strip ends
-                    }
-                }
-                first_of_strip = false;
-                if placed >= ninstances {
-                    return;
-                }
-                let curt = if strips == 1 {
-                    0
-                } else {
-                    match arith.int(&mut mq, IAIT) {
-                        Some(v) => v,
-                        None => return,
-                    }
-                };
-                let t = stript + curt;
-                let id = arith.iaid(&mut mq) as usize;
-                let Some(symbol) = symbols.get(id) else {
-                    return;
-                };
-                let mut refined: Option<Bitmap> = None;
-                if refine {
-                    let Some(ri) = arith.int(&mut mq, IARI) else {
-                        return;
-                    };
-                    if ri != 0 {
-                        let (Some(rdw), Some(rdh), Some(rdx), Some(rdy)) = (
-                            arith.int(&mut mq, IARDW),
-                            arith.int(&mut mq, IARDH),
-                            arith.int(&mut mq, IARDX),
-                            arith.int(&mut mq, IARDY),
-                        ) else {
-                            return;
-                        };
-                        let w = symbol.w as i32 + rdw;
-                        let h = symbol.h as i32 + rdh;
-                        if w <= 0 || h <= 0 || w > 10_000 || h > 10_000 {
-                            return;
-                        }
-                        let Some(bits) = decode_refinement(
-                            &mut mq,
-                            &mut gr,
-                            w as usize,
-                            h as usize,
-                            rtemplate,
-                            symbol,
-                            rdw.div_euclid(2) + rdx,
-                            rdh.div_euclid(2) + rdy,
-                            &rat,
-                        ) else {
-                            return;
-                        };
-                        refined = Some(bits);
-                    }
-                }
-                let bitmap: &Bitmap = refined.as_ref().unwrap_or(symbol);
-                let (bw, bh) = (bitmap.w as i32, bitmap.h as i32);
-                let (x, y) = if transposed {
-                    let x = if corner == 2 || corner == 3 {
-                        t - bw + 1
-                    } else {
-                        t
-                    };
-                    (x, curs)
-                } else {
-                    let y = if corner == 0 || corner == 2 {
-                        t - bh + 1
-                    } else {
-                        t
-                    };
-                    (curs, y)
-                };
-                region.compose(bitmap, x as i64, y as i64, comb_op);
-                curs += if transposed { bh - 1 } else { bw - 1 };
-                placed += 1;
-            }
-        }
         self.page
             .compose(&region, info.x as i64, info.y as i64, info.op);
     }
+}
+
+/// Everything the text region decoding procedure needs beyond the arithmetic
+/// state, the symbols and the size.
+///
+/// A struct because a symbol dictionary invokes the same procedure for an
+/// aggregate symbol (T.88 6.5.8.2) with its own fixed set of these, and two
+/// callers passing ten positional arguments is a bug waiting to happen.
+struct TextParams {
+    instances: u32,
+    log_strips: u32,
+    corner: u8,
+    transposed: bool,
+    comb_op: u8,
+    default_pixel: u8,
+    ds_offset: i32,
+    refine: bool,
+    rtemplate: u8,
+    rat: [(i8, i8); 2],
+}
+
+/// The text region decoding procedure (T.88 6.4).
+///
+/// The arithmetic decoder and the integer contexts are borrowed rather than
+/// made here: an aggregate symbol is decoded in the middle of a dictionary and
+/// has to carry on with the same coder and the same adaptive state, not start
+/// a fresh one.
+fn decode_text(
+    mq: &mut Mq,
+    arith: &mut Arith,
+    gr: &mut [u8],
+    symbols: &[&Bitmap],
+    p: &TextParams,
+    w: usize,
+    h: usize,
+) -> Option<Bitmap> {
+    let strips = 1i32 << p.log_strips;
+    let mut region = Bitmap::new(w, h, p.default_pixel);
+    let first = arith.int(mq, IADT)?;
+    let mut stript = -first * strips;
+    let mut firsts = 0i32;
+    let mut placed = 0u32;
+    while placed < p.instances {
+        let dt = arith.int(mq, IADT)?;
+        stript += dt * strips;
+        let dfs = arith.int(mq, IAFS)?;
+        firsts += dfs;
+        let mut curs = firsts;
+        let mut first_of_strip = true;
+        loop {
+            if !first_of_strip {
+                match arith.int(mq, IADS) {
+                    Some(ids) => curs += ids + p.ds_offset,
+                    None => break, // out of band: the strip ends
+                }
+            }
+            first_of_strip = false;
+            if placed >= p.instances {
+                return Some(region);
+            }
+            let curt = if strips == 1 { 0 } else { arith.int(mq, IAIT)? };
+            let t = stript + curt;
+            let id = arith.iaid(mq) as usize;
+            let symbol = symbols.get(id)?;
+            let mut refined: Option<Bitmap> = None;
+            if p.refine {
+                let ri = arith.int(mq, IARI)?;
+                if ri != 0 {
+                    let rdw = arith.int(mq, IARDW)?;
+                    let rdh = arith.int(mq, IARDH)?;
+                    let rdx = arith.int(mq, IARDX)?;
+                    let rdy = arith.int(mq, IARDY)?;
+                    let rw = symbol.w as i32 + rdw;
+                    let rh = symbol.h as i32 + rdh;
+                    if rw <= 0 || rh <= 0 || rw > 10_000 || rh > 10_000 {
+                        return None;
+                    }
+                    refined = Some(decode_refinement(
+                        mq,
+                        gr,
+                        rw as usize,
+                        rh as usize,
+                        p.rtemplate,
+                        symbol,
+                        rdw.div_euclid(2) + rdx,
+                        rdh.div_euclid(2) + rdy,
+                        &p.rat,
+                    )?);
+                }
+            }
+            let bitmap: &Bitmap = refined.as_ref().unwrap_or(symbol);
+            let (bw, bh) = (bitmap.w as i32, bitmap.h as i32);
+            let (x, y) = if p.transposed {
+                let x = if p.corner == 2 || p.corner == 3 {
+                    t - bw + 1
+                } else {
+                    t
+                };
+                (x, curs)
+            } else {
+                let y = if p.corner == 0 || p.corner == 2 {
+                    t - bh + 1
+                } else {
+                    t
+                };
+                (curs, y)
+            };
+            region.compose(bitmap, x as i64, y as i64, p.comb_op);
+            curs += if p.transposed { bh - 1 } else { bw - 1 };
+            placed += 1;
+        }
+    }
+    Some(region)
 }
 
 struct RegionInfo {

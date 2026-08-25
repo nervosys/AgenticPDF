@@ -45,8 +45,14 @@ fn decode_a_jbig2_file() {
     let w: usize = std::env::var("APDF_W").unwrap().parse().unwrap();
     let h: usize = std::env::var("APDF_H").unwrap().parse().unwrap();
     let data = std::fs::read(&path).expect("read the file");
+    // A scanner's symbol dictionary usually lives in /JBIG2Globals, shared by
+    // every page, so a stream that decodes to nothing on its own is expected.
+    let globals = std::env::var("APDF_JBIG2_GLOBALS")
+        .ok()
+        .map(|g| std::fs::read(g).expect("read the globals"))
+        .unwrap_or_default();
     let start = std::time::Instant::now();
-    let bitmap = agenticpdf::image::jbig2::decode_embedded(&[], &data, w, h).expect("decode");
+    let bitmap = agenticpdf::image::jbig2::decode_embedded(&globals, &data, w, h).expect("decode");
     let set = bitmap.bits.iter().filter(|&&b| b != 0).count();
     eprintln!(
         "{}x{} in {:?}, {:.1}% set",
