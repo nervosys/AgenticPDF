@@ -1777,6 +1777,180 @@ mod page_image {
         std::fs::write(&out, &file).expect("write the image");
         eprintln!("wrote {out} ({width}x{height})");
     }
+
+    /// Measure every page of a corpus against a reference renderer.
+    ///
+    /// A corpus directory holds one subdirectory per document, each with a
+    /// `source.txt` naming the file and a `pN.ref.ppm` per page rendered by
+    /// the reference. This renders the same pages and reports how far apart
+    /// they are, so a change to the engine can be judged against every
+    /// document at once instead of the one that prompted it.
+    ///
+    /// The two rasters are different sizes, so they are reduced to a grid of
+    /// ink coverage and compared as distributions: total variation distance,
+    /// where 0.03 to 0.05 is antialiasing alone and 0.12 is the line between
+    /// a match and a difference worth looking at.
+    ///
+    /// `APDF_CORPUS=<dir> cargo test --lib -- --ignored compare_corpus`
+    #[test]
+    #[ignore = "needs a rendered corpus; run deliberately"]
+    fn compare_corpus() {
+        let Ok(root) = std::env::var("APDF_CORPUS") else {
+            eprintln!("set APDF_CORPUS to a directory of rendered references");
+            return;
+        };
+        let mut entries: Vec<_> = std::fs::read_dir(&root)
+            .expect("read the corpus")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        entries.sort();
+
+        let mut rows: Vec<(f64, f64, String)> = Vec::new();
+        let (mut compared, mut matched, mut skipped) = (0usize, 0usize, 0usize);
+        for dir in entries {
+            let Ok(source) = std::fs::read_to_string(dir.join("source.txt")) else {
+                continue;
+            };
+            let source = source.trim().to_string();
+            let Ok(bytes) = std::fs::read(&source) else {
+                continue;
+            };
+            let name = dir
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            for page in 1..=8usize {
+                let refpath = dir.join(format!("p{page}.ref.ppm"));
+                let Some((rw, rh, rpx)) = read_ppm(&refpath) else {
+                    continue;
+                };
+                let Some((ow, oh, opx)) = render_to_rgb(&bytes, page, rw as u32) else {
+                    eprintln!("  {name} p{page}: could not render");
+                    skipped += 1;
+                    continue;
+                };
+                // A page we render at a wildly different shape is not a
+                // rendering difference but a different page box; say so
+                // rather than folding it into the score.
+                let aspect = (ow as f64 / oh as f64) / (rw as f64 / rh as f64);
+                if !(0.97..1.03).contains(&aspect) {
+                    eprintln!("  {name} p{page}: aspect {aspect:.3}, not comparable");
+                    skipped += 1;
+                    continue;
+                }
+                let ours = ink_grid(ow, oh, &opx);
+                let theirs = ink_grid(rw, rh, &rpx);
+                let (sa, sb): (f64, f64) = (ours.iter().sum(), theirs.iter().sum());
+                if sa <= 1e-6 && sb <= 1e-6 {
+                    skipped += 1;
+                    continue;
+                }
+                let tv = if sa <= 1e-6 || sb <= 1e-6 {
+                    1.0
+                } else {
+                    0.5 * ours
+                        .iter()
+                        .zip(&theirs)
+                        .map(|(a, b)| (a / sa - b / sb).abs())
+                        .sum::<f64>()
+                };
+                let mae = ours
+                    .iter()
+                    .zip(&theirs)
+                    .map(|(a, b)| (a - b).abs())
+                    .sum::<f64>()
+                    / ours.len() as f64;
+                compared += 1;
+                if tv <= 0.12 {
+                    matched += 1;
+                }
+                rows.push((tv, mae, format!("{name} p{page}")));
+            }
+        }
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (tv, mae, what) in rows.iter().take(30) {
+            eprintln!("{tv:.3}  mae {mae:.4}  {what}");
+        }
+        eprintln!("compared {compared}, within 0.12: {matched}, not comparable {skipped}");
+    }
+
+    /// Render one page of a document to RGB at the given width.
+    fn render_to_rgb(bytes: &[u8], page: usize, width: u32) -> Option<(usize, usize, Vec<u8>)> {
+        let mut session = crate::session::Session::open(bytes.to_vec()).ok()?;
+        for _ in 1..page {
+            session.next_page();
+        }
+        let list = session.display_list().ok()?;
+        let scale = width as f32 / list.width.max(1.0) as f32;
+        let height = (list.height as f32 * scale).round().max(1.0) as u32;
+        let mut painter = ImagePainter::new(width, height);
+        let textures = session.textures(width as usize * height as usize);
+        paint_page(
+            &mut painter,
+            &list,
+            Transform::fit(&list, Rect::new(0.0, 0.0, width as f32, height as f32), 1.0),
+            &textures,
+            session.fonts(),
+        );
+        let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+        for chunk in painter.pixels().chunks_exact(4) {
+            rgb.extend_from_slice(&chunk[..3]);
+        }
+        Some((width as usize, height as usize, rgb))
+    }
+
+    fn read_ppm(path: &std::path::Path) -> Option<(usize, usize, Vec<u8>)> {
+        let bytes = std::fs::read(path).ok()?;
+        // "P6", width, height, maxval, then one whitespace byte and the data.
+        let mut fields = Vec::new();
+        let mut i = 0usize;
+        while fields.len() < 4 {
+            while bytes.get(i)?.is_ascii_whitespace() {
+                i += 1;
+            }
+            if bytes[i] == b'#' {
+                while *bytes.get(i)? != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            let start = i;
+            while !bytes.get(i)?.is_ascii_whitespace() {
+                i += 1;
+            }
+            fields.push(String::from_utf8_lossy(&bytes[start..i]).to_string());
+        }
+        i += 1;
+        let w: usize = fields[1].parse().ok()?;
+        let h: usize = fields[2].parse().ok()?;
+        Some((w, h, bytes.get(i..i + w * h * 3)?.to_vec()))
+    }
+
+    const GRID_W: usize = 60;
+    const GRID_H: usize = 40;
+
+    /// Mean ink -- one minus luminance -- per cell of a fixed grid.
+    fn ink_grid(w: usize, h: usize, rgb: &[u8]) -> Vec<f64> {
+        let mut sums = vec![0.0f64; GRID_W * GRID_H];
+        let mut counts = vec![0u32; GRID_W * GRID_H];
+        for y in 0..h {
+            let gy = y * GRID_H / h;
+            for x in 0..w {
+                let o = (y * w + x) * 3;
+                let lum = (rgb[o] as u32 * 299 + rgb[o + 1] as u32 * 587 + rgb[o + 2] as u32 * 114)
+                    / 1000;
+                let cell = gy * GRID_W + x * GRID_W / w;
+                sums[cell] += (255 - lum) as f64;
+                counts[cell] += 1;
+            }
+        }
+        sums.iter()
+            .zip(&counts)
+            .map(|(s, &n)| if n == 0 { 0.0 } else { s / n as f64 / 255.0 })
+            .collect()
+    }
 }
 
 #[cfg(test)]
