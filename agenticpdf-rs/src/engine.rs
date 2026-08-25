@@ -3023,12 +3023,20 @@ fn emit_text_op(
 ) {
     let trm = mat_mul(tm, ctm);
     let scale = (trm[0] * trm[3] - trm[1] * trm[2]).abs().sqrt();
-    let size = if font_size > 0.0 {
-        font_size * scale.max(0.01)
+    // A negative `Tf` size is legal and means mirrored text. Producers pair it
+    // with a flipped matrix so the glyphs come out upright, and one whole
+    // family of tax forms is written that way. Treating it as "no size given"
+    // fell back to the matrix scale alone: every run on the page was laid out
+    // at 1.3 points instead of 5.9, which on a rendered page is nothing at
+    // all. The orientation is already carried by the matrix, so what is wanted
+    // here is the magnitude.
+    let magnitude = font_size.abs();
+    let size = if magnitude > 0.0 {
+        magnitude * scale.max(0.01)
     } else {
         scale.max(1.0)
     };
-    let fsz = if font_size > 0.0 { font_size } else { 1.0 };
+    let fsz = if magnitude > 0.0 { magnitude } else { 1.0 };
     // Device advance = text-space width (em × fontSize) × CTM scale.
     let factor = fsz * scale.max(0.01);
     let advances: Vec<f64> = advs_em.iter().map(|a| a * factor).collect();

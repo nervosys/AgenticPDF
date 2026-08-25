@@ -1662,7 +1662,15 @@ mod fallback_probe {
             return;
         };
         let bytes = std::fs::read(&path).expect("read");
-        let session = crate::session::Session::open(bytes).expect("open");
+        let mut session = crate::session::Session::open(bytes).expect("open");
+        // A document's first page is rarely the interesting one.
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        for _ in 1..page {
+            session.next_page();
+        }
         let fonts = session.fonts();
         let list = session.display_list().expect("geometry");
 
