@@ -66,8 +66,8 @@ fn expand(key: &[u8]) -> Option<Vec<[u8; 16]>> {
     };
     let words = 4 * (rounds + 1);
     let mut w: Vec<[u8; 4]> = Vec::with_capacity(words);
-    for chunk in key.chunks_exact(4) {
-        w.push([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for chunk in key.as_chunks::<4>().0 {
+        w.push(*chunk);
     }
     let mut rcon = 1u8;
     for i in nk..words {
@@ -158,8 +158,8 @@ pub fn decrypt_cbc(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
     }
     let mut previous: [u8; 16] = data[..16].try_into().ok()?;
     let mut out = Vec::with_capacity(data.len() - 16);
-    for chunk in data[16..].chunks_exact(16) {
-        let cipher: [u8; 16] = chunk.try_into().ok()?;
+    for chunk in data[16..].as_chunks::<16>().0 {
+        let cipher: [u8; 16] = *chunk;
         let mut block = cipher;
         decrypt_block(&mut block, &keys, &inv);
         for (a, b) in block.iter_mut().zip(previous.iter()) {

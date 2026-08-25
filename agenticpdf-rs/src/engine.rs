@@ -3183,7 +3183,7 @@ pub fn extract_page_textures(
                     continue;
                 }
                 let mut rgba = Vec::with_capacity(image.rgb.len() / 3 * 4);
-                for pixel in image.rgb.chunks_exact(3) {
+                for pixel in image.rgb.as_chunks::<3>().0 {
                     rgba.extend_from_slice(pixel);
                     rgba.push(255);
                 }
@@ -3197,7 +3197,7 @@ pub fn extract_page_textures(
             rgba.resize(width as usize * height as usize * 4, 0);
         }
         if tint {
-            for pixel in rgba.chunks_exact_mut(4) {
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 pixel[0] = 255 - pixel[0];
                 pixel[1] = 255 - pixel[1];
                 pixel[2] = 255 - pixel[2];
@@ -3379,7 +3379,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
             rgba.extend_from_slice(&[v, v, v, 255]);
         }
     } else if bpc == 8 && decoded.len() >= n * 3 {
-        for p in decoded.chunks_exact(3).take(n) {
+        for p in decoded.as_chunks::<3>().0.iter().take(n) {
             rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
         }
     }
@@ -3426,7 +3426,13 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         }
         // The mask is grey: every channel of the decoded pixel is the same.
         (
-            image.rgb.chunks_exact(3).map(|p| p[0] as u32).collect(),
+            image
+                .rgb
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|p| p[0] as u32)
+                .collect(),
             255u32,
         )
     } else if sfilter.contains("JPXDecode") {

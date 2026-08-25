@@ -367,8 +367,10 @@ fn read_cid_to_gid(doc: &engine::Document<'_>, descendant: &engine::Dict) -> Opt
     let bytes = engine::decode_stream(&stream_dict, &raw).ok()?;
     Some(
         bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_be_bytes(*pair))
             .collect(),
     )
 }
