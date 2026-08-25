@@ -513,6 +513,22 @@ pub struct Document<'a> {
 /// Decoded object stream: per-stream (object header offsets, decoded bytes).
 type ObjStmCache = HashMap<u32, (Vec<(u32, usize)>, Vec<u8>)>;
 
+impl Document<'static> {
+    /// A document with no objects, for exercising code that only needs the
+    /// resolver to answer "nothing here".
+    #[cfg(test)]
+    pub fn empty() -> Document<'static> {
+        Document {
+            data: &[],
+            xref: HashMap::new(),
+            trailer: Dict::new(),
+            cache: RefCell::new(HashMap::new()),
+            objstm_cache: RefCell::new(HashMap::new()),
+            crypt: None,
+        }
+    }
+}
+
 impl<'a> Document<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, PdfError> {
         if !data.starts_with(b"%PDF-") {
@@ -2062,6 +2078,9 @@ struct GState<'a> {
     /// In user space, as `w` gives it. The CTM that scales it is the one in
     /// effect when the path is painted, not when the width was set.
     line_width: f64,
+    /// The device rectangle painting is confined to. `sh` fills exactly this,
+    /// so it has to be state rather than only an emitted op.
+    clip: [f64; 4],
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -2083,9 +2102,28 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
         [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]],
         &mut ops,
         0,
-        &FormState::default(),
+        &FormState {
+            // `sh` paints the current clip, and on a page with none of its own
+            // that is the page. Without this the gradient has no bounds to fill.
+            clip: [0.0, 0.0, view[2] - view[0], view[3] - view[1]],
+            ..FormState::default()
+        },
     );
     ops
+}
+
+/// The shading a name refers to in the resource dictionary.
+fn shading_in(doc: &Document, resources: &Dict, name: &str) -> Option<Dict> {
+    let shadings = doc.get(resources, "Shading").map(|o| doc.resolve(&o))?;
+    let entry = doc
+        .get(shadings.as_dict()?, name)
+        .map(|o| doc.resolve(&o))?;
+    match entry {
+        // A shading is given as a stream when it carries mesh data; the
+        // dictionary is what the supported types read.
+        Object::Stream(d, _) => Some(d),
+        other => other.as_dict().cloned(),
+    }
 }
 
 /// The form XObject a name refers to, if it is one.
@@ -2132,6 +2170,7 @@ fn run_form(
     let inner = mat_mul(&matrix, &ctm);
 
     ops.push(RenderOp::Save);
+    let mut state = state.clone();
     if let Some(bbox) = rect4(doc, dict, "BBox") {
         // The box is in form space, so its corners go through the form's own
         // transform; a rotated form has a rotated box and needs the polygon,
@@ -2144,13 +2183,24 @@ fn run_form(
         ];
         let xs: Vec<f64> = corners.iter().map(|c| c.0).collect();
         let ys: Vec<f64> = corners.iter().map(|c| c.1).collect();
+        let rect = [
+            xs.iter().cloned().fold(f64::INFINITY, f64::min),
+            ys.iter().cloned().fold(f64::INFINITY, f64::min),
+            xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        ];
+        // The box bounds what the form may paint, so it narrows the tracked
+        // clip as well as emitting one. Without this a gradient inside a form
+        // -- which is where a document puts one -- floods the whole page
+        // instead of the box it was drawn in.
+        state.clip = [
+            state.clip[0].max(rect[0]),
+            state.clip[1].max(rect[1]),
+            state.clip[2].min(rect[2]),
+            state.clip[3].min(rect[3]),
+        ];
         ops.push(RenderOp::Clip {
-            rect: [
-                xs.iter().cloned().fold(f64::INFINITY, f64::min),
-                ys.iter().cloned().fold(f64::INFINITY, f64::min),
-                xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-                ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-            ],
+            rect,
             subpaths: vec![corners.iter().map(|c| [c.0, c.1]).collect()],
         });
     }
@@ -2160,7 +2210,15 @@ fn run_form(
         .get(dict, "Resources")
         .and_then(|o| o.as_dict().cloned())
         .unwrap_or_else(|| outer.clone());
-    run_content(doc, content, &inner_resources, inner, ops, depth + 1, state);
+    run_content(
+        doc,
+        content,
+        &inner_resources,
+        inner,
+        ops,
+        depth + 1,
+        &state,
+    );
     ops.push(RenderOp::Restore);
 }
 
@@ -2180,6 +2238,9 @@ struct FormState {
     stroke_alpha: f64,
     blend: Blend,
     line_width: f64,
+    /// The device rectangle painting is confined to. A form inherits it, and
+    /// `sh` fills exactly it.
+    clip: [f64; 4],
 }
 
 impl Default for FormState {
@@ -2193,6 +2254,12 @@ impl Default for FormState {
             stroke_alpha: 1.0,
             blend: Blend::Normal,
             line_width: 1.0,
+            clip: [
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::INFINITY,
+            ],
         }
     }
 }
@@ -2247,6 +2314,7 @@ fn run_content(
     let mut fill_space = inherited.fill_space.clone();
     let mut stroke_space = inherited.stroke_space.clone();
     let mut line_width = inherited.line_width;
+    let mut clip = inherited.clip;
     // Constant alpha and blend mode, both graphics state, both set by `gs`.
     let mut fill_alpha = inherited.fill_alpha;
     let mut stroke_alpha = inherited.stroke_alpha;
@@ -2289,6 +2357,7 @@ fn run_content(
                             stroke_alpha,
                             blend,
                             line_width,
+                            clip,
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -2314,6 +2383,7 @@ fn run_content(
                             stroke_alpha = state.stroke_alpha;
                             blend = state.blend;
                             line_width = state.line_width;
+                            clip = state.clip;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -2336,10 +2406,35 @@ fn run_content(
                             if cur.len() >= 3 {
                                 clip_subpaths.push(cur.clone());
                             }
+                            clip = [
+                                clip[0].max(minx),
+                                clip[1].max(miny),
+                                clip[2].min(maxx),
+                                clip[3].min(maxy),
+                            ];
                             ops.push(RenderOp::Clip {
                                 rect: [minx, miny, maxx, maxy],
                                 subpaths: clip_subpaths,
                             });
+                        }
+                    }
+                    // A shading painted straight onto the page, filling the
+                    // current clip. It has no path and no fill colour of its
+                    // own: the gradient *is* the paint.
+                    "sh" => {
+                        if let Some(Token::Name(name)) = stack.last()
+                            && let Some(sh) = shading_in(doc, resources, name)
+                        {
+                            let region = [clip[0].max(0.0), clip[1].max(0.0), clip[2], clip[3]];
+                            if region[2] > region[0] && region[3] > region[1] {
+                                for band in crate::shading::bands(doc, &sh, ctm, region) {
+                                    ops.push(RenderOp::Fill {
+                                        subpaths: vec![band.points],
+                                        color: with_alpha(band.color, fill_alpha),
+                                        even_odd: false,
+                                    });
+                                }
+                            }
                         }
                     }
                     "cm" => {
@@ -2509,6 +2604,7 @@ fn run_content(
                                     stroke_alpha,
                                     blend,
                                     line_width,
+                                    clip,
                                 };
                                 run_form(doc, &form, resources, ctm, ops, depth, &state);
                                 stack.clear();

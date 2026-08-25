@@ -27,6 +27,7 @@ pub mod ocr;
 pub mod parser;
 pub mod sandbox;
 pub mod sanitize;
+pub mod shading;
 pub mod tables;
 pub mod testing;
 pub mod text_norm;
