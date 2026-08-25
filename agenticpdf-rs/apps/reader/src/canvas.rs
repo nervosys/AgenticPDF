@@ -1774,7 +1774,7 @@ mod page_image {
         let pixels = painter.pixels();
         let mut file = format!("P6\n{width} {height}\n255\n").into_bytes();
         for chunk in pixels.as_chunks::<4>().0 {
-            file.extend_from_slice(&chunk[..3]);
+            file.extend_from_slice(&over_white(*chunk));
         }
         std::fs::write(&out, &file).expect("write the image");
         eprintln!("wrote {out} ({width}x{height})");
@@ -1873,7 +1873,15 @@ mod page_image {
                 let ours = ink_grid(ow, oh, &opx);
                 let theirs = ink_grid(rw, rh, &rpx);
                 let (sa, sb): (f64, f64) = (ours.iter().sum(), theirs.iter().sum());
-                if sa <= 1e-6 && sb <= 1e-6 {
+                // Two pages with next to no ink cannot be told apart by a
+                // normalised measure: it divides by almost nothing, so three
+                // stray pixels against one score as a total mismatch. The
+                // floor is one grid cell of full ink out of 2400 -- less than
+                // a single printed digit -- and both sides must be under it,
+                // so a page we fail to draw at all is still scored against a
+                // reference that has content.
+                const BLANK: f64 = 0.5;
+                if sa < BLANK && sb < BLANK {
                     skipped += 1;
                     continue;
                 }
@@ -1926,9 +1934,23 @@ mod page_image {
         );
         let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
         for chunk in painter.pixels().as_chunks::<4>().0 {
-            rgb.extend_from_slice(&chunk[..3]);
+            rgb.extend_from_slice(&over_white(*chunk));
         }
         Some((width as usize, height as usize, rgb))
+    }
+
+    /// Flatten a painted pixel onto white.
+    ///
+    /// Dropping the alpha instead turns every pixel the page never covered
+    /// black, and rounding always leaves some: a page whose height lands on
+    /// x.4 gets a black hairline along its bottom edge. On a nearly empty page
+    /// that hairline was the only ink either side had, and the comparison
+    /// called a blank page a total mismatch. The reference is read out of the
+    /// viewer composited over white, so this side has to match.
+    fn over_white(p: [u8; 4]) -> [u8; 3] {
+        let a = p[3] as u32;
+        let mix = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as u8;
+        [mix(p[0]), mix(p[1]), mix(p[2])]
     }
 
     fn read_ppm(path: &std::path::Path) -> Option<(usize, usize, Vec<u8>)> {
