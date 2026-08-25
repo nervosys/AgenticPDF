@@ -899,7 +899,9 @@ mod tests {
         painter.pop_clip();
         let pixels = painter.pixels();
         let ink = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| px[3] > 8 && px[0] < 128)
             .count();
         assert_eq!(ink, 0, "a path outside the clip must not reach the surface");
@@ -1771,7 +1773,7 @@ mod page_image {
         // PPM: a header and raw RGB, which every image tool reads.
         let pixels = painter.pixels();
         let mut file = format!("P6\n{width} {height}\n255\n").into_bytes();
-        for chunk in pixels.chunks_exact(4) {
+        for chunk in pixels.as_chunks::<4>().0 {
             file.extend_from_slice(&chunk[..3]);
         }
         std::fs::write(&out, &file).expect("write the image");
@@ -1792,12 +1794,26 @@ mod page_image {
     /// a match and a difference worth looking at.
     ///
     /// `APDF_CORPUS=<dir> cargo test --lib -- --ignored compare_corpus`
+    ///
+    /// A corpus of any size is one long single-threaded walk, so
+    /// `APDF_SHARD=k/n` takes every n-th document and the shards can be run
+    /// side by side. Sharding by document rather than by page keeps a
+    /// document's pages together, which is how the rows read.
     #[test]
     #[ignore = "needs a rendered corpus; run deliberately"]
     fn compare_corpus() {
         let Ok(root) = std::env::var("APDF_CORPUS") else {
             eprintln!("set APDF_CORPUS to a directory of rendered references");
             return;
+        };
+        let (shard, shards) = match std::env::var("APDF_SHARD") {
+            Ok(spec) => {
+                let mut parts = spec.split('/');
+                let k: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+                let n: usize = parts.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+                (k.saturating_sub(1), n.max(1))
+            }
+            Err(_) => (0, 1),
         };
         let mut entries: Vec<_> = std::fs::read_dir(&root)
             .expect("read the corpus")
@@ -1806,6 +1822,19 @@ mod page_image {
             .filter(|p| p.is_dir())
             .collect();
         entries.sort();
+        let total = entries.len();
+        let entries: Vec<_> = entries
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| i % shards == shard)
+            .map(|(_, p)| p)
+            .collect();
+        eprintln!(
+            "shard {}/{}: {} of {total} documents",
+            shard + 1,
+            shards,
+            entries.len()
+        );
 
         let mut rows: Vec<(f64, f64, String)> = Vec::new();
         let (mut compared, mut matched, mut skipped) = (0usize, 0usize, 0usize);
@@ -1821,6 +1850,7 @@ mod page_image {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
+            eprintln!("... {name}");
             for page in 1..=8usize {
                 let refpath = dir.join(format!("p{page}.ref.ppm"));
                 let Some((rw, rh, rpx)) = read_ppm(&refpath) else {
@@ -1895,7 +1925,7 @@ mod page_image {
             session.fonts(),
         );
         let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
-        for chunk in painter.pixels().chunks_exact(4) {
+        for chunk in painter.pixels().as_chunks::<4>().0 {
             rgb.extend_from_slice(&chunk[..3]);
         }
         Some((width as usize, height as usize, rgb))
@@ -2219,7 +2249,7 @@ mod recording_glyphs {
         let (out_w, out_h, out) =
             fit_to_draw(&image, Rect::new(0.0, 0.0, 8.0, 8.0), 1.0).expect("should sample down");
         assert_eq!((out_w, out_h), (8, 8));
-        for pixel in out.chunks_exact(4) {
+        for pixel in out.as_chunks::<4>().0 {
             assert!(
                 (100..=155).contains(&pixel[0]),
                 "a black and white checkerboard averages to grey, got {}",
