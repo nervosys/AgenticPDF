@@ -3036,7 +3036,12 @@ fn emit_text_op(
     } else {
         scale.max(1.0)
     };
-    let fsz = if magnitude > 0.0 { magnitude } else { 1.0 };
+    // The advance keeps the sign, and the glyph size does not. A producer that
+    // writes a negative size writes negative widths to go with it, so the two
+    // cancel and the pen still moves forward -- taking the magnitude here as
+    // well would send every run backwards along its own line, piling the whole
+    // page into its left margin.
+    let fsz = if font_size != 0.0 { font_size } else { 1.0 };
     // Device advance = text-space width (em × fontSize) × CTM scale.
     let factor = fsz * scale.max(0.01);
     let advances: Vec<f64> = advs_em.iter().map(|a| a * factor).collect();
