@@ -2083,6 +2083,7 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
         [1.0, 0.0, 0.0, 1.0, -view[0], -view[1]],
         &mut ops,
         0,
+        &FormState::default(),
     );
     ops
 }
@@ -2124,6 +2125,7 @@ fn run_form(
     ctm: Matrix,
     ops: &mut Vec<RenderOp>,
     depth: usize,
+    state: &FormState,
 ) {
     let (dict, content) = form;
     let matrix = rect6(doc, dict, "Matrix").unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
@@ -2158,8 +2160,41 @@ fn run_form(
         .get(dict, "Resources")
         .and_then(|o| o.as_dict().cloned())
         .unwrap_or_else(|| outer.clone());
-    run_content(doc, content, &inner_resources, inner, ops, depth + 1);
+    run_content(doc, content, &inner_resources, inner, ops, depth + 1, state);
     ops.push(RenderOp::Restore);
+}
+
+/// The graphics state a form XObject starts from.
+///
+/// A form is not a fresh page: the specification hands it the state in force
+/// where it is drawn, and producers rely on that. One white paper sets `ca 0`
+/// and then draws a form; starting the form from the defaults instead paints
+/// two opaque figures over the page that no other reader shows.
+#[derive(Clone)]
+struct FormState {
+    fill: [f64; 4],
+    stroke: [f64; 4],
+    fill_space: Space,
+    stroke_space: Space,
+    fill_alpha: f64,
+    stroke_alpha: f64,
+    blend: Blend,
+    line_width: f64,
+}
+
+impl Default for FormState {
+    fn default() -> FormState {
+        FormState {
+            fill: [0.0, 0.0, 0.0, 1.0],
+            stroke: [0.0, 0.0, 0.0, 1.0],
+            fill_space: Space::default(),
+            stroke_space: Space::default(),
+            fill_alpha: 1.0,
+            stroke_alpha: 1.0,
+            blend: Blend::Normal,
+            line_width: 1.0,
+        }
+    }
 }
 
 /// How deep a form may nest before we stop following it.
@@ -2182,6 +2217,7 @@ fn run_content(
     start_ctm: Matrix,
     ops: &mut Vec<RenderOp>,
     depth: usize,
+    inherited: &FormState,
 ) {
     let fonts = build_fonts_in(doc, resources);
     let color_spaces = build_color_spaces_in(doc, resources);
@@ -2202,17 +2238,19 @@ fn run_content(
     // searched and selected, not to be seen. Drawing them puts the
     // transcription on top of the picture of the same words.
     let mut ts = TextState::default();
-    let mut fill: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
-    let mut stroke: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
+    // Colour, alpha, blend and line width come from the caller: for a page
+    // those are the defaults, for a form they are the state it is drawn under.
+    let mut fill: [f64; 4] = inherited.fill;
+    let mut stroke: [f64; 4] = inherited.stroke;
     // Which space those numbers are in, so `1 scn` can mean full ink rather
     // than white.
-    let mut fill_space = Space::default();
-    let mut stroke_space = Space::default();
-    let mut line_width = 1.0f64;
+    let mut fill_space = inherited.fill_space.clone();
+    let mut stroke_space = inherited.stroke_space.clone();
+    let mut line_width = inherited.line_width;
     // Constant alpha and blend mode, both graphics state, both set by `gs`.
-    let mut fill_alpha = 1.0f64;
-    let mut stroke_alpha = 1.0f64;
-    let mut blend = Blend::Normal;
+    let mut fill_alpha = inherited.fill_alpha;
+    let mut stroke_alpha = inherited.stroke_alpha;
+    let mut blend = inherited.blend;
 
     // Path state, in device space.
     let mut subpaths: Vec<Vec<[f64; 2]>> = Vec::new();
@@ -2462,7 +2500,29 @@ fn run_content(
                             if let Some(form) = form_xobject(doc, resources, name)
                                 && depth < MAX_FORM_DEPTH
                             {
-                                run_form(doc, &form, resources, ctm, ops, depth);
+                                let state = FormState {
+                                    fill,
+                                    stroke,
+                                    fill_space: fill_space.clone(),
+                                    stroke_space: stroke_space.clone(),
+                                    fill_alpha,
+                                    stroke_alpha,
+                                    blend,
+                                    line_width,
+                                };
+                                run_form(doc, &form, resources, ctm, ops, depth, &state);
+                                stack.clear();
+                                continue;
+                            }
+                            // An image is painted with the fill alpha, and at
+                            // zero it cannot mark the page. The op carries no
+                            // alpha of its own, so rather than hand every
+                            // renderer a picture it must then discover is
+                            // invisible, it is not emitted -- the same reason
+                            // a blend that cannot change the page suppresses a
+                            // fill. Partial alpha on an image is still drawn
+                            // opaque; correcting that needs an alpha on the op.
+                            if fill_alpha <= 0.0 {
                                 stack.clear();
                                 continue;
                             }
@@ -5759,6 +5819,124 @@ mod tests {
         assert_eq!(b64e(b"Man"), "TWFu");
         assert_eq!(b64e(b"Ma"), "TWE=");
         assert_eq!(b64e(b""), "");
+    }
+
+    /// A form XObject starts from the state it is drawn under.
+    ///
+    /// `ca 0` means nothing the form paints can mark the page. Running the
+    /// form from the defaults instead puts its artwork on top of everything,
+    /// which is how one white paper grew two opaque figures no other reader
+    /// shows.
+    #[test]
+    fn a_form_is_drawn_in_the_state_it_was_reached_in() {
+        const FORM: &str = "q 100 0 0 100 10 10 cm /Im Do Q";
+        let make = |gs: &str| -> Vec<RenderOp> {
+            let page = format!("q {gs} /Fm Do Q");
+            let pdf = format!(
+                concat!(
+                    "%PDF-1.5
+",
+                    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                    "/Resources<</ExtGState<</G0 7 0 R>>/XObject<</Fm 5 0 R>>>>>>endobj
+",
+                    "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                    "5 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 200 200]",
+                    "/Resources<</XObject<</Im 6 0 R>>>>/Length {}>>stream
+{}
+",
+                    "endstream
+endobj
+",
+                    "6 0 obj<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace",
+                    "/DeviceRGB/BitsPerComponent 8/Length 3>>stream
+RGB
+endstream
+endobj
+",
+                    "7 0 obj<</Type/ExtGState/ca 0>>endobj
+",
+                    "startxref
+0
+%%EOF"
+                ),
+                page.len(),
+                page,
+                FORM.len(),
+                FORM
+            );
+            extract_display_list(pdf.as_bytes(), 1)
+                .expect("a display list")
+                .ops
+        };
+        let drawn = make("");
+        assert!(
+            drawn.iter().any(|op| matches!(op, RenderOp::Image { .. })),
+            "without the state the form's image is drawn: {drawn:?}"
+        );
+        let hidden = make("/G0 gs");
+        assert!(
+            !hidden.iter().any(|op| matches!(op, RenderOp::Image { .. })),
+            "under ca 0 nothing the form paints can mark the page: {hidden:?}"
+        );
+    }
+
+    /// Colour is graphics state too, and a form inherits it.
+    #[test]
+    fn a_form_inherits_the_colour_it_is_drawn_under() {
+        const PAGE: &str = "1 0 0 rg /Fm Do";
+        const FORM: &str = "10 10 m 100 10 l 100 100 l h f";
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                "/Resources<</XObject<</Fm 5 0 R>>>>>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "5 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 200 200]/Length {}>>",
+                "stream
+{}
+endstream
+endobj
+",
+                "startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            FORM.len(),
+            FORM
+        );
+        let list = extract_display_list(pdf.as_bytes(), 1).expect("a display list");
+        let fill = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the form fills a path: {:?}", list.ops));
+        assert!(
+            fill[0] > 0.9 && fill[1] < 0.1 && fill[2] < 0.1,
+            "the form paints in the colour set outside it: {fill:?}"
+        );
     }
 
     /// A stroke is as wide as the CTM in force when the path is *painted*.
