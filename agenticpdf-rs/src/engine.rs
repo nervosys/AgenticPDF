@@ -2059,6 +2059,9 @@ struct GState<'a> {
     fill_alpha: f64,
     stroke_alpha: f64,
     blend: Blend,
+    /// In user space, as `w` gives it. The CTM that scales it is the one in
+    /// effect when the path is painted, not when the width was set.
+    line_width: f64,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -2247,6 +2250,7 @@ fn run_content(
                             fill_alpha,
                             stroke_alpha,
                             blend,
+                            line_width,
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -2271,6 +2275,7 @@ fn run_content(
                             fill_alpha = state.fill_alpha;
                             stroke_alpha = state.stroke_alpha;
                             blend = state.blend;
+                            line_width = state.line_width;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -2306,8 +2311,7 @@ fn run_content(
                     }
                     "w" => {
                         if let Some(Token::Num(v)) = stack.last() {
-                            let scale = (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs().sqrt();
-                            line_width = (*v * scale).max(0.1);
+                            line_width = *v;
                         }
                     }
                     "g" | "rg" | "k" => {
@@ -2410,10 +2414,18 @@ fn run_content(
                                 });
                             }
                             if strokes && !blend_is_noop(stroke_color, blend) {
+                                // The width is in user space and the CTM that
+                                // scales it is this one -- the state when the
+                                // path is painted. Reading it at `w` instead
+                                // gets a document like
+                                //   9525 w  q 0.00003 0 0 0.00003 cm ... S
+                                // wrong by four orders of magnitude, which is
+                                // a stroke wider than the page.
+                                let scale = (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs().sqrt();
                                 ops.push(RenderOp::Stroke {
                                     subpaths: paths,
                                     color: stroke_color,
-                                    width: line_width,
+                                    width: (line_width * scale).max(0.1),
                                 });
                             }
                         }
@@ -5747,6 +5759,84 @@ mod tests {
         assert_eq!(b64e(b"Man"), "TWFu");
         assert_eq!(b64e(b"Ma"), "TWE=");
         assert_eq!(b64e(b""), "");
+    }
+
+    /// A stroke is as wide as the CTM in force when the path is *painted*.
+    ///
+    /// Setting the width and then scaling down is ordinary output from
+    /// drawing tools, which express a hairline as a large number under a tiny
+    /// matrix. Reading the width when `w` runs instead of when `S` runs makes
+    /// such a stroke wider than the page: one real document asks for `9525 w`
+    /// under a matrix scaled by 0.0000337, and painting that literally took
+    /// over two minutes for a single page.
+    #[test]
+    fn a_stroke_is_scaled_by_the_matrix_in_force_when_it_is_painted() {
+        let pdf: &[u8] = b"%PDF-1.5
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<<>>>>endobj
+            4 0 obj<<>>stream
+            100 w q 0.01 0 0 0.01 0 0 cm 0 0 m 1000 1000 l S Q
+            0 0 m 10 10 l S
+            endstream
+endobj
+            startxref
+0
+%%EOF";
+        let list = extract_display_list(pdf, 1).expect("a display list");
+        let widths: Vec<f64> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Stroke { width, .. } => Some(*width),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widths.len(), 2, "both paths are stroked: {widths:?}");
+        // 100 user units under a matrix scaled by 0.01.
+        assert!(
+            (widths[0] - 1.0).abs() < 1e-6,
+            "scaled by the painting matrix, not the setting one: {}",
+            widths[0]
+        );
+        // And `w` set outside the q/Q still applies after it, unscaled.
+        assert!(
+            (widths[1] - 100.0).abs() < 1e-6,
+            "the width outlives the q/Q it was set before: {}",
+            widths[1]
+        );
+    }
+
+    /// `w` is graphics state, so `q`/`Q` bounds it like everything else.
+    #[test]
+    fn a_line_width_set_inside_a_saved_state_does_not_outlive_it() {
+        let pdf: &[u8] = b"%PDF-1.5
+            1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+            2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+            3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<<>>>>endobj
+            4 0 obj<<>>stream
+            3 w q 40 w 0 0 m 10 10 l S Q 0 0 m 20 20 l S
+            endstream
+endobj
+            startxref
+0
+%%EOF";
+        let list = extract_display_list(pdf, 1).expect("a display list");
+        let widths: Vec<f64> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Stroke { width, .. } => Some(*width),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widths.len(), 2, "{widths:?}");
+        assert!((widths[0] - 40.0).abs() < 1e-6, "{}", widths[0]);
+        assert!(
+            (widths[1] - 3.0).abs() < 1e-6,
+            "the Q restores the width the q saved: {}",
+            widths[1]
+        );
     }
 
     #[test]
