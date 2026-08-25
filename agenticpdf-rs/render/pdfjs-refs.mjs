@@ -47,6 +47,11 @@ page.on("pageerror", () => {});
 let done = 0;
 for (const file of files) {
   done++;
+  // The suffix is a hash of the full path, not a running counter: it must not
+  // depend on how the corpus was split, so that several instances can fill one
+  // output directory in parallel and two files of the same name stay apart.
+  let hash = 0;
+  for (const ch of file) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   const slug =
     path
       .basename(file)
@@ -54,7 +59,7 @@ for (const file of files) {
       .replace(/[^A-Za-z0-9]+/g, "_")
       .slice(0, 60) +
     "_" +
-    done;
+    hash.toString(36);
   const d = path.join(outdir, slug);
   const url = "file:///" + path.resolve(file).split(String.fromCharCode(92)).join("/");
   try {
@@ -68,15 +73,22 @@ for (const file of files) {
       await page.evaluate((p) => {
         window.PDFViewerApplication.page = p;
       }, n);
+      // Wait for the viewer to say the page is *finished*, not merely for a
+      // canvas to exist. A canvas appears as soon as the page is laid out, so
+      // grabbing on its presence reads an unpainted surface -- which scores as
+      // a total mismatch and looks exactly like a renderer bug.
+      // RenderingStates.FINISHED is 3.
       await page.waitForFunction(
         (p) => {
+          const view = window.PDFViewerApplication.pdfViewer.getPageView(p - 1);
+          if (!view || view.renderingState !== 3) return false;
           const el = document.querySelector(`.page[data-page-number="${p}"] canvas`);
           return el && el.width > 10;
         },
         n,
-        { timeout: 60000 },
+        { timeout: 120000 },
       );
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(250);
       // Composite over white and downscale in the page, then hand back base64:
       // a multi-million-element JSON array across the bridge costs more than
       // the rendering does.
