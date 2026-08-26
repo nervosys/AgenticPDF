@@ -1135,8 +1135,9 @@ fn emit_page(page: Page, document: &SemanticDoc, output: &mut Typeset) {
                     h: *height,
                     name: asset_id.clone(),
                     // We lay out our own documents; nothing here fades a
-                    // picture behind the text.
+                    // picture behind the text, and nothing stencils one.
                     alpha: 1.0,
+                    tint: None,
                 });
                 if let Some(image) = page_image(document, asset_id, x, y, *width, *height)
                     && !images.iter().any(|existing| existing.name == image.name)

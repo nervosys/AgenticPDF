@@ -1778,6 +1778,16 @@ pub enum RenderOp {
         /// still reads as fully opaque rather than invisible.
         #[serde(default = "opaque")]
         alpha: f64,
+        /// The colour to paint this image in, for an `/ImageMask`.
+        ///
+        /// A mask is a stencil rather than a picture: one bit a sample, no
+        /// colour space, and what it paints is the fill colour in force at the
+        /// `Do`. The texture cannot carry that -- the same stencil may be
+        /// painted twice on one page in two colours -- so it carries coverage
+        /// in its alpha and the colour rides on the op. `None` for an ordinary
+        /// image, which is every image that is not a mask.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tint: Option<[f64; 4]>,
     },
     /// Save graphics state (push the clip/scissor stack).
     Save,
@@ -2822,6 +2832,10 @@ fn run_content(
                                 h: top - bottom,
                                 name: image_key_in(doc, resources, name),
                                 alpha: fill_alpha.clamp(0.0, 1.0),
+                                tint: match is_image_mask(doc, resources, name) {
+                                    true => Some(fill),
+                                    false => None,
+                                },
                             });
                         }
                     }
@@ -3434,6 +3448,18 @@ fn image_key(entry: &Object, name: &str) -> String {
 }
 
 /// The same key, looked up by the name a `Do` operator gives.
+/// Whether the named image XObject is a stencil rather than a picture.
+fn is_image_mask(doc: &Document, resources: &Dict, name: &str) -> bool {
+    doc.get(resources, "XObject")
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|xobjects| xobjects.get(name).map(|entry| doc.resolve(entry)))
+        .and_then(|resolved| match resolved {
+            Object::Stream(d, _) => Some(d),
+            _ => None,
+        })
+        .is_some_and(|d| matches!(doc.get(&d, "ImageMask"), Some(Object::Bool(true))))
+}
+
 fn image_key_in(doc: &Document, resources: &Dict, name: &str) -> String {
     doc.get(resources, "XObject")
         .and_then(|o| o.as_dict().cloned())
@@ -3723,6 +3749,30 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
         .unwrap_or(8) as u8;
     let cs = color_space_name(doc, d);
     let n = w * h;
+
+    // An image mask is a stencil, not a picture: one bit a sample, no colour
+    // space at all, and the colour it paints is whatever the fill colour was
+    // at the `Do`. That colour is not here to be had, so the texture carries
+    // coverage in its alpha and leaves the tint to the renderer, which gets
+    // it from the op. Without this the whole class decodes to nothing and the
+    // painter draws its frame -- a grey box where a journal masthead goes.
+    if matches!(doc.get(d, "ImageMask"), Some(Object::Bool(true))) {
+        let samples = unpack_samples(&decoded, w, h, 1)?;
+        // `/Decode [1 0]` swaps which sample value marks the page. The
+        // default is that a zero paints, which is the opposite of the
+        // intuition and the reason this is read rather than assumed.
+        let invert = matches!(doc.get(d, "Decode"), Some(Object::Array(a))
+            if a.first().and_then(|o| doc.resolve(o).as_f64()) == Some(1.0));
+        let mut rgba = Vec::with_capacity(n * 4);
+        for sample in samples {
+            let paints = (sample == 0) != invert;
+            // White under the coverage: a renderer that ignores the tint
+            // draws nothing visible rather than a black rectangle.
+            rgba.extend_from_slice(&[255, 255, 255, if paints { 255 } else { 0 }]);
+        }
+        return Some(("rgba".into(), w as u32, h as u32, rgba));
+    }
+
     let gray = matches!(cs.as_str(), "DeviceGray" | "CalGray" | "G");
     let mut rgba = Vec::with_capacity(n * 4);
 
@@ -6299,6 +6349,120 @@ endobj
             alpha_of("0"),
             None,
             "at zero it cannot mark the page and is not emitted at all"
+        );
+    }
+
+    /// A stencil carries the fill colour it was drawn in, and no picture does.
+    ///
+    /// An `/ImageMask` has no colour space and one bit a sample: what it
+    /// paints is whatever `rg` last said. The texture cannot hold that -- the
+    /// same stencil may be drawn twice on a page in two colours -- so the op
+    /// does, and an ordinary image carries no tint at all.
+    #[test]
+    fn an_image_mask_carries_the_fill_colour_and_a_picture_does_not() {
+        let tint_of = |extra: &str| -> Option<Option<[f64; 4]>> {
+            const PAGE: &str = "q 1 0 0 rg 100 0 0 100 10 10 cm /Im Do Q";
+            let pdf = format!(
+                concat!(
+                    "%PDF-1.5
+",
+                    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                    "/Resources<</XObject<</Im 5 0 R>>>>>>endobj
+",
+                    "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                    "5 0 obj<</Type/XObject/Subtype/Image/Width 8/Height 1{}",
+                    "/BitsPerComponent 1/Length 1>>stream
+ 
+endstream
+endobj
+",
+                    "startxref
+0
+%%EOF"
+                ),
+                PAGE.len(),
+                PAGE,
+                extra
+            );
+            extract_display_list(pdf.as_bytes(), 1)
+                .expect("a display list")
+                .ops
+                .iter()
+                .find_map(|op| match op {
+                    RenderOp::Image { tint, .. } => Some(*tint),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(
+            tint_of("/ImageMask true"),
+            Some(Some([1.0, 0.0, 0.0, 1.0])),
+            "a stencil takes the fill colour that was in force"
+        );
+        assert_eq!(
+            tint_of("/ColorSpace/DeviceGray"),
+            Some(None),
+            "an ordinary image has a colour of its own and needs no tint"
+        );
+    }
+
+    /// A stencil's bits become coverage, and a zero is what marks the page.
+    #[test]
+    fn an_image_mask_decodes_to_coverage_rather_than_to_nothing() {
+        // Eight samples in one byte: 1010_1010. A zero paints by default.
+        let coverage = |extra: &str| -> Vec<u8> {
+            let pdf = format!(
+                concat!(
+                    "%PDF-1.5
+",
+                    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                    "/Resources<</XObject<</Im 5 0 R>>>>>>endobj
+",
+                    "4 0 obj<</Length 2>>stream
+q
+endstream
+endobj
+",
+                    "5 0 obj<</Type/XObject/Subtype/Image/Width 8/Height 1/ImageMask true{}",
+                    "/BitsPerComponent 1/Length 1>>stream
+ª
+endstream
+endobj
+",
+                    "startxref
+0
+%%EOF"
+                ),
+                extra
+            );
+            // Latin-1 so the 0xAA byte survives into the stream unchanged.
+            let bytes: Vec<u8> = pdf.chars().map(|c| c as u8).collect();
+            let textures = extract_page_textures(&bytes, 1).expect("textures");
+            let mask = textures.first().expect("the stencil decodes");
+            mask.rgba.as_chunks::<4>().0.iter().map(|p| p[3]).collect()
+        };
+
+        assert_eq!(
+            coverage(""),
+            vec![0, 255, 0, 255, 0, 255, 0, 255],
+            "a zero sample paints and a one does not"
+        );
+        assert_eq!(
+            coverage("/Decode[1 0]"),
+            vec![255, 0, 255, 0, 255, 0, 255, 0],
+            "/Decode [1 0] swaps which bit marks the page"
         );
     }
 

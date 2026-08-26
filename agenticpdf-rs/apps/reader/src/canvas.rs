@@ -255,19 +255,32 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 
-/// Scale an image's alpha channel by a constant, or `None` at full opacity.
+/// Apply an image op's constant alpha and, for a stencil, its colour.
 ///
 /// `None` rather than a clone is the point: almost every image on almost every
-/// page is opaque, and a page of photographs would otherwise copy every one of
-/// them per frame to multiply by 1.
-fn faded(rgba: &[u8], alpha: f64) -> Option<Vec<u8>> {
-    if alpha >= 1.0 {
+/// page is an opaque picture, and a page of photographs would otherwise copy
+/// every one of them per frame to multiply by 1.
+///
+/// A `tint` marks an `/ImageMask`, whose texture carries coverage in its alpha
+/// and nothing meaningful in its colour. The colour is the fill colour that was
+/// in force where the mask was drawn, and it arrives on the op because the same
+/// stencil can be painted twice on one page in two colours.
+fn recolour(rgba: &[u8], alpha: f64, tint: Option<[f64; 4]>) -> Option<Vec<u8>> {
+    if alpha >= 1.0 && tint.is_none() {
         return None;
     }
     let alpha = alpha.clamp(0.0, 1.0);
+    let channel = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let mut out = rgba.to_vec();
     for pixel in out.as_chunks_mut::<4>().0 {
-        pixel[3] = (pixel[3] as f64 * alpha).round() as u8;
+        let mut coverage = pixel[3] as f64 * alpha;
+        if let Some(tint) = tint {
+            pixel[0] = channel(tint[0]);
+            pixel[1] = channel(tint[1]);
+            pixel[2] = channel(tint[2]);
+            coverage *= tint[3].clamp(0.0, 1.0);
+        }
+        pixel[3] = coverage.round() as u8;
     }
     Some(out)
 }
@@ -503,6 +516,7 @@ pub fn paint_page(
                 h,
                 name,
                 alpha,
+                tint,
             } => {
                 // y + h because the op's origin is the image's bottom-left and
                 // the screen rect is anchored at its top-left.
@@ -515,13 +529,15 @@ pub fn paint_page(
                 );
                 match textures.iter().find(|texture| texture.name == *name) {
                     Some(texture) => {
-                        // `Painter::draw_image` takes no opacity, so a faded
-                        // image is faded in its own alpha channel. Every host
-                        // composites straight alpha, so scaling it is the
-                        // whole of `ca` for an image; the copy is only made
-                        // when the document actually asked for one.
-                        let faded = faded(&texture.rgba, *alpha);
-                        let pixels = faded.as_deref().unwrap_or(&texture.rgba);
+                        // `Painter::draw_image` takes no opacity and no tint,
+                        // so both are folded into the pixels. Every host
+                        // composites straight alpha, so scaling the alpha
+                        // channel is the whole of `ca` for an image; a
+                        // stencil additionally takes its colour here, because
+                        // the texture only ever carried its coverage. The
+                        // copy is made only when the document asked for one.
+                        let recoloured = recolour(&texture.rgba, *alpha, *tint);
+                        let pixels = recoloured.as_deref().unwrap_or(&texture.rgba);
                         painter.draw_image(
                             rect,
                             &ImageData::new(texture.width, texture.height, pixels),
@@ -1195,6 +1211,7 @@ mod tests {
             h: 100.0,
             name: "Im1".into(),
             alpha: 1.0,
+            tint: None,
         }];
         let texture = Texture {
             name: "Im1".into(),
@@ -1230,6 +1247,7 @@ mod tests {
                 h: 100.0,
                 name: "Im1".into(),
                 alpha,
+                tint: None,
             }];
             let texture = Texture {
                 name: "Im1".into(),
@@ -1257,6 +1275,58 @@ mod tests {
         );
     }
 
+    /// A stencil is painted in the colour the op carries, not its own.
+    ///
+    /// An `/ImageMask` texture holds coverage in its alpha and white
+    /// everywhere else, so a painter that ignores the tint draws nothing
+    /// visible. That is the safe direction and the wrong picture: a masthead
+    /// strip is meant to be the fill colour that was in force.
+    #[test]
+    fn a_stencil_is_painted_in_the_colour_the_op_carries() {
+        // Coverage everywhere, no colour of its own.
+        let texture = Texture {
+            name: "Im1".into(),
+            width: 1,
+            height: 1,
+            rgba: vec![255, 255, 255, 255],
+        };
+        let render = |tint: Option<[f64; 4]>| {
+            let mut painter = ImagePainter::new(100, 100);
+            let ops = vec![RenderOp::Image {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                name: "Im1".into(),
+                alpha: 1.0,
+                tint,
+            }];
+            paint_page(
+                &mut painter,
+                &list(ops),
+                Transform::fit(&list(Vec::new()), area(), 1.0),
+                std::slice::from_ref(&texture),
+                &crate::glyphs::FontSet::without_substitution(b""),
+            );
+            painter.get_pixel(50, 50)
+        };
+
+        let red = render(Some([1.0, 0.0, 0.0, 1.0]));
+        assert!(
+            red.r > 0.9 && red.g < 0.1,
+            "the stencil should take the op's colour"
+        );
+        // Half-covered by the fill's own alpha: still red, over a white page.
+        let faint = render(Some([1.0, 0.0, 0.0, 0.5]));
+        assert!(
+            faint.g > 0.4 && faint.g < 0.6,
+            "the tint's alpha is coverage too, got {faint:?}"
+        );
+        // Without a tint the same texture is an ordinary white picture.
+        let plain = render(None);
+        assert!(plain.r > 0.9 && plain.g > 0.9, "no tint, no recolouring");
+    }
+
     /// The same picture at two opacities is two pictures on the wire.
     ///
     /// Images are cached by a key over their pixels, so fading has to happen
@@ -1279,6 +1349,7 @@ mod tests {
                 h: 10.0,
                 name: "Im1".into(),
                 alpha,
+                tint: None,
             })
             .collect();
         let mut painter = RecordingPainter::new();
@@ -1307,6 +1378,7 @@ mod tests {
             h: 80.0,
             name: "absent".into(),
             alpha: 1.0,
+            tint: None,
         }];
         paint_page(
             &mut painter,
