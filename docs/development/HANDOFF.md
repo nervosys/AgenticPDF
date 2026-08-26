@@ -14,20 +14,20 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **659 of 683 — 96.5 %** |
-| Over the threshold | 23 |
+| Matching (total variation ≤ 0.12) | **664 of 683 — 97.2 %** |
+| Over the threshold | 19 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 594 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 75 commits ahead of `master`, unpushed |
+| Tests | 594 crate + 45 integration, 73 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 76 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 23 failures, four have a mean absolute difference above 0.10 — those are
-the only ones a reader would call visibly wrong. Six sit between 0.04 and 0.10.
-The remaining thirteen are below 0.04: sparse pages where the normalised score
+Of the 19 failures, **two** have a mean absolute difference above 0.10 — and
+both are the one infographic ebook whose artwork is mesh shadings, which we
+decline. Four sit between 0.04 and 0.10. The remaining thirteen are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -137,6 +137,18 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**An image was placed by its bounding box rather than its own transform.** A
+PDF image is painted into the *unit square* under the current transform, which
+is free to turn it, mirror it or shear it; the op carried only a box. One eBook
+places a photograph with a quarter turn and a mirror, and it came out lying on
+its side — while the page's ink barely moved, 0.4226 against 0.4089, because a
+grid of ink mass cannot see which way up a photograph is. The op now carries
+`[a b c d]` and the painter resamples anything not upright by walking the output
+and asking where each pixel came from — one routine for mirrors, turns and
+shears alike, because enumerating the cases is how a sign ends up backwards.
+**13 pages improved, none regressed, net -1.069.** Sized before it was built:
+`images_placed_askew` counts 59 non-upright placements against 5,564 upright.
 
 **A run was answered by a stranger's subset.** Naming a face object is also a
 statement about the others: a run set in object 19 is not set in object 12. The
