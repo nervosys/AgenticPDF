@@ -5842,6 +5842,18 @@ impl<'a> ContentLexer<'a> {
                         self.pos += 1;
                         continue;
                     }
+                    // `ID` is followed by raw image bytes, not by operators.
+                    // Lexing them is not merely useless: random binary is full
+                    // of things that read as content. A `(` opens a literal
+                    // string that swallows everything to the next unbalanced
+                    // `)`, and the one- and two-letter operator names -- `f`,
+                    // `re`, `q`, `Q`, `cm`, `rg`, `W`, `n`, `Do` -- turn up
+                    // constantly, so a photograph can fill the page, clip away
+                    // the text under it, or stroke a line as wide as the sheet.
+                    if op == "ID" {
+                        self.skip_inline_image_data();
+                        return Some(Token::Op("EI".into()));
+                    }
                     return Some(Token::Op(op));
                 }
             }
@@ -5894,6 +5906,37 @@ impl<'a> ContentLexer<'a> {
         std::str::from_utf8(&self.buf[start..self.pos])
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
+    }
+
+    /// Step over an inline image's samples, leaving `pos` after its `EI`.
+    ///
+    /// The data begins after exactly one whitespace byte and ends at an `EI`
+    /// that stands as its own token. Nothing in the format says the samples
+    /// cannot contain those two bytes, so this is a heuristic rather than a
+    /// parse -- but it is the same one every reader uses, and being wrong here
+    /// costs part of one image, where not skipping at all costs the page.
+    fn skip_inline_image_data(&mut self) {
+        if self.pos < self.buf.len() && Lexer::is_ws(self.buf[self.pos]) {
+            self.pos += 1;
+        }
+        let mut at = self.pos;
+        while at + 1 < self.buf.len() {
+            let is_ei = self.buf[at] == b'E'
+                && self.buf[at + 1] == b'I'
+                && at > 0
+                && Lexer::is_ws(self.buf[at - 1])
+                && self
+                    .buf
+                    .get(at + 2)
+                    .is_none_or(|&b| Lexer::is_ws(b) || Lexer::is_delim(b));
+            if is_ei {
+                self.pos = at + 2;
+                return;
+            }
+            at += 1;
+        }
+        // Unterminated: the rest of the stream is image data, not content.
+        self.pos = self.buf.len();
     }
 
     fn read_op(&mut self) -> String {
@@ -6464,6 +6507,73 @@ endobj
             vec![255, 0, 255, 0, 255, 0, 255, 0],
             "/Decode [1 0] swaps which bit marks the page"
         );
+    }
+
+    /// An inline image's bytes are samples, not operators.
+    ///
+    /// Random binary reads as content: `(` opens a string that runs to the
+    /// next unbalanced `)`, and the short operator names turn up constantly.
+    /// A payload that happens to spell `re f` paints a rectangle nobody asked
+    /// for, at whatever numbers the neighbouring bytes decoded to.
+    #[test]
+    fn inline_image_samples_are_not_read_as_content() {
+        // The payload spells out a full-page black fill and a clip. If it is
+        // lexed, the page gains both; if it is skipped, the page has only the
+        // small red rectangle drawn after the `EI`.
+        const PAGE: &str = concat!(
+            "BI /W 4 /H 1 /BPC 8 /CS /G ID ",
+            "0 0 999 999 re f 0 0 999 999 re W n ",
+            "EI 1 0 0 rg 10 10 20 20 re f"
+        );
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE
+        );
+        let ops = extract_display_list(pdf.as_bytes(), 1)
+            .expect("a display list")
+            .ops;
+
+        let fills: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { subpaths, .. } => Some(subpaths),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fills.len(),
+            1,
+            "only the fill after the EI is content: {ops:?}"
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(op, RenderOp::Clip { .. })),
+            "the payload's clip must not narrow the page: {ops:?}"
+        );
+        // And the surviving fill is the small one, not the page-sized one.
+        let widest = fills[0]
+            .iter()
+            .flatten()
+            .map(|p| p[0])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(widest < 100.0, "the page-sized fill leaked through");
     }
 
     /// Colour is graphics state too, and a form inherits it.
