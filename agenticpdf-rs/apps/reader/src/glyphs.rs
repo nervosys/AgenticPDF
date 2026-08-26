@@ -221,8 +221,21 @@ impl FontSet {
         // first maps `T` to a glyph drawing `q`. Its cover read "qhe
         // pingle-Board Computer e andbook", and scored 0.010 against the
         // reference, because a grid of ink cannot see which letter drew it.
+        //
+        // Naming one is also a statement about the others: a run set in object
+        // 19 is not set in object 12, so object 12's subset must not answer
+        // for it even when object 19 has no glyph to give. This document
+        // carries three font objects called TimesNewRomanPS-BoldMT -- one with
+        // an embedded subset, two without -- and its contents page is set in
+        // one of the two. Letting the embedded subset answer by name turned
+        // "List of Tables" into "i ist of qables".
+        //
+        // The stand-in stays on the end either way. It is the answer for a run
+        // whose own face is absent or incomplete, and it is keyed by the
+        // character rather than by the code, so it cannot draw a wrong letter.
         let mut faces = self.faces(base_font);
         if face_object != 0 {
+            faces.retain(|face| face.object == face_object || face.object == 0);
             faces.sort_by_key(|face| face.object != face_object);
         }
         let found = faces.into_iter().find_map(|face| {
