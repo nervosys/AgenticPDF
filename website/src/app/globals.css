@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@source "./**/*.tsx";
+
+@theme inline {
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+:root {
+  --bg: #0a0e17;
+  --bg-card: #0f1520;
+  --bg-hover: #1a2232;
+  --border: #1e293b;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-soft: rgba(56, 189, 248, 0.1);
+  --success: #34d399;
+  --warning: #fbbf24;
+  --glow: rgba(56, 189, 248, 0.15);
+  --border-accent: rgba(56, 189, 248, 0.2);
+}
+
+[data-theme="light"] {
+  --bg: #f8fafc;
+  --bg-card: #f1f5f9;
+  --bg-hover: #e2e8f0;
+  --border: #cbd5e1;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --accent: #0891b2;
+  --accent-hover: #06b6d4;
+  --accent-soft: rgba(8, 145, 178, 0.08);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Code blocks */
+pre {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+code {
+  font-family: var(--font-jetbrains-mono), 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 0.875em;
+}
+
+:not(pre) > code {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+}
+
+/* Shiki dual-theme */
+.shiki, .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: transparent !important;
+}
+[data-theme="light"] .shiki,
+[data-theme="light"] .shiki span {
+  color: var(--shiki-light) !important;
+}
+
+/* Grid overlay background */
+.grid-overlay {
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 60% 50% at 50% 0%, black 30%, transparent 70%);
+}
+
+/* Scan-line animation */
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+.scan-line {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent, var(--glow), transparent);
+  height: 120px;
+  animation: scan 6s linear infinite;
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+/* Card glow border effect */
+.card-glow {
+  position: relative;
+}
+.card-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--border-accent), transparent 60%);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Tactical font */
+.font-tactical {
+  font-family: var(--font-jetbrains-mono), 'JetBrains Mono', monospace;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* Pulse dot */
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px var(--success); }
+  50% { opacity: 0.5; box-shadow: 0 0 16px var(--success); }
+}
+
+/* Animations */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in { animation: fade-in 0.5s ease-out both; }
+.stagger-in > * { animation: fade-in 0.5s ease-out both; }
+.stagger-in > *:nth-child(1) { animation-delay: 0.0s; }
+.stagger-in > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger-in > *:nth-child(3) { animation-delay: 0.12s; }
+.stagger-in > *:nth-child(4) { animation-delay: 0.18s; }
+.stagger-in > *:nth-child(5) { animation-delay: 0.24s; }
+.stagger-in > *:nth-child(6) { animation-delay: 0.3s; }
+.stagger-in > *:nth-child(7) { animation-delay: 0.36s; }
+.stagger-in > *:nth-child(8) { animation-delay: 0.42s; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* Header */
+.header-bg { background: rgba(10, 14, 23, 0.85); }
+[data-theme="light"] .header-bg { background: rgba(248, 250, 252, 0.85); }

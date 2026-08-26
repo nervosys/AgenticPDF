@@ -120,8 +120,18 @@ agenticpdf-browser.js
 .webpack/
 
 # Electron
-app/
-release/
+# Anchored to the repository root. Without the leading slash these match at any
+# depth, and they did: `app/` silently excluded the whole Android application
+# source and the website's entire src/app tree from version control.
+/app/
+/release/
+
+# Android build output. The shared objects are produced by build-libs.sh and
+# the build tree by Gradle; the app's own sources are not build output and were
+# only ever excluded by the unanchored `app/` rule above.
+agenticpdf-rs/apps/reader/android/app/build/
+agenticpdf-rs/apps/reader/android/app/src/main/jniLibs/
+agenticpdf-rs/apps/reader/android/.gradle/
 
 # JetBrains IDEs
 *.iml
