@@ -18,7 +18,7 @@ import path from "node:path";
 
 const [input, outdir, perFileArg, widthArg] = process.argv.slice(2);
 if (!input || !outdir) {
-  console.error("usage: node corpus-tmp.mjs <list-file-or-dir> <outdir> [pages] [width]");
+  console.error("usage: node pdfjs-refs.mjs <list-file-or-dir> <outdir> [pages] [width]");
   process.exit(2);
 }
 const perFile = Number(perFileArg) || 3;
