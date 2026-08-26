@@ -63,6 +63,12 @@ pub struct EmbeddedFont {
     /// `/CIDToGIDMap` as a stream: character id to glyph index. `None` means
     /// `/Identity`, where the two are the same.
     pub cid_to_gid: Option<Vec<u16>>,
+    /// The object number this font dictionary was fetched from.
+    ///
+    /// `/BaseFont` is not an identity. One document embeds two subsets of
+    /// PTSans-Bold under the same name, one of which maps `T` to a glyph that
+    /// draws `q`; picking between them by name draws whichever answers first.
+    pub object: u32,
 }
 
 impl EmbeddedFont {
@@ -285,6 +291,7 @@ pub fn embedded_fonts(data: &[u8]) -> Vec<EmbeddedFont> {
         };
 
         out.push(EmbeddedFont {
+            object: number,
             base_font,
             program,
             differences: differences(&doc, dict),

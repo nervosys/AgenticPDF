@@ -1226,6 +1226,7 @@ fn emit_line(
             rot: 0.0,
             color: piece.color,
             font: piece.font.postscript_name().to_string(),
+            face: 0,
         });
 
         if piece.underline {

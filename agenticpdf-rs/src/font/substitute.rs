@@ -196,6 +196,8 @@ pub fn load(base_font: &str) -> Option<EmbeddedFont> {
         };
         if let Some(program) = TrueTypeFont::parse(&bytes) {
             return Some(EmbeddedFont {
+                // A substitute stands in for a name, not for an object.
+                object: 0,
                 base_font: base_font.to_string(),
                 program: FontProgram::TrueType(program),
                 differences: HashMap::new(),

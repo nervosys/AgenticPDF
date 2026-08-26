@@ -1747,6 +1747,15 @@ pub enum RenderOp {
         rot: f64,
         color: [f64; 4],
         font: String,
+        /// The object number of the font dictionary this run was set in.
+        ///
+        /// `/BaseFont` is not an identity: one document embeds two subsets of
+        /// PTSans-Bold under the same name, and a renderer that picks between
+        /// them by name draws whichever answers first. One of those maps `T`
+        /// to a glyph that draws `q`. Zero where the font was written inline
+        /// rather than referenced, which no producer does.
+        #[serde(default)]
+        face: u32,
     },
     /// An image XObject placement; `name` is the page resource key.
     Image {
@@ -2996,6 +3005,7 @@ fn run_content(
                                 emit_text_op(
                                     &text,
                                     &cur_font_name,
+                                    cur_font.map(|f| f.object).unwrap_or(0),
                                     font_size,
                                     &advs,
                                     &codes,
@@ -3152,8 +3162,9 @@ fn push_text_op(
         // Rise lifts the run off the baseline -- superscripts and footnote
         // markers -- without disturbing the line it sits on.
         let placed = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, ts.rise], tm);
+        let face = font.map(|f| f.object).unwrap_or(0);
         emit_text_op(
-            &s, font_name, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
+            &s, font_name, face, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
         );
     }
     advance
@@ -3165,6 +3176,7 @@ fn push_text_op(
 fn emit_text_op(
     text: &str,
     font_name: &str,
+    face: u32,
     font_size: f64,
     advs_em: &[f64],
     codes: &[u32],
@@ -3212,6 +3224,7 @@ fn emit_text_op(
         rot,
         color,
         font: font_name.to_string(),
+        face,
     });
 }
 
@@ -4358,6 +4371,9 @@ struct Font {
     /// should measure real glyph widths instead.
     has_widths: bool,
     base_font: String,
+    /// The object number the font dictionary was fetched from, so a renderer
+    /// can tell two subsets sharing a `/BaseFont` apart.
+    object: u32,
 }
 
 impl Font {
@@ -4562,7 +4578,13 @@ fn build_fonts_in(doc: &Document, rd: &Dict) -> HashMap<String, Font> {
     for (name, fref) in fd.iter() {
         let fobj = doc.resolve(fref);
         if let Some(font) = fobj.as_dict() {
-            fonts.insert(name.clone(), build_one_font(doc, font));
+            let object = match fref {
+                Object::Ref(number, _) => *number,
+                _ => 0,
+            };
+            let mut built = build_one_font(doc, font);
+            built.object = object;
+            fonts.insert(name.clone(), built);
         }
     }
     fonts
@@ -4659,6 +4681,7 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
         parse_font_widths(doc, font, two_byte, simple.as_deref());
 
     Font {
+        object: 0,
         two_byte,
         to_unicode,
         simple,
@@ -6083,6 +6106,53 @@ mod tests {
         assert_eq!(b64e(b""), "");
     }
 
+    /// A text run says which font object it was set in.
+    ///
+    /// `/BaseFont` is not an identity: a document may embed two subsets of one
+    /// typeface under the same name, and a renderer choosing between them by
+    /// name draws whichever answers first. One such cover rendered as "qhe
+    /// pingle-Board Computer e andbook" and still scored 0.010 against the
+    /// reference, because a grid of ink cannot see which letter drew it.
+    #[test]
+    fn a_text_run_carries_the_font_object_it_was_set_in() {
+        const PAGE: &str = "BT /F1 12 Tf 10 700 Td (Hi) Tj ET";
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R",
+                "/Resources<</Font<</F1 9 0 R>>>>>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "9 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+",
+                "startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE
+        );
+        let list = extract_display_list(pdf.as_bytes(), 1).expect("a display list");
+        let face = list
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                RenderOp::Text { face, .. } => Some(*face),
+                _ => None,
+            })
+            .expect("the page shows text");
+        assert_eq!(face, 9, "the run names the object its font came from");
+    }
+
     /// A form XObject starts from the state it is drawn under.
     ///
     /// `ca 0` means nothing the form paints can mark the page. Running the
@@ -6413,6 +6483,7 @@ endstream\nendobj\n\
         tu.insert(0x41u32, "A".to_string()); // 1-byte code 0x41
         tu.insert(0x8140u32, "—".to_string()); // 2-byte code
         let font = Font {
+            object: 0,
             two_byte: true,
             to_unicode: tu,
             simple: None,
@@ -6433,6 +6504,7 @@ endstream\nendobj\n\
         let mut tu = HashMap::new();
         tu.insert(0x0041u32, "A".to_string());
         let font = Font {
+            object: 0,
             two_byte: true,
             to_unicode: tu,
             simple: None,
@@ -6452,6 +6524,7 @@ endstream\nendobj\n\
     fn unicode_cmap_decodes_without_tounicode() {
         // UniGB-UCS2-H style: 2-byte code is the Unicode scalar directly.
         let font = Font {
+            object: 0,
             two_byte: true,
             to_unicode: HashMap::new(),
             simple: None,
@@ -6473,6 +6546,7 @@ endstream\nendobj\n\
         // No ToUnicode, not a Unicode CMap → cannot recover Unicode, emit nothing
         // rather than a garbage glyph-id character.
         let font = Font {
+            object: 0,
             two_byte: true,
             to_unicode: HashMap::new(),
             simple: None,

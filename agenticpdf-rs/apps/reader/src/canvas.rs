@@ -100,6 +100,7 @@ fn draw_embedded_glyphs(
     rot: f64,
     style: &dewey::core::TextStyle,
     font: &str,
+    face: u32,
 ) -> bool {
     // A font we have no glyphs for is not one we can draw this way.
     if fonts.font_matrix(font).is_none() {
@@ -205,7 +206,7 @@ fn draw_embedded_glyphs(
             let mut sub_pen = pen;
             for code in &expanded[index] {
                 if let Some(raster) =
-                    fonts.raster(font, *code, Some(*glyph_char), device_size, rot, ink)
+                    fonts.raster(font, face, *code, Some(*glyph_char), device_size, rot, ink)
                 {
                     // The mask is placed by its own offset from the glyph origin,
                     // which is where the outline actually sits -- a letter with a
@@ -411,6 +412,7 @@ pub fn paint_page(
                 rot,
                 color,
                 font,
+                face,
             } => {
                 if text.trim().is_empty() {
                     continue;
@@ -428,7 +430,7 @@ pub fn paint_page(
                 // squeezed to fit.
                 if draw_embedded_glyphs(
                     painter, fonts, &transform, text, *x, *y, *size, advances, codes, *rot, &style,
-                    font,
+                    font, *face,
                 ) {
                     continue;
                 }
@@ -1238,6 +1240,7 @@ mod tests {
                 even_odd: false,
             },
             RenderOp::Text {
+                face: 0,
                 // Quotes, a backslash and a newline: exactly what breaks naive
                 // string concatenation, and exactly what documents contain.
                 text: "he said \"hi\"\\\n".into(),
@@ -1329,6 +1332,7 @@ mod tests {
 
     fn text_op(text: &str, width: f64, rot: f64) -> RenderOp {
         RenderOp::Text {
+            face: 0,
             text: text.into(),
             x: 10.0,
             y: 50.0,
@@ -1796,6 +1800,7 @@ mod fallback_probe {
 
         for op in &list.ops {
             let RenderOp::Text {
+                face: 0,
                 text,
                 advances,
                 codes,
@@ -1825,7 +1830,7 @@ mod fallback_probe {
                     false => codes.get(index).copied().unwrap_or(0),
                 };
                 if fonts
-                    .raster(font, code, Some(*ch), *size, *rot, [0, 0, 0])
+                    .raster(font, 0, code, Some(*ch), *size, *rot, [0, 0, 0])
                     .is_some()
                 {
                     resolved += 1;
@@ -2144,6 +2149,7 @@ fn measure_placement(
     let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
     for op in &list.ops {
         let RenderOp::Text {
+            face: 0,
             x,
             y,
             size,
@@ -2233,6 +2239,7 @@ mod placement {
         let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
         for op in &list.ops {
             let RenderOp::Text {
+                face: 0,
                 x,
                 y,
                 size,
@@ -2513,7 +2520,11 @@ mod ligature_probe {
             Default::default();
         for op in &list.ops {
             let RenderOp::Text {
-                text, codes, font, ..
+                face: 0,
+                text,
+                codes,
+                font,
+                ..
             } = op
             else {
                 continue;
@@ -2522,7 +2533,7 @@ mod ligature_probe {
                 if ch.is_whitespace() {
                     continue;
                 }
-                if fonts.resolve(font, *code, Some(ch)).is_none() {
+                if fonts.resolve(font, 0, *code, Some(ch)).is_none() {
                     *missing.entry((font.clone(), *code, ch)).or_default() += 1;
                 }
             }
@@ -2533,6 +2544,7 @@ mod ligature_probe {
         eprintln!("{} distinct unresolved", missing.len());
         for op in &list.ops {
             let RenderOp::Text {
+                face: 0,
                 text,
                 codes,
                 advances,

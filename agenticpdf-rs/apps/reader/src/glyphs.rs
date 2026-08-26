@@ -18,11 +18,15 @@ use agenticpdf::font::{self, EmbeddedFont, Glyph};
 
 /// Outline cache, keyed by font name and character code.
 /// Keyed by the hint as well as the code: the result depends on both, so
-/// caching by code alone lets a hintless lookup poison a hinted one.
-type OutlineCache = Mutex<HashMap<(String, u32, Option<char>), Option<(Arc<Glyph>, [f64; 6])>>>;
-/// Raster cache: font name, code, size in quarter-pixels, degrees, colour.
+/// caching by code alone lets a hintless lookup poison a hinted one. The face
+/// object joins the key for the same reason -- two subsets can share a name
+/// and answer differently.
+type OutlineCache =
+    Mutex<HashMap<(String, u32, u32, Option<char>), Option<(Arc<Glyph>, [f64; 6])>>>;
+/// Raster cache: font name, face object, code, size in quarter-pixels,
+/// degrees, colour.
 type RasterCache =
-    Mutex<HashMap<(String, u32, Option<char>, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
+    Mutex<HashMap<(String, u32, u32, Option<char>, u32, i32, [u8; 3]), Option<Arc<RasterGlyph>>>>;
 /// Stand-ins resolved by name. `None` is cached so a face the system lacks is
 /// looked for once rather than per glyph.
 type SubstituteCache = Mutex<HashMap<String, Option<Arc<EmbeddedFont>>>>;
@@ -164,7 +168,7 @@ impl FontSet {
 
     /// The advance the face itself gives a code, in text-space ems.
     pub fn own_advance(&self, base_font: &str, code: u32) -> Option<f64> {
-        let (glyph, matrix) = self.resolve(base_font, code, char::from_u32(code))?;
+        let (glyph, matrix) = self.resolve(base_font, 0, code, char::from_u32(code))?;
         Some(glyph.advance as f64 * matrix[0])
     }
 
@@ -188,7 +192,8 @@ impl FontSet {
         code: u32,
         unicode: Option<char>,
     ) -> Option<Arc<Glyph>> {
-        self.resolve(base_font, code, unicode).map(|found| found.0)
+        self.resolve(base_font, 0, code, unicode)
+            .map(|found| found.0)
     }
 
     /// The glyph a code selects together with the matrix of the face it came
@@ -200,18 +205,27 @@ impl FontSet {
     pub fn resolve(
         &self,
         base_font: &str,
+        face_object: u32,
         code: u32,
         unicode: Option<char>,
     ) -> Option<(Arc<Glyph>, [f64; 6])> {
-        let key = (base_font.to_string(), code, unicode);
+        let key = (base_font.to_string(), face_object, code, unicode);
         if let Ok(cache) = self.cache.lock()
             && let Some(hit) = cache.get(&key)
         {
             return hit.clone();
         }
-        // Try every subset under the name: each carries only what its own
-        // chunk of the document needed.
-        let found = self.faces(base_font).into_iter().find_map(|face| {
+        // The subset the run was actually set in, when the display list says
+        // which. `/BaseFont` is not an identity: one document embeds two
+        // subsets of PTSans-Bold under that one name, and the one that answers
+        // first maps `T` to a glyph drawing `q`. Its cover read "qhe
+        // pingle-Board Computer e andbook", and scored 0.010 against the
+        // reference, because a grid of ink cannot see which letter drew it.
+        let mut faces = self.faces(base_font);
+        if face_object != 0 {
+            faces.sort_by_key(|face| face.object != face_object);
+        }
+        let found = faces.into_iter().find_map(|face| {
             face.outline_for(code, unicode)
                 .filter(|glyph| !glyph.contours.is_empty())
                 .map(|glyph| (Arc::new(glyph), face.font_matrix()))
@@ -269,6 +283,7 @@ impl FontSet {
     pub fn raster(
         &self,
         base_font: &str,
+        face_object: u32,
         code: u32,
         unicode: Option<char>,
         size: f64,
@@ -283,6 +298,7 @@ impl FontSet {
         let angle = (rot.to_degrees().round() as i32).rem_euclid(360);
         let key = (
             base_font.to_string(),
+            face_object,
             code,
             unicode,
             quantised,
@@ -295,7 +311,7 @@ impl FontSet {
             return hit.clone();
         }
         let raster = self
-            .resolve(base_font, code, unicode)
+            .resolve(base_font, face_object, code, unicode)
             .and_then(|(glyph, matrix)| {
                 rasterize(
                     &glyph,
@@ -353,6 +369,7 @@ mod bounded {
             for code in *b"MW" {
                 let _ = fonts.raster(
                     "Times-Roman",
+                    0,
                     code as u32,
                     Some(code as char),
                     size,
@@ -639,6 +656,7 @@ mod raster_tests {
         let raster = set
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
+                0,
                 b'L' as u32,
                 None,
                 40.0,
@@ -679,6 +697,7 @@ mod raster_tests {
         let raster = set
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
+                0,
                 b'o' as u32,
                 None,
                 40.0,
@@ -705,6 +724,7 @@ mod raster_tests {
         let set = FontSet::load(&pdf);
         let first = set.raster(
             "MGMJCW+NimbusRomNo9L-Regu",
+            0,
             b'e' as u32,
             None,
             12.0,
@@ -713,6 +733,7 @@ mod raster_tests {
         );
         let second = set.raster(
             "MGMJCW+NimbusRomNo9L-Regu",
+            0,
             b'e' as u32,
             None,
             12.0,
@@ -738,6 +759,7 @@ mod raster_tests {
         let upright = set
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
+                0,
                 b'L' as u32,
                 None,
                 40.0,
@@ -748,6 +770,7 @@ mod raster_tests {
         let turned = set
             .raster(
                 "MGMJCW+NimbusRomNo9L-Regu",
+                0,
                 b'L' as u32,
                 None,
                 40.0,
