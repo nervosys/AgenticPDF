@@ -213,10 +213,13 @@ document contains none of. `ADA617071` p1 came off this list — it was pattern
 fills, and it now scores 0.009. It lives on the **Desktop**, not in
 `~/Documents`.
 
-**The cover text is set in the wrong face.** Visible on `ADA617071` p1 beside
-the now-correct photographs: the title is condensed and the word spacing is
-wrong, against a clean reference. That is a font problem, not an image one, and
-the ink metric barely sees it — the page scores 0.009.
+**The cover text is a substitution difference, not a defect.** It was written
+up here as one. `ADA617071` names `/ArialNarrow` and `/BookmanOldStyle,Italic`
+with **no `/FontFile`** and supplies narrow `/Widths` (228, 456, 547…). We
+substitute a condensed face and honour those widths; PDF.js has no Arial Narrow
+and substitutes regular Arial. Ours is the closer of the two to what the
+document asked for. Nothing to fix; chasing the reference here would make us
+*less* faithful.
 
 **Page textures on mobile.** Confirmed by running the Android app rather than
 inferred: text now renders correctly, including the font-subset fix, but the
@@ -276,6 +279,12 @@ pay for them twice.
 - **This machine mislays files.** A directory listing has returned a Rust
   toolchain as missing while a search listed files inside it. Retry before
   concluding anything is gone.
+- **A visual difference is not automatically our defect.** The reference is one
+  more renderer, not the truth. A cover whose title looked wrong beside PDF.js
+  turned out to be a document naming a font nobody embedded: we substitute a
+  condensed face and honour the document's own narrow widths, PDF.js
+  substitutes regular Arial. Check what the document *asks for* before calling
+  a divergence a bug — twice now that check has changed the answer.
 - **Check whether a document actually contains the thing you blamed.** The
   0.469 page was written up as probably inline images; it contains none. One
   grep over its inflated streams settled it, and would have settled it before
