@@ -182,14 +182,18 @@ Four failing pages belong to these documents (three MIT papers at 0.120–0.132)
 though all four have a mean absolute difference under 0.008, so it is the
 sparse-page effect as much as the missing content.
 
-**Two heavy image-mask documents that stencils did not explain.**
-`atmosphere-10-00549` p3 sits at 0.469 with 32 image ops and no tint among
-them, so whatever it masks is not reached as a page-level image XObject. It
-was *not* inline images — the document contains none; that hypothesis was
-checked and is wrong. `ADA617071` p1 (on the *Desktop*, not `~/Documents`)
-draws the same 32×32 indexed one-bit image 523 times and carries the
-second-highest mean absolute difference in the corpus at 0.089. Neither has
-been explained.
+**One page nothing has explained.** `atmosphere-10-00549` p3 came down from
+0.469 to 0.328 with pattern fills and is still the third-worst page in the
+corpus. Its 32 image ops carry no stencil tint, so whatever it masks is not
+reached as a page-level image XObject; it is *not* inline images, which the
+document contains none of. `ADA617071` p1 came off this list — it was pattern
+fills, and it now scores 0.009. It lives on the **Desktop**, not in
+`~/Documents`.
+
+**The cover text is set in the wrong face.** Visible on `ADA617071` p1 beside
+the now-correct photographs: the title is condensed and the word spacing is
+wrong, against a clean reference. That is a font problem, not an image one, and
+the ink metric barely sees it — the page scores 0.009.
 
 **Page textures on mobile.** Confirmed by running the Android app rather than
 inferred: text now renders correctly, including the font-subset fix, but the
