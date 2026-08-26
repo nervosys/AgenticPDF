@@ -1917,7 +1917,12 @@ enum ColorKind {
     /// colour at all. Read as a grey level, `1 scn` in such a space paints
     /// white, and a page's whole background panel disappears.
     Indexed,
-    /// A pattern or something unrecognised; fall back to operand count.
+    /// The `scn` operand is the *name* of a pattern, not a colour at all.
+    /// Read as a colour it has no numbers to read, which falls through to
+    /// black -- so a photograph placed as a tiling pattern paints as a solid
+    /// black rectangle, which is the worst available way to be wrong.
+    Pattern,
+    /// Something unrecognised; fall back to operand count.
     #[default]
     Unknown,
 }
@@ -1931,13 +1936,13 @@ impl ColorKind {
                 "DeviceGray" | "CalGray" | "G" => ColorKind::Gray,
                 "DeviceCMYK" | "CMYK" => ColorKind::Cmyk,
                 "DeviceRGB" | "CalRGB" | "RGB" => ColorKind::Rgb,
-                "Pattern" => ColorKind::Unknown,
+                "Pattern" => ColorKind::Pattern,
                 _ => ColorKind::Unknown,
             },
             Object::Array(a) => match a.first().and_then(|o| o.as_name()) {
                 Some("Separation") | Some("DeviceN") => ColorKind::Tint,
                 Some("Indexed") => ColorKind::Indexed,
-                Some("Pattern") => ColorKind::Unknown,
+                Some("Pattern") => ColorKind::Pattern,
                 Some("CalGray") => ColorKind::Gray,
                 Some("CalRGB") | Some("Lab") => ColorKind::Rgb,
                 Some("ICCBased") => match color_space_components(doc, cs) {
@@ -2017,6 +2022,11 @@ fn named_space(stack: &[Token], spaces: &HashMap<String, Space>) -> Space {
         "DeviceGray" | "CalGray" | "G" => ColorKind::Gray,
         "DeviceRGB" | "CalRGB" | "RGB" => ColorKind::Rgb,
         "DeviceCMYK" | "CMYK" => ColorKind::Cmyk,
+        // `/Pattern cs` names the space directly rather than through the
+        // resource dictionary, which is where every other space is looked up.
+        // Falling through to that lookup finds nothing and lands on the
+        // default, and a pattern read as a default space paints black.
+        "Pattern" => ColorKind::Pattern,
         other => return spaces.get(other).cloned().unwrap_or_default(),
     };
     Space {
@@ -2107,6 +2117,9 @@ struct GState<'a> {
     stroke: [f64; 4],
     fill_space: Space,
     stroke_space: Space,
+    /// The pattern `scn` named, when the fill space is a pattern space. It is
+    /// graphics state like any other colour, so `q`/`Q` must restore it.
+    fill_pattern: Option<String>,
     /// The font is text state, and text state is graphics state: `Tf` inside
     /// `q`/`Q` lasts only until the `Q`.
     font: Option<&'a Font>,
@@ -2316,6 +2329,200 @@ fn form_xobject(doc: &Document, resources: &Dict, name: &str) -> Option<(Dict, V
     Some((d.clone(), content))
 }
 
+/// Paint a fill whose colour is a pattern, clipped to the path it drew.
+///
+/// A pattern is content, not a colour, and `scn` names it rather than giving
+/// numbers. Read as a colour there are no numbers to read, so it lands on
+/// black -- which is how four photographs on one cover came out as solid black
+/// rectangles inside their white frames.
+///
+/// A tiling pattern is structurally a form: `/BBox`, `/Matrix`, `/Resources`
+/// and a content stream, so it is run as one. Its `/Matrix` is anchored to the
+/// space the *enclosing* stream started in, not to the CTM at the fill -- a
+/// pattern does not move when the thing painted with it is transformed, which
+/// is the whole point of one.
+///
+/// A shading pattern has no stream: it is a gradient poured into the shape,
+/// and is banded the way `sh` bands one. Anything else -- a broken reference,
+/// a type nobody has written -- paints nothing, which leaves a hole, and a
+/// hole is the safe direction where black is not.
+struct PatternFill<'a> {
+    /// The path the fill drew, in device space; the pattern is clipped to it.
+    paths: &'a [Vec<[f64; 2]>],
+    /// The transform the *enclosing* stream started in. A pattern's `/Matrix`
+    /// is anchored to that, not to the CTM at the fill: a pattern does not
+    /// move when the shape painted with it is transformed.
+    base: Matrix,
+}
+
+fn paint_pattern(
+    doc: &Document,
+    resources: &Dict,
+    name: &str,
+    fill: &PatternFill<'_>,
+    ops: &mut Vec<RenderOp>,
+    depth: usize,
+    state: &FormState,
+) {
+    let (paths, base) = (fill.paths, fill.base);
+    if depth >= MAX_FORM_DEPTH {
+        return;
+    }
+    let Some(pattern) = doc
+        .get(resources, "Pattern")
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|d| d.get(name).map(|o| doc.resolve(o)))
+    else {
+        return;
+    };
+    // A tiling pattern is a stream -- it has content to run. A shading pattern
+    // is a plain dictionary: the gradient is its whole definition. Requiring a
+    // stream rejects every shading pattern before its type is even read, and
+    // an unresolved pattern paints nothing, so a page's masthead simply
+    // vanishes.
+    let (dict, raw): (&Dict, &[u8]) = match &pattern {
+        Object::Stream(d, raw) => (d, raw),
+        Object::Dict(d) => (d, &[]),
+        _ => return,
+    };
+    let kind = doc.get(dict, "PatternType").and_then(|o| o.as_int());
+
+    // The device-space box the fill covers: nothing outside it can show.
+    let points = paths.iter().flatten();
+    let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
+    let (mut maxx, mut maxy) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        minx = minx.min(p[0]);
+        miny = miny.min(p[1]);
+        maxx = maxx.max(p[0]);
+        maxy = maxy.max(p[1]);
+    }
+    if !(maxx > minx && maxy > miny) {
+        return;
+    }
+
+    let matrix = rect6(doc, dict, "Matrix").unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+    let anchored = mat_mul(&matrix, &base);
+
+    // A shading pattern has no stream to run: it is a gradient poured into the
+    // shape, which is the same thing `sh` does to the clip. Sliced into flat
+    // bands here for the same reason -- three renderers would otherwise have
+    // to learn to draw a gradient.
+    if kind == Some(2) {
+        let Some(shading) =
+            doc.get(dict, "Shading")
+                .map(|o| doc.resolve(&o))
+                .and_then(|o| match o {
+                    Object::Stream(d, _) => Some(d),
+                    other => other.as_dict().cloned(),
+                })
+        else {
+            return;
+        };
+        ops.push(RenderOp::Save);
+        ops.push(RenderOp::Clip {
+            rect: [minx, miny, maxx, maxy],
+            subpaths: paths.iter().filter(|s| s.len() >= 3).cloned().collect(),
+        });
+        for band in crate::shading::bands(doc, &shading, anchored, [minx, miny, maxx, maxy]) {
+            ops.push(RenderOp::Fill {
+                subpaths: vec![band.points],
+                color: with_alpha(band.color, state.fill_alpha),
+                even_odd: false,
+            });
+        }
+        ops.push(RenderOp::Restore);
+        return;
+    }
+
+    // Anything that is not a tiling pattern from here on has no content to
+    // run, so it paints nothing rather than being approximated.
+    if kind != Some(1) {
+        return;
+    }
+    let Ok(content) = decode_stream(dict, raw) else {
+        return;
+    };
+
+    ops.push(RenderOp::Save);
+    ops.push(RenderOp::Clip {
+        rect: [minx, miny, maxx, maxy],
+        subpaths: paths.iter().filter(|s| s.len() >= 3).cloned().collect(),
+    });
+
+    let bbox = rect4(doc, dict, "BBox").unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let step_x = doc
+        .get(dict, "XStep")
+        .and_then(|o| o.as_f64())
+        .filter(|v| v.abs() > f64::EPSILON)
+        .unwrap_or(bbox[2] - bbox[0]);
+    let step_y = doc
+        .get(dict, "YStep")
+        .and_then(|o| o.as_f64())
+        .filter(|v| v.abs() > f64::EPSILON)
+        .unwrap_or(bbox[3] - bbox[1]);
+
+    // How far the tile has to repeat to cover the fill, measured in pattern
+    // space. A tile the size of its own step covers the area in one go, which
+    // is what a photograph placed as a pattern does; a small tile repeats.
+    let scale = (anchored[0] * anchored[3] - anchored[1] * anchored[2])
+        .abs()
+        .sqrt()
+        .max(f64::EPSILON);
+    let span_x = (maxx - minx) / scale;
+    let span_y = (maxy - miny) / scale;
+    // A cap rather than a count: a tile a fraction of a point wide against a
+    // page-sized fill is millions of repetitions, and a document that asks for
+    // that is asking by accident.
+    const MAX_TILES: usize = 4096;
+    let across = ((span_x / step_x.abs()).ceil() as usize + 2).min(MAX_TILES);
+    let down = ((span_y / step_y.abs()).ceil() as usize + 2).min(MAX_TILES);
+    let tiles = across.saturating_mul(down).min(MAX_TILES);
+
+    let inner_resources = doc
+        .get(dict, "Resources")
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_else(|| resources.clone());
+
+    // Where the fill's own corner lands in pattern space, so the tiling starts
+    // at the first tile that can reach it rather than always at the origin.
+    let Some(back) = mat_invert(&anchored) else {
+        ops.push(RenderOp::Restore);
+        return;
+    };
+    let corner = transform_point(&back, minx, miny);
+    let first_i = ((corner.0 - bbox[0]) / step_x).floor();
+    let first_j = ((corner.1 - bbox[1]) / step_y).floor();
+
+    let mut drawn = 0usize;
+    'tiling: for j in 0..down {
+        for i in 0..across {
+            if drawn >= tiles {
+                break 'tiling;
+            }
+            drawn += 1;
+            let offset = [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                (first_i + i as f64) * step_x,
+                (first_j + j as f64) * step_y,
+            ];
+            run_content(
+                doc,
+                &content,
+                &inner_resources,
+                mat_mul(&offset, &anchored),
+                ops,
+                depth + 1,
+                state,
+            );
+        }
+    }
+    ops.push(RenderOp::Restore);
+}
+
 /// Run a form XObject: its own transform, clipped to its own box, with its own
 /// resources.
 ///
@@ -2478,6 +2685,9 @@ fn run_content(
     // Which space those numbers are in, so `1 scn` can mean full ink rather
     // than white.
     let mut fill_space = inherited.fill_space.clone();
+    // Not inherited: a pattern names a resource, and a form's resources are
+    // its own, so a name from outside would mean a different thing inside.
+    let mut fill_pattern: Option<String> = None;
     let mut stroke_space = inherited.stroke_space.clone();
     let mut line_width = inherited.line_width;
     let mut clip = inherited.clip;
@@ -2516,6 +2726,7 @@ fn run_content(
                             fill,
                             stroke,
                             fill_space: fill_space.clone(),
+                            fill_pattern: fill_pattern.clone(),
                             stroke_space: stroke_space.clone(),
                             font: cur_font,
                             font_name: cur_font_name.clone(),
@@ -2537,6 +2748,7 @@ fn run_content(
                             fill = state.fill;
                             stroke = state.stroke;
                             fill_space = state.fill_space;
+                            fill_pattern = state.fill_pattern;
                             stroke_space = state.stroke_space;
                             // A `Tf` inside the saved state does not outlive
                             // it. Documents rely on this: one sets a symbol
@@ -2619,6 +2831,7 @@ fn run_content(
                     }
                     "g" | "rg" | "k" => {
                         fill_space = Space::default();
+                        fill_pattern = None;
                         fill = color_from_stack(&stack);
                     }
                     "G" | "RG" | "K" => {
@@ -2629,13 +2842,27 @@ fn run_content(
                     // initial value, which is black for every space here.
                     "cs" => {
                         fill_space = named_space(&stack, &color_spaces);
+                        fill_pattern = None;
                         fill = [0.0, 0.0, 0.0, 1.0];
                     }
                     "CS" => {
                         stroke_space = named_space(&stack, &color_spaces);
                         stroke = [0.0, 0.0, 0.0, 1.0];
                     }
-                    "sc" | "scn" => fill = color_in_space(&stack, &fill_space),
+                    "sc" | "scn" => match fill_space.kind {
+                        // In a pattern space the operand is a name. Reading it
+                        // as a colour finds no numbers and lands on black.
+                        ColorKind::Pattern => {
+                            fill_pattern = match stack.last() {
+                                Some(Token::Name(n)) => Some(n.clone()),
+                                _ => None,
+                            }
+                        }
+                        _ => {
+                            fill_pattern = None;
+                            fill = color_in_space(&stack, &fill_space);
+                        }
+                    },
                     "SC" | "SCN" => stroke = color_in_space(&stack, &stroke_space),
                     "m" => {
                         if let Some([x, y]) = last2(&stack) {
@@ -2710,11 +2937,39 @@ fn run_content(
                             let fill_color = with_alpha(fill, fill_alpha);
                             let stroke_color = with_alpha(stroke, stroke_alpha);
                             if fills && !blend_is_noop(fill_color, blend) {
-                                ops.push(RenderOp::Fill {
-                                    subpaths: paths.clone(),
-                                    color: fill_color,
-                                    even_odd: op.ends_with('*'),
-                                });
+                                match &fill_pattern {
+                                    // A pattern is content, not a colour: run
+                                    // it clipped to the path this fill drew.
+                                    // Falling through to `fill` here paints
+                                    // the black that a nameless `scn` leaves.
+                                    Some(name) => paint_pattern(
+                                        doc,
+                                        resources,
+                                        name,
+                                        &PatternFill {
+                                            paths: &paths,
+                                            base: start_ctm,
+                                        },
+                                        ops,
+                                        depth,
+                                        &FormState {
+                                            fill,
+                                            stroke,
+                                            fill_space: fill_space.clone(),
+                                            stroke_space: stroke_space.clone(),
+                                            fill_alpha,
+                                            stroke_alpha,
+                                            blend,
+                                            line_width,
+                                            clip,
+                                        },
+                                    ),
+                                    None => ops.push(RenderOp::Fill {
+                                        subpaths: paths.clone(),
+                                        color: fill_color,
+                                        even_odd: op.ends_with('*'),
+                                    }),
+                                }
                             }
                             if strokes && !blend_is_noop(stroke_color, blend) {
                                 // The width is in user space and the CTM that
@@ -3470,6 +3725,22 @@ fn image_key_in(doc: &Document, resources: &Dict, name: &str) -> String {
 fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, depth: usize) {
     if depth > MAX_FORM_DEPTH {
         return;
+    }
+    // A tiling pattern is a content stream with resources of its own, and what
+    // it draws is very often one image. Reaching it only through `/XObject`
+    // finds the pattern's *users* and never its pictures, so a page painted
+    // with one names a texture nobody has.
+    if let Some(patterns) = doc
+        .get(resources, "Pattern")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        for entry in patterns.values() {
+            if let Object::Stream(d, _) = doc.resolve(entry)
+                && let Some(inner) = doc.get(&d, "Resources").and_then(|o| o.as_dict().cloned())
+            {
+                collect_image_xobjects(doc, &inner, out, depth + 1);
+            }
+        }
     }
     let Some(xobjects) = doc
         .get(resources, "XObject")
@@ -5186,6 +5457,27 @@ fn hex_to_string(tok: &str) -> String {
 
 type Matrix = [f64; 6];
 
+/// Invert an affine matrix, or `None` where it collapses a dimension.
+///
+/// Needed to ask where a device-space point lands in pattern space: a tiling
+/// pattern is anchored to the page, so the first tile that can reach a fill is
+/// found by mapping the fill's corner back through the pattern's own matrix.
+fn mat_invert(m: &Matrix) -> Option<Matrix> {
+    let det = m[0] * m[3] - m[1] * m[2];
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let (a, b, c, d, e, f) = (m[0], m[1], m[2], m[3], m[4], m[5]);
+    Some([
+        d / det,
+        -b / det,
+        -c / det,
+        a / det,
+        (c * f - d * e) / det,
+        (b * e - a * f) / det,
+    ])
+}
+
 fn mat_mul(a: &Matrix, b: &Matrix) -> Matrix {
     [
         a[0] * b[0] + a[1] * b[2],
@@ -6574,6 +6866,132 @@ endobj
             .map(|p| p[0])
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(widest < 100.0, "the page-sized fill leaked through");
+    }
+
+    /// A pattern fill runs the pattern; it does not paint black.
+    ///
+    /// `scn` in a pattern space names a resource instead of giving numbers.
+    /// Read as a colour there are no numbers to read, which lands on black --
+    /// so four photographs on one cover came out as solid black rectangles
+    /// inside their white frames.
+    #[test]
+    fn a_tiling_pattern_is_run_rather_than_read_as_a_colour() {
+        // The tile paints a small red square; the page fills a box with it.
+        const TILE: &str = "1 0 0 rg 0 0 20 20 re f";
+        const PAGE: &str = "/Pattern cs /P0 scn 20 20 40 40 re f";
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R",
+                "/Resources<</Pattern<</P0 5 0 R>>>>>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "5 0 obj<</Type/Pattern/PatternType 1/PaintType 1/TilingType 1",
+                "/BBox[0 0 20 20]/XStep 20/YStep 20/Resources<<>>/Length {}>>stream
+{}
+",
+                "endstream
+endobj
+startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            TILE.len(),
+            TILE
+        );
+        let ops = extract_display_list(pdf.as_bytes(), 1)
+            .expect("a display list")
+            .ops;
+
+        let fills: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !fills.is_empty(),
+            "the pattern painted nothing at all: {ops:?}"
+        );
+        assert!(
+            fills.iter().all(|c| c[0] > 0.9 && c[1] < 0.1),
+            "the tile's own red is what should paint, not black: {fills:?}"
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, RenderOp::Clip { .. })),
+            "the pattern must be clipped to the path it filled: {ops:?}"
+        );
+    }
+
+    /// A shading pattern is a dictionary, not a stream.
+    ///
+    /// A tiling pattern has content to run and so is a stream; a shading
+    /// pattern's gradient is its whole definition. Requiring a stream rejects
+    /// every shading pattern before its type is read, and an unresolved
+    /// pattern paints nothing -- which took a masthead off one datasheet.
+    #[test]
+    fn a_shading_pattern_paints_its_gradient() {
+        const PAGE: &str = "/Pattern cs /P0 scn 0 0 100 100 re f";
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R",
+                "/Resources<</Pattern<</P0 5 0 R>>>>>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "5 0 obj<</PatternType 2/Shading<</ShadingType 2/ColorSpace/DeviceRGB",
+                "/Coords[0 0 100 0]/Extend[true true]/Function 6 0 R>>>>endobj
+",
+                "6 0 obj<</FunctionType 2/Domain[0 1]/C0[1 0 0]/C1[0 0 1]/N 1>>endobj
+",
+                "startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE
+        );
+        let ops = extract_display_list(pdf.as_bytes(), 1)
+            .expect("a display list")
+            .ops;
+        let fills: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fills.len() > 4,
+            "a gradient is many bands, not one fill: {ops:?}"
+        );
+        // Red at one end, blue at the other, and neither is the black a
+        // nameless `scn` would have left.
+        assert!(
+            fills.iter().any(|c| c[0] > 0.8) && fills.iter().any(|c| c[2] > 0.8),
+            "the gradient's own colours should appear: {fills:?}"
+        );
     }
 
     /// Colour is graphics state too, and a form inherits it.
