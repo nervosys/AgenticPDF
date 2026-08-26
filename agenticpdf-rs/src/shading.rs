@@ -201,6 +201,58 @@ fn clip_rect(poly: &[[f64; 2]], r: [f64; 4]) -> Vec<[f64; 2]> {
     out
 }
 
+/// Trim `subject` to the inside of a convex polygon.
+///
+/// Every band a shading produces is convex -- a rectangle cut by half-planes,
+/// or a disc -- which is what lets one clip the other with a fixed number of
+/// half-plane passes and no general polygon library.
+pub fn clip_to_convex(subject: &[[f64; 2]], convex: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if convex.len() < 3 {
+        return Vec::new();
+    }
+    // Which side is "inside" depends on the winding, so take it from the
+    // polygon itself rather than assuming one.
+    let area: f64 = (0..convex.len())
+        .map(|i| {
+            let (a, b) = (convex[i], convex[(i + 1) % convex.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    let sign = if area >= 0.0 { 1.0 } else { -1.0 };
+    let mut out = subject.to_vec();
+    for i in 0..convex.len() {
+        if out.is_empty() {
+            break;
+        }
+        let (a, b) = (convex[i], convex[(i + 1) % convex.len()]);
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        // Signed distance to the edge line, positive inside.
+        let side = move |p: [f64; 2]| sign * (ex * (p[1] - a[1]) - ey * (p[0] - a[0]));
+        let mut next = Vec::with_capacity(out.len() + 2);
+        for k in 0..out.len() {
+            let (p, q) = (out[k], out[(k + 1) % out.len()]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                next.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                let denom = sp - sq;
+                if denom.abs() > f64::EPSILON {
+                    let t = sp / denom;
+                    next.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+                }
+            }
+        }
+        out = next;
+    }
+    out
+}
+
+/// The coverage a luminosity mask gives, from the colour it painted.
+pub fn luminosity(color: [f64; 4]) -> f64 {
+    (0.3 * color[0] + 0.59 * color[1] + 0.11 * color[2]).clamp(0.0, 1.0)
+}
+
 fn rect_polygon(r: [f64; 4]) -> Vec<[f64; 2]> {
     vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
 }
@@ -447,6 +499,34 @@ mod tests {
         );
         // A closed strip of a rectangle is still a quadrilateral.
         assert_eq!(strip.len(), 4, "{strip:?}");
+    }
+
+    /// Trimming to a convex polygon keeps the overlap and nothing else.
+    #[test]
+    fn a_polygon_trimmed_to_a_convex_one_keeps_the_overlap() {
+        let subject = rect_polygon([0.0, 0.0, 10.0, 10.0]);
+        let window = rect_polygon([5.0, 5.0, 20.0, 20.0]);
+        let cut = clip_to_convex(&subject, &window);
+        assert_eq!(cut.len(), 4, "{cut:?}");
+        for p in &cut {
+            assert!(p[0] >= 5.0 - 1e-9 && p[1] >= 5.0 - 1e-9, "{cut:?}");
+            assert!(p[0] <= 10.0 + 1e-9 && p[1] <= 10.0 + 1e-9, "{cut:?}");
+        }
+        // No overlap leaves nothing, rather than the whole subject.
+        let away = rect_polygon([50.0, 50.0, 60.0, 60.0]);
+        assert!(clip_to_convex(&subject, &away).is_empty());
+    }
+
+    /// Winding must not decide what survives.
+    #[test]
+    fn trimming_does_not_depend_on_the_winding() {
+        let subject = rect_polygon([0.0, 0.0, 10.0, 10.0]);
+        let mut window = rect_polygon([5.0, 5.0, 20.0, 20.0]);
+        let a = clip_to_convex(&subject, &window).len();
+        window.reverse();
+        let b = clip_to_convex(&subject, &window).len();
+        assert_eq!(a, b, "reversing the clip polygon changed the result");
+        assert_eq!(a, 4);
     }
 
     /// An infinite bound is the extend case and must not clip at all.

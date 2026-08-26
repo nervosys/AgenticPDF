@@ -2081,6 +2081,8 @@ struct GState<'a> {
     /// The device rectangle painting is confined to. `sh` fills exactly this,
     /// so it has to be state rather than only an emitted op.
     clip: [f64; 4],
+    /// The luminosity mask a `gs` set, evaluated into regions.
+    soft_mask: Option<SoftMask>,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -2110,6 +2112,128 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
         },
     );
     ops
+}
+
+/// A luminosity mask, evaluated: device-space regions and the coverage each
+/// gives. Shared rather than copied, because `q` saves it on every push.
+type SoftMask = std::rc::Rc<Vec<(Vec<[f64; 2]>, f64)>>;
+
+/// How many pieces a masked group may emit before the mask is abandoned.
+///
+/// A mask multiplies every fill under it by the number of regions it has, so a
+/// group holding a page of artwork could otherwise turn a few hundred ops into
+/// tens of thousands.
+const MAX_MASKED_PIECES: usize = 8192;
+
+/// Evaluate a luminosity mask into device-space regions and their coverage.
+///
+/// The mask's group is a form, so it is run the way any form is run, and
+/// whatever it filled becomes the mask: brightness is coverage. Only fills are
+/// read. A mask drawn with text or an image cannot be turned into regions this
+/// way, and returning nothing for it means the content paints unmasked -- which
+/// is what happened before any of this existed.
+fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Option<SoftMask> {
+    if depth >= MAX_FORM_DEPTH {
+        return None;
+    }
+    // An alpha mask takes coverage from the group's alpha rather than its
+    // colour, and nothing here records alpha per region.
+    if doc
+        .get(mask, "S")
+        .and_then(|o| o.as_name().map(String::from))
+        != Some("Luminosity".into())
+    {
+        return None;
+    }
+    let Object::Stream(dict, raw) = doc.get(mask, "G").map(|o| doc.resolve(&o))? else {
+        return None;
+    };
+    let content = decode_stream(&dict, &raw).ok()?;
+    let resources = doc
+        .get(&dict, "Resources")
+        .and_then(|o| doc.resolve(&o).as_dict().cloned())
+        .unwrap_or_default();
+    let mut ops = Vec::new();
+    run_form(
+        doc,
+        &(dict, content),
+        &resources,
+        ctm,
+        &mut ops,
+        depth + 1,
+        &FormState::default(),
+    );
+    let regions: Vec<(Vec<[f64; 2]>, f64)> = ops
+        .into_iter()
+        .filter_map(|op| match op {
+            RenderOp::Fill {
+                subpaths, color, ..
+            } => subpaths
+                .into_iter()
+                .find(|p| p.len() >= 3)
+                .map(|p| (p, crate::shading::luminosity(color))),
+            _ => None,
+        })
+        .collect();
+    if regions.is_empty() {
+        return None;
+    }
+    Some(std::rc::Rc::new(regions))
+}
+
+/// Split what a transparency group painted across a mask's regions.
+///
+/// The mask belongs to the group as a whole, not to the operations inside it:
+/// a `gs` within the group sets the state for the group's own painting and does
+/// not undo the mask the group is composited through. So this runs over the
+/// finished ops rather than being threaded into the interpreter -- which is the
+/// difference between working and doing nothing at all.
+///
+/// Only fills are split. Text and images inside a masked group still paint at
+/// full strength.
+fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec<RenderOp> {
+    let fills = ops
+        .iter()
+        .filter(|op| matches!(op, RenderOp::Fill { .. }))
+        .count();
+    if fills.saturating_mul(mask.len()) > MAX_MASKED_PIECES {
+        return ops;
+    }
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let RenderOp::Fill {
+            subpaths,
+            color,
+            even_odd,
+        } = op
+        else {
+            out.push(op);
+            continue;
+        };
+        for (region, coverage) in mask {
+            // Under a hundredth of coverage nothing survives rounding to a
+            // byte of alpha, and the piece costs an op either way.
+            if *coverage <= 0.004 {
+                continue;
+            }
+            let pieces: Vec<Vec<[f64; 2]>> = subpaths
+                .iter()
+                .map(|sp| crate::shading::clip_to_convex(sp, region))
+                .filter(|p| p.len() >= 3)
+                .collect();
+            if pieces.is_empty() {
+                continue;
+            }
+            let mut tinted = color;
+            tinted[3] *= coverage;
+            out.push(RenderOp::Fill {
+                subpaths: pieces,
+                color: tinted,
+                even_odd,
+            });
+        }
+    }
+    out
 }
 
 /// The shading a name refers to in the resource dictionary.
@@ -2315,6 +2439,8 @@ fn run_content(
     let mut stroke_space = inherited.stroke_space.clone();
     let mut line_width = inherited.line_width;
     let mut clip = inherited.clip;
+    // Set by `gs`, and applied where a transparency group is composited.
+    let mut soft_mask: Option<SoftMask> = None;
     // Constant alpha and blend mode, both graphics state, both set by `gs`.
     let mut fill_alpha = inherited.fill_alpha;
     let mut stroke_alpha = inherited.stroke_alpha;
@@ -2358,6 +2484,7 @@ fn run_content(
                             blend,
                             line_width,
                             clip,
+                            soft_mask: soft_mask.clone(),
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -2384,6 +2511,7 @@ fn run_content(
                             blend = state.blend;
                             line_width = state.line_width;
                             clip = state.clip;
+                            soft_mask = state.soft_mask;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -2583,6 +2711,14 @@ fn run_content(
                             if let Some(v) = state.get("BM") {
                                 blend = Blend::from_object(doc, v);
                             }
+                            if let Some(v) = state.get("SMask") {
+                                soft_mask = match doc.resolve(v) {
+                                    Object::Dict(m) => build_soft_mask(doc, &m, ctm, depth),
+                                    // `/None`, or a mask shape nothing here can
+                                    // evaluate: paint at full strength.
+                                    _ => None,
+                                };
+                            }
                         }
                     }
                     "Do" => {
@@ -2606,7 +2742,24 @@ fn run_content(
                                     line_width,
                                     clip,
                                 };
-                                run_form(doc, &form, resources, ctm, ops, depth, &state);
+                                // A soft mask belongs to the group as a whole.
+                                // Run the form aside, then fold the mask into
+                                // what it painted -- a `gs` inside the group
+                                // must not be able to cancel it.
+                                let group = doc
+                                    .get(&form.0, "Group")
+                                    .map(|o| doc.resolve(&o))
+                                    .and_then(|g| g.as_dict().cloned());
+                                match (&soft_mask, group) {
+                                    (Some(mask), Some(_)) => {
+                                        let mut inner = Vec::new();
+                                        run_form(
+                                            doc, &form, resources, ctm, &mut inner, depth, &state,
+                                        );
+                                        ops.extend(apply_mask_to_group(inner, mask));
+                                    }
+                                    _ => run_form(doc, &form, resources, ctm, ops, depth, &state),
+                                }
                                 stack.clear();
                                 continue;
                             }
