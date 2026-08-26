@@ -254,6 +254,76 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 
+/// Fill a path of several subpaths, honouring its winding rule.
+///
+/// The painter fills one polygon at a time, so filling each subpath in turn is
+/// what this did -- and that paints a hole solid. A table border is two rounded
+/// rectangles a fraction of a point apart with an even-odd rule between them;
+/// filled separately it becomes a filled block, which is how one product guide
+/// grew dark panels down its entire right-hand column where every other reader
+/// draws hairlines.
+///
+/// Scanning the shape into horizontal spans costs a rectangle per row and is
+/// exact for either rule. It gives up vertical antialiasing, which is why only
+/// paths that can actually enclose a hole come here.
+fn fill_winding(painter: &mut dyn Painter, polys: &[Vec<Position>], even_odd: bool, paint: Color) {
+    let (mut top, mut bottom) = (f32::MAX, f32::MIN);
+    for poly in polys {
+        for p in poly {
+            top = top.min(p.y);
+            bottom = bottom.max(p.y);
+        }
+    }
+    if !top.is_finite() || !(bottom > top) {
+        return;
+    }
+    // Taller than this and a row at a time is the wrong trade: fall back to
+    // the old behaviour rather than emit tens of thousands of rectangles.
+    const MAX_ROWS: usize = 8192;
+    let rows = (bottom - top).ceil() as usize;
+    if rows == 0 || rows > MAX_ROWS {
+        for poly in polys {
+            painter.fill_path(poly, paint);
+        }
+        return;
+    }
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    for row in 0..rows {
+        // Sample at the middle of the row, so an edge landing exactly on a
+        // boundary does not count twice.
+        let y = top + row as f32 + 0.5;
+        crossings.clear();
+        for poly in polys {
+            for i in 0..poly.len() {
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                if (a.y <= y) == (b.y <= y) {
+                    continue;
+                }
+                let t = (y - a.y) / (b.y - a.y);
+                crossings.push((a.x + t * (b.x - a.x), if b.y > a.y { 1 } else { -1 }));
+            }
+        }
+        if crossings.len() < 2 {
+            continue;
+        }
+        crossings.sort_by(|p, q| p.0.total_cmp(&q.0));
+        let mut winding = 0;
+        for k in 0..crossings.len() - 1 {
+            winding += crossings[k].1;
+            // After k+1 crossings, an even-odd path is inside on the odd ones.
+            let inside = if even_odd { k % 2 == 0 } else { winding != 0 };
+            if !inside {
+                continue;
+            }
+            let (x0, x1) = (crossings[k].0, crossings[k + 1].0);
+            if x1 > x0 {
+                painter.fill_rect(Rect::new(x0, y - 0.5, x1 - x0, 1.0), paint, 0.0);
+            }
+        }
+    }
+}
+
 /// Paint one page.
 ///
 /// `textures` resolves `RenderOp::Image` names. An image with no matching
@@ -293,14 +363,24 @@ pub fn paint_page(
     for op in &list.ops {
         match op {
             RenderOp::Fill {
-                subpaths, color, ..
+                subpaths,
+                color,
+                even_odd,
             } => {
                 let paint = to_color(*color);
-                for subpath in subpaths {
-                    let points = to_points(subpath, &transform);
-                    if points.len() >= 3 {
-                        painter.fill_path(&points, paint);
+                let polys: Vec<Vec<Position>> = subpaths
+                    .iter()
+                    .map(|sp| to_points(sp, &transform))
+                    .filter(|p| p.len() >= 3)
+                    .collect();
+                // One subpath cannot enclose a hole, so the common case stays
+                // on the painter's own fill and keeps its antialiasing.
+                if polys.len() < 2 {
+                    for points in &polys {
+                        painter.fill_path(points, paint);
                     }
+                } else {
+                    fill_winding(painter, &polys, *even_odd, paint);
                 }
             }
             RenderOp::Stroke {
@@ -878,6 +958,46 @@ mod tests {
         assert!(transform.point(0.0, 100.0).y < 1.0);
         // A point at the document's bottom lands at the screen's bottom.
         assert!(transform.point(0.0, 0.0).y > 99.0);
+    }
+
+    /// An even-odd path with a subpath inside another leaves a hole.
+    ///
+    /// This is what a table border is: two rounded rectangles a fraction of a
+    /// point apart. Filling the subpaths one at a time paints the hole solid,
+    /// and a page of bordered cells becomes a page of filled blocks.
+    #[test]
+    fn a_subpath_inside_another_is_a_hole_and_not_a_fill() {
+        let ring = vec![
+            vec![
+                Position::new(10.0, 10.0),
+                Position::new(90.0, 10.0),
+                Position::new(90.0, 90.0),
+                Position::new(10.0, 90.0),
+            ],
+            vec![
+                Position::new(30.0, 30.0),
+                Position::new(70.0, 30.0),
+                Position::new(70.0, 70.0),
+                Position::new(30.0, 70.0),
+            ],
+        ];
+        let paint = |even_odd: bool| -> (u8, u8) {
+            let mut painter = ImagePainter::new(100, 100);
+            fill_winding(&mut painter, &ring, even_odd, Color::BLACK);
+            let px = painter.pixels();
+            let at = |x: usize, y: usize| px[(y * 100 + x) * 4 + 3];
+            // The band between the two squares, and the middle of the hole.
+            (at(20, 50), at(50, 50))
+        };
+        let (band, hole) = paint(true);
+        assert!(band > 200, "the ring itself is painted: {band}");
+        assert_eq!(hole, 0, "the inner subpath is a hole, not a fill");
+
+        // Under the nonzero rule the same two squares wind the same way, so
+        // the middle is filled. The rule has to be read, not assumed.
+        let (band, middle) = paint(false);
+        assert!(band > 200, "{band}");
+        assert!(middle > 200, "nonzero winding fills the middle: {middle}");
     }
 
     /// The painter must actually clip. Scoping the clips correctly means
