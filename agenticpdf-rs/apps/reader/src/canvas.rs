@@ -147,7 +147,6 @@ fn draw_embedded_glyphs(
     };
 
     let mut own: Vec<f64> = Vec::new();
-    let mut fit = 1.0f64;
     if substituted {
         own = expanded
             .iter()
@@ -158,13 +157,6 @@ fn draw_embedded_glyphs(
                     .sum()
             })
             .collect();
-        let natural: f64 = own.iter().sum();
-        let target: f64 = advances.iter().sum();
-        if natural > 0.0 && target > 0.0 {
-            // Bounded: a run whose recorded width bears no relation to this
-            // face should be left legible rather than squeezed to nothing.
-            fit = (target / natural).clamp(0.5, 2.0);
-        }
     }
 
     // The size the run is *drawn* at. `size` is in page units, and every
@@ -231,17 +223,30 @@ fn draw_embedded_glyphs(
                     drew = true;
                 }
                 // Within an expansion the pen moves by each component's own
-                // advance, so "fi" occupies the space f and i do.
-                sub_pen += match substituted {
-                    true => fonts.own_advance(font, *code).unwrap_or(0.0) * size * fit,
-                    false => 0.0,
+                // advance, scaled so the components together occupy exactly
+                // the one advance the document gave the cluster: "fi" fills
+                // the space f and i were written to fill.
+                let natural = own.get(index).copied().unwrap_or(0.0);
+                let cluster_fit = match natural > 0.0 && advances[index] > 0.0 {
+                    true => advances[index] / natural,
+                    false => 1.0,
                 };
+                sub_pen += fonts.own_advance(font, *code).unwrap_or(0.0) * size * cluster_fit;
             }
         }
-        pen += match substituted {
-            true => own.get(index).copied().unwrap_or(0.0) * fit,
-            false => advances[index],
-        };
+        // The document says where each glyph goes, and it says so per glyph.
+        //
+        // A substituted run used to be laid out on the stand-in face's own
+        // widths, scaled by one ratio for the whole run. That ratio is the
+        // run's total width over the stand-in's total width, and it is only
+        // meaningful when every character in the run is off by about the same
+        // amount. A line of dot leaders is not: one thesis page sets
+        // "Author . . . . . ." as a single run of 134 characters, of which six
+        // are letters and the rest are periods, and the stand-in's period is
+        // much wider than the document's. The ratio came out at 0.54, the
+        // dots got it because they outvoted everything, and the word was
+        // drawn at 54% spacing -- six letters piled into an unreadable blot.
+        pen += advances[index];
     }
     drew || handled
 }
