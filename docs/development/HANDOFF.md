@@ -14,20 +14,20 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **650 of 683 — 95.2 %** |
-| Over the threshold | 33 |
+| Matching (total variation ≤ 0.12) | **653 of 683 — 95.6 %** |
+| Over the threshold | 30 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 591 crate + 45 integration, 68 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 67 commits ahead of `master`, unpushed |
+| Tests | 593 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 70 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 33 failures, four have a mean absolute difference above 0.10 — those are
-the only ones a reader would call visibly wrong. Nine sit between 0.04 and 0.10.
-The remaining twenty are below 0.04: sparse pages where the normalised score
+Of the 30 failures, four have a mean absolute difference above 0.10 — those are
+the only ones a reader would call visibly wrong. Seven sit between 0.04 and 0.10.
+The remaining nineteen are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -137,6 +137,29 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**Pattern fills were painting solid black.** `scn` in a pattern space names a
+resource rather than giving numbers, and read as a colour it fell through to
+black — 442 fills across 24 of 294 documents. Tiling patterns are now run as
+forms, clipped to the path the fill drew and tiled by `/XStep`/`/YStep` under a
+cap; shading patterns are sliced into bands like `sh`; anything else paints
+nothing, because a hole is the safe direction and black is not. **20 pages
+improved, 4 regressed by ≤ 0.004, net -0.958.**
+
+Three separate mistakes hid one another, and the order is the lesson.
+`/Pattern cs` names the space *directly*, where every other space is looked up
+in the resource dictionary — so the pattern was never recognised at all. A
+tiling pattern's images live in the pattern's own resources, so the texture
+walk had to go there or the page names a texture nobody has. And a shading
+pattern is a plain **dictionary**, not a stream, because the gradient is its
+whole definition; requiring a stream rejected every one of them, and that
+surfaced only because a page *regressed* in the sweep and got looked at.
+
+**A nested clip was widening the one around it.** The painter pushed each clip
+rectangle as it stood instead of intersecting it with what was already in
+force, so a clip could add paint rather than remove it. Found through patterns,
+where it is unmissable — one cover drew nine copies of the same photograph
+across the page and over its own title — but it was never specific to them.
 
 **An inline image's samples were being lexed as content.** `BI ... ID
 <bytes> EI` was not handled at all, so the raw bytes went through the content
