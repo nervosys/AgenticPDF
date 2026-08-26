@@ -14,20 +14,20 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **653 of 683 — 95.6 %** |
-| Over the threshold | 30 |
+| Matching (total variation ≤ 0.12) | **656 of 683 — 96.0 %** |
+| Over the threshold | 27 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
 | Tests | 594 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 72 commits ahead of `master`, unpushed |
+| Branch | 73 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 30 failures, four have a mean absolute difference above 0.10 — those are
+Of the 27 failures, four have a mean absolute difference above 0.10 — those are
 the only ones a reader would call visibly wrong. Seven sit between 0.04 and 0.10.
-The remaining nineteen are below 0.04: sparse pages where the normalised score
+The remaining sixteen are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -137,6 +137,19 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**A substituted run was laid out on the stand-in's widths, not the
+document's.** One ratio for the whole run — its recorded width over the
+stand-in's natural width — which only means anything when every character is
+off by about the same amount. A line of dot leaders is not: `Author . . . . .`
+is one run of 134 characters, six of them letters, and the stand-in's period is
+far wider than the document's. The ratio came out at **0.54** because the dots
+outvoted everything, and the word was drawn at 54 % spacing — an unreadable blot
+beside a leader that looked perfectly fine. Both paths now advance by the
+document's own per-glyph widths; the stand-in's widths keep only the job of
+dividing a cluster's single advance among its components. **74 pages improved,
+none regressed, net -0.999** — the cleanest result of the branch, and it came
+from looking at a page rather than at a score.
 
 **Pattern fills were painting solid black.** `scn` in a pattern space names a
 resource rather than giving numbers, and read as a colour it fell through to
