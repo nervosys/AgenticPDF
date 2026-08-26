@@ -1788,6 +1788,17 @@ pub enum RenderOp {
         /// image, which is every image that is not a mask.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tint: Option<[f64; 4]>,
+        /// The `[a b c d]` of the transform that placed the image, in device
+        /// space, where `x`/`y`/`w`/`h` are only its bounding box.
+        ///
+        /// An image is painted into the *unit square* under the current
+        /// transform, so that transform is free to turn it, mirror it or shear
+        /// it. A bounding box keeps none of that: a photograph placed with a
+        /// quarter turn comes out lying on its side and stretched to the box
+        /// it would have occupied. `None` where a display list predates the
+        /// field, and it is then drawn upright as it always was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mat: Option<[f64; 4]>,
     },
     /// Save graphics state (push the clip/scissor stack).
     Save,
@@ -3091,6 +3102,7 @@ fn run_content(
                                     true => Some(fill),
                                     false => None,
                                 },
+                                mat: Some([ctm[0], ctm[1], ctm[2], ctm[3]]),
                             });
                         }
                     }
@@ -3351,6 +3363,7 @@ fn run_content(
                         true => Some(fill),
                         false => None,
                     },
+                    mat: Some([ctm[0], ctm[1], ctm[2], ctm[3]]),
                 });
             }
             other => {

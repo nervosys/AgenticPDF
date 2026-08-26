@@ -260,6 +260,83 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 
+/// Resample a texture through the transform that placed it, or `None` when
+/// that transform is an ordinary upright scaling.
+///
+/// A PDF image is painted into the *unit square* under the current transform,
+/// which is free to turn it, mirror it or shear it. The op carries a bounding
+/// box, which keeps none of that on its own: one eBook places a photograph
+/// with a quarter turn and a mirror, and drawn from the box alone it came out
+/// lying on its side and stretched to fill a shape it was never meant to fill.
+///
+/// Rather than special-case turns and flips, every placement that is not
+/// upright is resampled by walking the output and asking where each pixel came
+/// from. That is one routine for mirrors, quarter turns and shears alike, and
+/// the arithmetic is the same in each -- which is the reason to do it this way
+/// rather than enumerate the cases and get one of the signs backwards.
+fn placed(rgba: &[u8], src_w: u32, src_h: u32, mat: [f64; 4]) -> Option<(u32, u32, Vec<u8>)> {
+    let [a, b, c, d] = mat;
+    let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
+    if scale <= f64::EPSILON {
+        return None;
+    }
+    // Upright: the axes are unmixed and neither is reflected, which is what
+    // drawing straight into the box already does.
+    if b.abs() <= scale * 0.02 && c.abs() <= scale * 0.02 && a > 0.0 && d > 0.0 {
+        return None;
+    }
+    let det = a * d - b * c;
+    if det.abs() <= f64::EPSILON {
+        return None;
+    }
+    if src_w == 0 || src_h == 0 || rgba.len() < (src_w as usize * src_h as usize * 4) {
+        return None;
+    }
+
+    // The box the placed image occupies, in the same units as the matrix.
+    let xs = [0.0, a, c, a + c];
+    let ys = [0.0, b, d, b + d];
+    let min_x = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let min_y = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+    let box_w = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - min_x;
+    let box_h = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - min_y;
+    if !(box_w > 0.0 && box_h > 0.0) {
+        return None;
+    }
+
+    // Keep roughly the source's pixel count, shaped to the box: enough detail
+    // to lose nothing, few enough not to grow a picture that has to be sampled
+    // straight back down.
+    let budget = (src_w as f64 * src_h as f64).min(4_000_000.0);
+    let k = (budget / (box_w * box_h)).sqrt();
+    let out_w = ((box_w * k).round() as u32).clamp(1, 4096);
+    let out_h = ((box_h * k).round() as u32).clamp(1, 4096);
+
+    let mut out = vec![0u8; out_w as usize * out_h as usize * 4];
+    for oy in 0..out_h {
+        // Output rows run down the screen; the box's y runs up, as the matrix
+        // does, so the row is read from the far end.
+        let py = min_y + box_h * (1.0 - (oy as f64 + 0.5) / out_h as f64);
+        for ox in 0..out_w {
+            let px = min_x + box_w * (ox as f64 + 0.5) / out_w as f64;
+            // Where in the unit square that lands.
+            let s = (d * px - c * py) / det;
+            let t = (a * py - b * px) / det;
+            if !(0.0..1.0).contains(&s) || !(0.0..1.0).contains(&t) {
+                continue;
+            }
+            // A sample row counts from the top of the image, and the unit
+            // square counts from the bottom, so `t` is read the other way.
+            let sx = ((s * src_w as f64) as u32).min(src_w - 1);
+            let sy = (((1.0 - t) * src_h as f64) as u32).min(src_h - 1);
+            let from = (sy as usize * src_w as usize + sx as usize) * 4;
+            let to = (oy as usize * out_w as usize + ox as usize) * 4;
+            out[to..to + 4].copy_from_slice(&rgba[from..from + 4]);
+        }
+    }
+    Some((out_w, out_h, out))
+}
+
 /// The overlap of two rectangles, empty where they do not meet.
 ///
 /// An empty result is a zero-sized rectangle rather than an absent one: a clip
@@ -546,6 +623,7 @@ pub fn paint_page(
                 name,
                 alpha,
                 tint,
+                mat,
             } => {
                 // y + h because the op's origin is the image's bottom-left and
                 // the screen rect is anchored at its top-left.
@@ -558,19 +636,24 @@ pub fn paint_page(
                 );
                 match textures.iter().find(|texture| texture.name == *name) {
                     Some(texture) => {
-                        // `Painter::draw_image` takes no opacity and no tint,
-                        // so both are folded into the pixels. Every host
-                        // composites straight alpha, so scaling the alpha
-                        // channel is the whole of `ca` for an image; a
-                        // stencil additionally takes its colour here, because
-                        // the texture only ever carried its coverage. The
-                        // copy is made only when the document asked for one.
+                        // `Painter::draw_image` takes no opacity, no tint and
+                        // no transform, so all three are folded into the
+                        // pixels. Every host composites straight alpha, so
+                        // scaling the alpha channel is the whole of `ca` for
+                        // an image; a stencil additionally takes its colour
+                        // here, because the texture only carried its coverage;
+                        // and a placement that is not upright is resampled
+                        // through its own matrix. Each copy is made only when
+                        // the document asked for one.
                         let recoloured = recolour(&texture.rgba, *alpha, *tint);
                         let pixels = recoloured.as_deref().unwrap_or(&texture.rgba);
-                        painter.draw_image(
-                            rect,
-                            &ImageData::new(texture.width, texture.height, pixels),
-                        )
+                        let turned =
+                            mat.and_then(|m| placed(pixels, texture.width, texture.height, m));
+                        let (iw, ih, pixels) = match &turned {
+                            Some((w, h, bytes)) => (*w, *h, bytes.as_slice()),
+                            None => (texture.width, texture.height, pixels),
+                        };
+                        painter.draw_image(rect, &ImageData::new(iw, ih, pixels))
                     }
                     None => painter.stroke_rect(rect, Color::GRAY, 1.0, 0.0),
                 }
@@ -1245,6 +1328,7 @@ mod tests {
             name: "Im1".into(),
             alpha: 1.0,
             tint: None,
+            mat: None,
         }];
         let texture = Texture {
             name: "Im1".into(),
@@ -1281,6 +1365,7 @@ mod tests {
                 name: "Im1".into(),
                 alpha,
                 tint: None,
+                mat: None,
             }];
             let texture = Texture {
                 name: "Im1".into(),
@@ -1308,6 +1393,75 @@ mod tests {
         );
     }
 
+    /// An upright placement is left alone; anything else is resampled.
+    ///
+    /// The cheap case has to stay cheap: almost every image on almost every
+    /// page is an ordinary scaling, and resampling those would copy every
+    /// photograph in a document to no purpose.
+    #[test]
+    fn only_a_placement_that_is_not_upright_is_resampled() {
+        let px = vec![255u8; 4 * 4];
+        assert!(
+            placed(&px, 2, 2, [100.0, 0.0, 0.0, 50.0]).is_none(),
+            "a plain positive scaling needs no resampling"
+        );
+        // A hair of shear is still upright: producers write matrices like
+        // [1215.95 -8.49 6.07 869.86] for images nobody would call rotated.
+        assert!(placed(&px, 2, 2, [1215.9, -8.4, 6.0, 869.8]).is_none());
+        assert!(
+            placed(&px, 2, 2, [-100.0, 0.0, 0.0, 50.0]).is_some(),
+            "a negative scale is a mirror and has to be applied"
+        );
+        assert!(
+            placed(&px, 2, 2, [0.0, 863.0, -620.0, 0.0]).is_some(),
+            "a quarter turn has to be applied"
+        );
+    }
+
+    /// A mirror swaps the picture left for right; a quarter turn stands it up.
+    #[test]
+    fn a_mirrored_placement_is_drawn_mirrored() {
+        // Two columns: red on the left, blue on the right.
+        let px: Vec<u8> = [
+            [255u8, 0, 0, 255],
+            [0, 0, 255, 255],
+            [255, 0, 0, 255],
+            [0, 0, 255, 255],
+        ]
+        .concat();
+        let left = |(w, h, out): &(u32, u32, Vec<u8>)| {
+            assert_eq!((*w, *h), (2, 2));
+            (out[0], out[2])
+        };
+
+        // Mirrored across x: the blue column comes to the left.
+        let m = placed(&px, 2, 2, [-40.0, 0.0, 0.0, 40.0]).expect("mirrored");
+        let (r, b) = left(&m);
+        assert!(
+            b > 200 && r < 50,
+            "the right-hand column should now be left"
+        );
+
+        // Upright for comparison, forced through the same routine by a
+        // vertical mirror, which leaves the columns where they were.
+        let v = placed(&px, 2, 2, [40.0, 0.0, 0.0, -40.0]).expect("flipped");
+        let (r, b) = left(&v);
+        assert!(r > 200 && b < 50, "a vertical flip must not swap columns");
+    }
+
+    /// Nothing outside the unit square is drawn.
+    ///
+    /// A sheared placement's bounding box is larger than the parallelogram
+    /// inside it, and the corners left over are not part of the picture.
+    #[test]
+    fn the_corners_a_shear_leaves_over_stay_empty() {
+        let px = vec![255u8; 4 * 4];
+        let (w, h, out) = placed(&px, 2, 2, [80.0, 40.0, 0.0, 80.0]).expect("sheared");
+        assert!(w > 1 && h > 1);
+        // The top-left of the box is outside a parallelogram leaning right.
+        assert_eq!(out[3], 0, "a corner the picture does not reach is clear");
+    }
+
     /// A stencil is painted in the colour the op carries, not its own.
     ///
     /// An `/ImageMask` texture holds coverage in its alpha and white
@@ -1333,6 +1487,7 @@ mod tests {
                 name: "Im1".into(),
                 alpha: 1.0,
                 tint,
+                mat: None,
             }];
             paint_page(
                 &mut painter,
@@ -1383,6 +1538,7 @@ mod tests {
                 name: "Im1".into(),
                 alpha,
                 tint: None,
+                mat: None,
             })
             .collect();
         let mut painter = RecordingPainter::new();
@@ -1431,6 +1587,7 @@ mod tests {
                 name: "Im1".into(),
                 alpha: 1.0,
                 tint: None,
+                mat: None,
             },
             RenderOp::Restore,
         ];
@@ -1509,6 +1666,7 @@ mod tests {
             name: "absent".into(),
             alpha: 1.0,
             tint: None,
+            mat: None,
         }];
         paint_page(
             &mut painter,
@@ -1998,6 +2156,80 @@ mod render_report {
         }
         documents.sort();
         documents
+    }
+
+    /// Report every image placed other than upright.
+    ///
+    /// A PDF image is painted into the *unit square* under the current
+    /// transform, so that transform may turn it, mirror it or shear it. The
+    /// display list long carried only a bounding box, which keeps none of
+    /// that: a photograph placed with a quarter turn came out lying on its
+    /// side and stretched to the box it would have filled.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
+    /// -- --ignored images_placed_askew`
+    #[test]
+    #[ignore = "needs a tree of documents; run deliberately"]
+    fn images_placed_askew() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let (mut upright, mut mirrored, mut turned, mut sheared, mut docs) = (0, 0, 0, 0, 0);
+        let documents = documents_under(&root);
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            let mut here = Vec::new();
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let Ok(list) = session.display_list() else {
+                    continue;
+                };
+                for op in &list.ops {
+                    let RenderOp::Image { mat: Some(m), .. } = op else {
+                        continue;
+                    };
+                    let (a, b, c, d) = (m[0], m[1], m[2], m[3]);
+                    let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
+                    let flat = |v: f64| v.abs() <= scale * 0.02;
+                    match (flat(b) && flat(c), flat(a) && flat(d)) {
+                        (true, _) if a > 0.0 && d > 0.0 => upright += 1,
+                        (true, _) => {
+                            mirrored += 1;
+                            here.push(format!("p{page} mirrored"));
+                        }
+                        (_, true) => {
+                            turned += 1;
+                            here.push(format!("p{page} quarter turn"));
+                        }
+                        _ => {
+                            sheared += 1;
+                            here.push(format!("p{page} sheared"));
+                        }
+                    }
+                }
+            }
+            if !here.is_empty() {
+                docs += 1;
+                eprintln!("{}: {}", path.display(), here.join(", "));
+            }
+        }
+        eprintln!(
+            "{} documents, first {pages} pages each: {upright} upright, {mirrored} mirrored, {turned} turned, {sheared} sheared, across {docs} documents",
+            documents.len()
+        );
     }
 
     /// Count the inline images a tree of documents actually draws.

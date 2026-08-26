@@ -1138,6 +1138,8 @@ fn emit_page(page: Page, document: &SemanticDoc, output: &mut Typeset) {
                     // picture behind the text, and nothing stencils one.
                     alpha: 1.0,
                     tint: None,
+                    // Upright: we lay out our own documents.
+                    mat: Some([*width, 0.0, 0.0, *height]),
                 });
                 if let Some(image) = page_image(document, asset_id, x, y, *width, *height)
                     && !images.iter().any(|existing| existing.name == image.name)

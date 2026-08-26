@@ -22,7 +22,7 @@ export type RenderOp =
   | { op: "fill"; subpaths: [number, number][][]; color: RGBA; even_odd: boolean }
   | { op: "stroke"; subpaths: [number, number][][]; color: RGBA; width: number }
   | { op: "text"; text: string; x: number; y: number; size: number; width: number; advances: number[]; measured: boolean; rot: number; color: RGBA; font: string }
-  | { op: "image"; x: number; y: number; w: number; h: number; name: string; alpha?: number; tint?: [number, number, number, number] }
+  | { op: "image"; x: number; y: number; w: number; h: number; name: string; alpha?: number; tint?: [number, number, number, number]; mat?: [number, number, number, number] }
   | { op: "save" }
   | { op: "restore" }
   | { op: "clip"; rect: [number, number, number, number]; subpaths: [number, number][][] };
@@ -295,9 +295,23 @@ export function renderDisplayList(
       gl.stencilMask(0x0);
       if (clip.path) gl.stencilFunc(gl.EQUAL, CLIP_BIT, CLIP_BIT);
       else gl.stencilFunc(gl.ALWAYS, 0, 0xff);
+      // An image is painted into the unit square under the transform that
+      // placed it, so the quad is that square's four corners rather than the
+      // bounding box. Drawing the box instead lays a turned photograph on its
+      // side and stretches it to a shape it was never meant to fill. Without a
+      // matrix -- an older display list -- the box is all there is.
       const { x, y, w, h } = op;
-      bindPos([x, y, x + w, y, x + w, y + h, x, y, x + w, y + h, x, y + h]);
+      const [ma, mb, mc, md] = op.mat ?? [w, 0, 0, h];
+      // The matrix is relative to the placement's own origin, which the box
+      // recovers: the corner of the box is the least of the four corners.
+      const ox = x - Math.min(0, ma, mc, ma + mc);
+      const oy = y - Math.min(0, mb, md, mb + md);
+      const p00 = [ox, oy], p10 = [ox + ma, oy + mb];
+      const p11 = [ox + ma + mc, oy + mb + md], p01 = [ox + mc, oy + md];
+      bindPos([...p00, ...p10, ...p11, ...p00, ...p11, ...p01]);
       gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+      // Sample coordinates follow the corners: the unit square's y runs up and
+      // an image's rows run down, so v is 1 at the bottom edge.
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), gl.STREAM_DRAW);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
