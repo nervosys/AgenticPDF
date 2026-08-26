@@ -17,8 +17,8 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **650 of 683 — 95.2 %** |
 | Over the threshold | 33 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 588 crate + 45 integration, 67 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 65 commits ahead of `master`, unpushed |
+| Tests | 590 crate + 45 integration, 68 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 66 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
@@ -138,6 +138,14 @@ the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
 
+**Image masks were dropped rather than stencilled.** An `/ImageMask` is one
+bit a sample with no colour space, painted in the fill colour in force at the
+`Do`. Nothing matched it, so it decoded to nothing and drew a grey frame. The
+texture now carries coverage in its alpha and the colour rides on the op — a
+per-object texture cannot hold it, because the same stencil can be painted
+twice on a page in two colours. Six pages improved, none regressed, net -0.030;
+images placed but undecodable are now **0 of 1,301**.
+
 **Predicted colour images were being dropped.** A PNG predictor's row is
 `/Columns` *samples* wide and its filters subtract the pixel to the left, which
 is `/Colors` components away. The un-filter read `/Columns` as bytes and never
@@ -157,10 +165,13 @@ through the group's soft mask. Text and images inside one still paint at full
 strength, and a mask whose own group paints with text or an image produces no
 regions and is skipped. Both fail unmasked, which is the safe direction.
 
-**Two images still do not decode.** `images_without_pixels` is down to 2 of
-1,301 placed images, both in *Advanced Materials — Liquid Metal-Vitrimer*. That
-is the residue of the codecs we decline (JPEG 2000, progressive JPEG) rather
-than a stride bug, and both draw a frame, but nobody has looked at which.
+**Two heavy image-mask documents that this did not explain.**
+`atmosphere-10-00549` p3 sits at 0.469 with 32 image ops and no tint among
+them, so whatever it masks is not reached as a page-level image XObject —
+likely an inline image (`BI`/`ID`/`EI`), which the display list does not
+emit at all. `ADA617071` p1 (on the *Desktop*, not `~/Documents`) draws the
+same 32×32 indexed 1-bit image 523 times and carries the second-highest mean
+absolute difference in the corpus at 0.089. Neither has been looked into.
 
 **Page textures on mobile.** Confirmed by running the Android app rather than
 inferred: text now renders correctly, including the font-subset fix, but the
