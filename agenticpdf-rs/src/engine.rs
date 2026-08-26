@@ -1050,17 +1050,23 @@ pub fn decode_stream(dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
         let parm = parms.get(i).cloned().flatten();
         match f.as_str() {
             "FlateDecode" | "Fl" => {
-                let predictor = parm
-                    .as_ref()
-                    .and_then(|p| p.get("Predictor"))
-                    .and_then(|o| o.as_int())
-                    .map(|n| n as u8);
-                let columns = parm
-                    .as_ref()
-                    .and_then(|p| p.get("Columns"))
-                    .and_then(|o| o.as_int())
-                    .map(|n| n as usize);
-                data = PdfParser::decompress_stream(&data, predictor, columns)?;
+                // `/Colors` and `/BitsPerComponent` describe the row as much
+                // as `/Columns` does: a row is Columns *samples* wide. They
+                // travel together so a caller cannot read one and forget the
+                // rest, which is how every predicted colour image used to be
+                // thrown away.
+                let number = |key: &str| {
+                    parm.as_ref()
+                        .and_then(|p| p.get(key))
+                        .and_then(|o| o.as_int())
+                };
+                let predictor = number("Predictor").map(|n| crate::parser::Predictor {
+                    predictor: n as u8,
+                    columns: number("Columns").unwrap_or(1).max(1) as usize,
+                    colors: number("Colors").unwrap_or(1).max(1) as usize,
+                    bits: number("BitsPerComponent").unwrap_or(8).max(1) as u8,
+                });
+                data = PdfParser::decompress_stream(&data, predictor)?;
             }
             "ASCIIHexDecode" | "AHx" => {
                 data = ascii_hex_decode(&data);

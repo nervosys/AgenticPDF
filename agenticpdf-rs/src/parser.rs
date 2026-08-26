@@ -11,6 +11,34 @@ use miniz_oxide::inflate::decompress_to_vec_zlib;
 /// Maximum stream length to decompress (256 MB).
 const MAX_STREAM_SIZE: usize = 256 * 1024 * 1024;
 
+/// A stream's PNG-predictor parameters, as `/DecodeParms` gives them.
+///
+/// Defaults are the PDF's own: one colour component of eight bits, one column.
+/// They are carried together because using any of them without the others is
+/// what went wrong here -- see [`PdfParser::png_unfilter`].
+#[derive(Debug, Clone, Copy)]
+pub struct Predictor {
+    /// `/Predictor`. Under 10 means no PNG un-filtering.
+    pub predictor: u8,
+    /// `/Columns`: samples per row, not bytes per row.
+    pub columns: usize,
+    /// `/Colors`: colour components per sample.
+    pub colors: usize,
+    /// `/BitsPerComponent`: bits per component.
+    pub bits: u8,
+}
+
+impl Default for Predictor {
+    fn default() -> Self {
+        Predictor {
+            predictor: 1,
+            columns: 1,
+            colors: 1,
+            bits: 8,
+        }
+    }
+}
+
 /// Thin parser facade that delegates to the engine.
 pub struct PdfParser<'a> {
     data: &'a [u8],
@@ -31,11 +59,10 @@ impl<'a> PdfParser<'a> {
     // ========================================================================
 
     /// Decompress a FlateDecode stream, then apply PNG predictor un-filtering
-    /// if a predictor >= 10 is specified.
+    /// if the stream's `/DecodeParms` ask for one.
     pub fn decompress_stream(
         data: &[u8],
-        predictor: Option<u8>,
-        columns: Option<usize>,
+        predictor: Option<Predictor>,
     ) -> Result<Vec<u8>, PdfError> {
         if data.len() > MAX_STREAM_SIZE {
             return Err(PdfError::StreamError("stream too large".into()));
@@ -68,38 +95,54 @@ impl<'a> PdfParser<'a> {
         };
 
         match predictor {
-            Some(p) if p >= 10 => {
-                let cols = columns.unwrap_or(1);
-                Self::png_unfilter(&decompressed, cols)
-            }
+            Some(p) if p.predictor >= 10 => Self::png_unfilter(&decompressed, p),
             _ => Ok(decompressed),
         }
     }
 
     /// Apply PNG un-filtering (predictors 10-14).
-    fn png_unfilter(data: &[u8], columns: usize) -> Result<Vec<u8>, PdfError> {
-        let row_bytes = columns + 1; // +1 for the per-row filter byte
-        if row_bytes == 0 || !data.len().is_multiple_of(row_bytes) {
+    ///
+    /// A PNG row is `Columns` *samples* wide, not `Columns` bytes, and its
+    /// filters subtract the pixel to the left -- which is `Colors` components
+    /// away, not one byte. Assuming one byte a pixel is right for the only
+    /// predicted stream a PDF is guaranteed to contain, a cross-reference
+    /// stream, and wrong for every colour image: the row stride comes out
+    /// three times too small, the length check then rejects the stream, and
+    /// the picture is dropped entirely. One brochure lost the drop shadow
+    /// behind all four of its photographs that way.
+    fn png_unfilter(data: &[u8], p: Predictor) -> Result<Vec<u8>, PdfError> {
+        // Bytes per pixel for the left-neighbour offset, and bytes per row.
+        // Sub-byte depths pack several samples into a byte, where the nearest
+        // whole-byte neighbour is the one PNG uses.
+        let bits = (p.colors.max(1)) * (p.bits.max(1) as usize);
+        let bpp = bits.div_ceil(8).max(1);
+        let columns = (p.columns.max(1) * bits).div_ceil(8);
+        let stride = columns + 1; // +1 for the per-row filter byte
+
+        // Whole rows only. A stream salvaged from a damaged Flate ends mid-row,
+        // and half a picture is better than none -- the same trade the
+        // truncated-stream salvage above makes.
+        let rows = data.len() / stride;
+        if rows == 0 {
             return Err(PdfError::DecompressError(
                 "data length not aligned to row size".into(),
             ));
         }
 
-        let num_rows = data.len() / row_bytes;
-        let mut output = Vec::with_capacity(num_rows * columns);
+        let mut output = Vec::with_capacity(rows * columns);
         let mut prev_row = vec![0u8; columns];
 
-        for row_idx in 0..num_rows {
-            let row_start = row_idx * row_bytes;
+        for row_idx in 0..rows {
+            let row_start = row_idx * stride;
             let filter_type = data[row_start];
-            let row_data = &data[row_start + 1..row_start + row_bytes];
+            let row_data = &data[row_start + 1..row_start + stride];
 
             let mut current_row = vec![0u8; columns];
             for i in 0..columns {
                 let raw = row_data[i];
-                let a = if i > 0 { current_row[i - 1] } else { 0 };
+                let a = if i >= bpp { current_row[i - bpp] } else { 0 };
                 let b = prev_row[i];
-                let c = if i > 0 { prev_row[i - 1] } else { 0 };
+                let c = if i >= bpp { prev_row[i - bpp] } else { 0 };
 
                 current_row[i] = match filter_type {
                     0 => raw,
@@ -150,7 +193,7 @@ mod tests {
         let whole = miniz_oxide::deflate::compress_to_vec_zlib(body, 6);
         // Cut the tail off, as a damaged or truncated file has.
         let cut = &whole[..whole.len() * 3 / 4];
-        let out = PdfParser::decompress_stream(cut, None, None);
+        let out = PdfParser::decompress_stream(cut, None);
         let out = out.expect("a truncated stream should still yield its start");
         assert!(!out.is_empty(), "something should survive");
         assert!(
@@ -168,7 +211,7 @@ mod tests {
     /// meaningful comes out, not that an error does.
     #[test]
     fn rubbish_does_not_become_content() {
-        match PdfParser::decompress_stream(b"not deflate at all", None, None) {
+        match PdfParser::decompress_stream(b"not deflate at all", None) {
             Err(_) => {}
             Ok(out) => assert!(
                 out.iter().all(|byte| *byte == 0),
@@ -210,7 +253,7 @@ mod tests {
     #[test]
     fn test_decompress_stream() {
         let empty = miniz_oxide::deflate::compress_to_vec_zlib(&[], 6);
-        let result = PdfParser::decompress_stream(&empty, None, None);
+        let result = PdfParser::decompress_stream(&empty, None);
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -218,8 +261,66 @@ mod tests {
     #[test]
     fn test_png_unfilter_none() {
         let data = vec![0, 10, 20, 30, 0, 40, 50, 60]; // 2 rows × 3 cols, filter=0
-        let result = PdfParser::png_unfilter(&data, 3).unwrap();
+        let gray = Predictor {
+            predictor: 12,
+            columns: 3,
+            ..Predictor::default()
+        };
+        let result = PdfParser::png_unfilter(&data, gray).unwrap();
         assert_eq!(result, vec![10, 20, 30, 40, 50, 60]);
+    }
+
+    /// A row is `Columns` samples, and `Sub` subtracts the pixel to the left.
+    ///
+    /// With `/Colors 3` that pixel is three bytes back, not one. Reading the
+    /// parameter as bytes makes the row stride a third of its true size, the
+    /// length check then rejects the stream, and every PNG-predicted colour
+    /// image in the document is dropped rather than drawn.
+    #[test]
+    fn a_colour_row_is_measured_in_pixels_not_bytes() {
+        let rgb = Predictor {
+            predictor: 15,
+            columns: 2,
+            colors: 3,
+            bits: 8,
+        };
+        // One row of two RGB pixels under filter 1 (Sub): the second pixel is
+        // stored as its difference from the first, per channel.
+        let data = vec![1, 10, 20, 30, 5, 6, 7];
+        assert_eq!(
+            PdfParser::png_unfilter(&data, rgb).unwrap(),
+            vec![10, 20, 30, 15, 26, 37],
+            "the left neighbour is one pixel back, not one byte"
+        );
+
+        // The same bytes read as one component a sample subtract the byte
+        // immediately to the left instead, which is a different picture.
+        let flat = Predictor {
+            predictor: 15,
+            columns: 6,
+            ..Predictor::default()
+        };
+        assert_eq!(
+            PdfParser::png_unfilter(&data, flat).unwrap(),
+            vec![10, 30, 60, 65, 71, 78]
+        );
+    }
+
+    /// A stream that ends mid-row keeps the rows it completed.
+    ///
+    /// The salvage above hands back whatever a damaged Flate produced, and
+    /// rejecting it here for not dividing evenly would throw that away again.
+    #[test]
+    fn a_stream_ending_mid_row_keeps_its_whole_rows() {
+        let p = Predictor {
+            predictor: 12,
+            columns: 3,
+            ..Predictor::default()
+        };
+        let data = vec![0, 1, 2, 3, 0, 4, 5];
+        assert_eq!(PdfParser::png_unfilter(&data, p).unwrap(), vec![1, 2, 3]);
+        // Not even one whole row is nothing to salvage.
+        assert!(PdfParser::png_unfilter(&[0, 1], p).is_err());
     }
 
     #[test]
@@ -231,7 +332,7 @@ mod tests {
     #[test]
     fn test_max_stream_size() {
         let huge = vec![0u8; MAX_STREAM_SIZE + 1];
-        let result = PdfParser::decompress_stream(&huge, None, None);
+        let result = PdfParser::decompress_stream(&huge, None);
         assert!(result.is_err());
     }
 }

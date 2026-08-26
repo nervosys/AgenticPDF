@@ -1708,19 +1708,20 @@ mod substitution_render {
 mod render_report {
     use super::*;
 
-    /// Report every image in a tree of documents that is drawn faded.
+    /// Count the images a build cannot turn into pixels.
     ///
-    /// Constant alpha on an image is invisible to `compare_corpus`: a page
-    /// that changes here changes by a few percent of its ink, which is well
-    /// inside the noise the threshold already tolerates. So before reading a
-    /// sweep as "this change did nothing", ask this whether the corpus
-    /// contains a single document that exercises it.
+    /// A page names an image and the painter finds no texture for it, so it
+    /// draws a grey frame instead. That is deliberate -- a hole is honest --
+    /// but it means a whole class of undecodable image can go missing across a
+    /// corpus without a single test failing and without the ink metric moving
+    /// much, because a frame has ink of its own. Run this on two revisions and
+    /// diff the totals.
     ///
     /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
-    /// -- --ignored images_drawn_faded`
+    /// -- --ignored images_without_pixels`
     #[test]
     #[ignore = "needs a tree of documents; run deliberately"]
-    fn images_drawn_faded() {
+    fn images_without_pixels() {
         let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
             eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
             return;
@@ -1730,6 +1731,48 @@ mod render_report {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3);
 
+        let (mut placed, mut missing, mut affected) = (0usize, 0usize, 0usize);
+        let documents = documents_under(&root);
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            let mut absent_here = 0usize;
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let Ok(list) = session.display_list() else {
+                    continue;
+                };
+                let textures = session.textures(1200 * 1600);
+                for op in &list.ops {
+                    let RenderOp::Image { name, .. } = op else {
+                        continue;
+                    };
+                    placed += 1;
+                    if !textures.iter().any(|t| t.name == *name) {
+                        missing += 1;
+                        absent_here += 1;
+                    }
+                }
+            }
+            if absent_here > 0 {
+                affected += 1;
+                eprintln!("{}: {absent_here} without pixels", path.display());
+            }
+        }
+        eprintln!(
+            "{} documents, first {pages} pages each: {missing} of {placed} placed images have no texture, across {affected} documents",
+            documents.len()
+        );
+    }
+
+    /// Every `.pdf` under a directory, in a stable order.
+    fn documents_under(root: &str) -> Vec<std::path::PathBuf> {
         let mut queue = vec![std::path::PathBuf::from(root)];
         let mut documents = Vec::new();
         while let Some(dir) = queue.pop() {
@@ -1752,7 +1795,32 @@ mod render_report {
             }
         }
         documents.sort();
+        documents
+    }
 
+    /// Report every image in a tree of documents that is drawn faded.
+    ///
+    /// Constant alpha on an image is invisible to `compare_corpus`: a page
+    /// that changes here changes by a few percent of its ink, which is well
+    /// inside the noise the threshold already tolerates. So before reading a
+    /// sweep as "this change did nothing", ask this whether the corpus
+    /// contains a single document that exercises it.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
+    /// -- --ignored images_drawn_faded`
+    #[test]
+    #[ignore = "needs a tree of documents; run deliberately"]
+    fn images_drawn_faded() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let documents = documents_under(&root);
         let (mut faded_images, mut faded_pages) = (0usize, 0usize);
         for path in &documents {
             let Ok(bytes) = std::fs::read(path) else {
@@ -2135,6 +2203,10 @@ mod page_image {
     /// `APDF_SHARD=k/n` takes every n-th document and the shards can be run
     /// side by side. Sharding by document rather than by page keeps a
     /// document's pages together, which is how the rows read.
+    ///
+    /// `APDF_LIST=n` sets how many rows each shard prints (30 by default);
+    /// `APDF_LIST=100000` prints every page, which is what diffing two runs
+    /// against each other needs.
     #[test]
     #[ignore = "needs a rendered corpus; run deliberately"]
     fn compare_corpus() {
@@ -2244,7 +2316,16 @@ mod page_image {
             }
         }
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (tv, mae, what) in rows.iter().take(30) {
+        // The worst thirty are what a person reads. Diffing two runs page by
+        // page -- which is the only way to tell a change that improved one
+        // document from a change that improved one and broke another -- needs
+        // all of them, because a page that regresses from 0.01 to 0.05 never
+        // enters the top thirty on either side.
+        let listed: usize = std::env::var("APDF_LIST")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        for (tv, mae, what) in rows.iter().take(listed) {
             eprintln!("{tv:.3}  mae {mae:.4}  {what}");
         }
         eprintln!("compared {compared}, within 0.12: {matched}, not comparable {skipped}");
@@ -2765,4 +2846,3 @@ mod ligature_probe {
         }
     }
 }
-

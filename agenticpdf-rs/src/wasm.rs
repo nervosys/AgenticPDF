@@ -212,7 +212,7 @@ pub fn extract_all(data: &[u8], chunk_size: usize, overlap: usize) -> Result<Str
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "decompressFlate")]
 pub fn decompress_flate(data: &[u8]) -> Result<Vec<u8>, JsValue> {
-    crate::parser::PdfParser::decompress_stream(data, None, None)
+    crate::parser::PdfParser::decompress_stream(data, None)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
