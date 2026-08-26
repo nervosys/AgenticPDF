@@ -14,20 +14,20 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **656 of 683 — 96.0 %** |
-| Over the threshold | 27 |
+| Matching (total variation ≤ 0.12) | **659 of 683 — 96.5 %** |
+| Over the threshold | 23 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
 | Tests | 594 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 73 commits ahead of `master`, unpushed |
+| Branch | 75 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 27 failures, four have a mean absolute difference above 0.10 — those are
-the only ones a reader would call visibly wrong. Seven sit between 0.04 and 0.10.
-The remaining sixteen are below 0.04: sparse pages where the normalised score
+Of the 23 failures, four have a mean absolute difference above 0.10 — those are
+the only ones a reader would call visibly wrong. Six sit between 0.04 and 0.10.
+The remaining thirteen are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -137,6 +137,18 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**A run was answered by a stranger's subset.** Naming a face object is also a
+statement about the others: a run set in object 19 is not set in object 12. The
+lookup put the named face first and then fell through to *every* embedded face
+sharing the `/BaseFont` name, so a run whose own object carries no font program
+at all got a different object's subset — by name, with the document's codes.
+One AMD guide has three objects called `TimesNewRomanPS-BoldMT`, one embedded
+and two not, and its contents page is set in one of the two: "List of Tables"
+came out as "i ist of qables" and every dot leader as a solid black bar.
+**35 pages improved, none regressed, net -1.449** — the largest on the branch.
+The page went 0.459 → 0.042. This is the *third* time `/BaseFont` has not been
+an identity and the first two fixes both stopped one step short.
 
 **A substituted run was laid out on the stand-in's widths, not the
 document's.** One ratio for the whole run — its recorded width over the
