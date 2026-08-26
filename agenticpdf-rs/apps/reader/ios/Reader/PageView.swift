@@ -38,6 +38,55 @@ final class PageView: UIView {
         if let delta = swipeDeltas[gesture.direction.rawValue] { onSwipePage?(delta) }
     }
 
+    /// Decoded masks, kept so a redraw does not decode the same letter again.
+    ///
+    /// The iOS recording carries every mask's pixels on every frame -- the
+    /// native side builds a fresh painter each time and remembers nothing -- so
+    /// this may be cleared whenever it likes. If that ever changes, and the
+    /// sender starts omitting pixels for masks it believes are held here, then
+    /// clearing this without telling it will make text silently stop appearing.
+    private var glyphTiles: [String: CGImage] = [:]
+
+    /// How many decoded masks to hold before starting again. Every zoom level
+    /// makes its own, so this cannot grow without limit.
+    private static let maxGlyphTiles = 4096
+
+    /// Decode a mask, or return one already decoded.
+    ///
+    /// Guarded at every step: a recording that does not carry what this needs
+    /// falls back to the placeholder frame rather than trapping inside a draw.
+    private func glyphTile(_ op: [String: Any]) -> CGImage? {
+        guard let key = op["key"] as? String, !key.isEmpty else { return nil }
+        if let cached = glyphTiles[key] { return cached }
+        guard let encoded = op["pixels"] as? String,
+              let width = number(op["iw"]).map({ Int($0) }),
+              let height = number(op["ih"]).map({ Int($0) }),
+              width > 0, height > 0,
+              let bytes = Data(base64Encoded: encoded),
+              bytes.count >= width * height * 4,
+              let provider = CGDataProvider(data: bytes as CFData)
+        else { return nil }
+
+        // The recording is straight (not premultiplied) RGBA, one byte each.
+        guard let image = CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        ) else { return nil }
+
+        if glyphTiles.count >= Self.maxGlyphTiles { glyphTiles.removeAll() }
+        glyphTiles[key] = image
+        return image
+    }
+
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), bounds.width > 0 else { return }
 
@@ -53,12 +102,29 @@ final class PageView: UIView {
             case "fill_rect":
                 context.setFillColor(color(op["color"]))
                 context.fill(rect(op))
-            case "stroke_rect", "image":
-                // A missing image still shows its frame: quietly omitting
-                // content from a document someone is reading is worse than a
-                // placeholder.
-                context.setStrokeColor(op["op"] as? String == "image"
-                                       ? UIColor.gray.cgColor : color(op["color"]))
+            case "image":
+                // Every glyph on the page arrives here as a mask, so this is
+                // the text path: without it a page reads as a field of empty
+                // rectangles, which is what this drew before.
+                if let tile = glyphTile(op) {
+                    // Core Graphics draws images up the y axis; the recording
+                    // is in screen coordinates, so flip about the destination.
+                    context.saveGState()
+                    let box = rect(op)
+                    context.translateBy(x: 0, y: box.maxY + box.minY)
+                    context.scaleBy(x: 1, y: -1)
+                    context.draw(tile, in: box)
+                    context.restoreGState()
+                } else {
+                    // A mask we were never sent still shows its frame: quietly
+                    // omitting content from a document someone is reading is
+                    // worse than a placeholder.
+                    context.setStrokeColor(UIColor.gray.cgColor)
+                    context.setLineWidth(1)
+                    context.stroke(rect(op))
+                }
+            case "stroke_rect":
+                context.setStrokeColor(color(op["color"]))
                 context.setLineWidth(number(op["width"]) ?? 1)
                 context.stroke(rect(op))
             case "fill_path", "stroke_path":
