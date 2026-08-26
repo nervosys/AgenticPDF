@@ -93,7 +93,10 @@ impl Typeset {
         for (index, list) in self.display.iter().enumerate() {
             let page_number = index + 1;
             for op in &list.ops {
-                let RenderOp::Image { x, y, w, h, name } = op else {
+                let RenderOp::Image {
+                    x, y, w, h, name, ..
+                } = op
+                else {
                     continue;
                 };
                 let pixels = self.images[index]
@@ -1131,6 +1134,9 @@ fn emit_page(page: Page, document: &SemanticDoc, output: &mut Typeset) {
                     w: *width,
                     h: *height,
                     name: asset_id.clone(),
+                    // We lay out our own documents; nothing here fades a
+                    // picture behind the text.
+                    alpha: 1.0,
                 });
                 if let Some(image) = page_image(document, asset_id, x, y, *width, *height)
                     && !images.iter().any(|existing| existing.name == image.name)

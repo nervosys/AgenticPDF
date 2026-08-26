@@ -255,6 +255,23 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 
+/// Scale an image's alpha channel by a constant, or `None` at full opacity.
+///
+/// `None` rather than a clone is the point: almost every image on almost every
+/// page is opaque, and a page of photographs would otherwise copy every one of
+/// them per frame to multiply by 1.
+fn faded(rgba: &[u8], alpha: f64) -> Option<Vec<u8>> {
+    if alpha >= 1.0 {
+        return None;
+    }
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mut out = rgba.to_vec();
+    for pixel in out.as_chunks_mut::<4>().0 {
+        pixel[3] = (pixel[3] as f64 * alpha).round() as u8;
+    }
+    Some(out)
+}
+
 /// Fill a path of several subpaths, honouring its winding rule.
 ///
 /// The painter fills one polygon at a time, so filling each subpath in turn is
@@ -275,7 +292,10 @@ fn fill_winding(painter: &mut dyn Painter, polys: &[Vec<Position>], even_odd: bo
             bottom = bottom.max(p.y);
         }
     }
-    if !top.is_finite() || !(bottom > top) {
+    // Spelled with `is_finite` on both bounds rather than a negated `>`: a
+    // NaN coordinate has to bail here, and `bottom <= top` alone would let it
+    // through into a row count of NaN.
+    if !top.is_finite() || !bottom.is_finite() || bottom <= top {
         return;
     }
     // Taller than this and a row at a time is the wrong trade: fall back to
@@ -476,7 +496,14 @@ pub fn paint_page(
                     };
                 }
             }
-            RenderOp::Image { x, y, w, h, name } => {
+            RenderOp::Image {
+                x,
+                y,
+                w,
+                h,
+                name,
+                alpha,
+            } => {
                 // y + h because the op's origin is the image's bottom-left and
                 // the screen rect is anchored at its top-left.
                 let top_left = transform.point(*x, *y + *h);
@@ -487,10 +514,19 @@ pub fn paint_page(
                     *h as f32 * transform.scale,
                 );
                 match textures.iter().find(|texture| texture.name == *name) {
-                    Some(texture) => painter.draw_image(
-                        rect,
-                        &ImageData::new(texture.width, texture.height, &texture.rgba),
-                    ),
+                    Some(texture) => {
+                        // `Painter::draw_image` takes no opacity, so a faded
+                        // image is faded in its own alpha channel. Every host
+                        // composites straight alpha, so scaling it is the
+                        // whole of `ca` for an image; the copy is only made
+                        // when the document actually asked for one.
+                        let faded = faded(&texture.rgba, *alpha);
+                        let pixels = faded.as_deref().unwrap_or(&texture.rgba);
+                        painter.draw_image(
+                            rect,
+                            &ImageData::new(texture.width, texture.height, pixels),
+                        )
+                    }
                     None => painter.stroke_rect(rect, Color::GRAY, 1.0, 0.0),
                 }
             }
@@ -1158,6 +1194,7 @@ mod tests {
             w: 100.0,
             h: 100.0,
             name: "Im1".into(),
+            alpha: 1.0,
         }];
         let texture = Texture {
             name: "Im1".into(),
@@ -1177,6 +1214,89 @@ mod tests {
         assert!(drawn.g > 0.9 && drawn.r < 0.5, "the texture did not draw");
     }
 
+    /// A watermark is a picture at half strength, and it has to read as one.
+    ///
+    /// The op's alpha is the only thing standing between "a logo behind the
+    /// text" and "a photograph on top of it": the pixels are identical either
+    /// way, and the document says which it meant only in `ca`.
+    #[test]
+    fn an_image_is_painted_at_the_alpha_the_op_carries() {
+        let render = |alpha: f64| {
+            let mut painter = ImagePainter::new(100, 100);
+            let ops = vec![RenderOp::Image {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                name: "Im1".into(),
+                alpha,
+            }];
+            let texture = Texture {
+                name: "Im1".into(),
+                width: 1,
+                height: 1,
+                rgba: vec![0, 0, 0, 255],
+            };
+            paint_page(
+                &mut painter,
+                &list(ops),
+                Transform::fit(&list(Vec::new()), area(), 1.0),
+                std::slice::from_ref(&texture),
+                &crate::glyphs::FontSet::without_substitution(b""),
+            );
+            painter.get_pixel(50, 50).r
+        };
+
+        // Black on a white page: opaque is black, half is grey, and the page
+        // still shows through.
+        assert!(render(1.0) < 0.1, "an opaque image should cover the page");
+        let half = render(0.5);
+        assert!(
+            (0.35..=0.65).contains(&half),
+            "half alpha over a white page should be mid-grey, got {half}"
+        );
+    }
+
+    /// The same picture at two opacities is two pictures on the wire.
+    ///
+    /// Images are cached by a key over their pixels, so fading has to happen
+    /// before the key is taken -- otherwise the first placement wins and every
+    /// later one is drawn at whatever opacity that one had.
+    #[test]
+    fn the_same_image_at_two_alphas_is_not_one_cached_image() {
+        let texture = Texture {
+            name: "Im1".into(),
+            width: 2,
+            height: 2,
+            rgba: vec![9; 16],
+        };
+        let ops: Vec<RenderOp> = [1.0, 0.4]
+            .into_iter()
+            .map(|alpha| RenderOp::Image {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+                name: "Im1".into(),
+                alpha,
+            })
+            .collect();
+        let mut painter = RecordingPainter::new();
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            std::slice::from_ref(&texture),
+            &crate::glyphs::FontSet::without_substitution(b""),
+        );
+        let json = painter.to_json();
+        assert_eq!(
+            json.matches(r#""pixels":""#).count(),
+            2,
+            "the faded copy is different pixels and has to travel: {json}"
+        );
+    }
+
     #[test]
     fn a_missing_texture_leaves_a_visible_hole_rather_than_nothing() {
         let mut painter = ImagePainter::new(100, 100);
@@ -1186,6 +1306,7 @@ mod tests {
             w: 80.0,
             h: 80.0,
             name: "absent".into(),
+            alpha: 1.0,
         }];
         paint_page(
             &mut painter,
@@ -1586,6 +1707,88 @@ mod substitution_render {
 #[cfg(test)]
 mod render_report {
     use super::*;
+
+    /// Report every image in a tree of documents that is drawn faded.
+    ///
+    /// Constant alpha on an image is invisible to `compare_corpus`: a page
+    /// that changes here changes by a few percent of its ink, which is well
+    /// inside the noise the threshold already tolerates. So before reading a
+    /// sweep as "this change did nothing", ask this whether the corpus
+    /// contains a single document that exercises it.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
+    /// -- --ignored images_drawn_faded`
+    #[test]
+    #[ignore = "needs a tree of documents; run deliberately"]
+    fn images_drawn_faded() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let mut queue = vec![std::path::PathBuf::from(root)];
+        let mut documents = Vec::new();
+        while let Some(dir) = queue.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                match path.is_dir() {
+                    true => queue.push(path),
+                    false
+                        if path
+                            .extension()
+                            .is_some_and(|e| e.eq_ignore_ascii_case("pdf")) =>
+                    {
+                        documents.push(path)
+                    }
+                    false => {}
+                }
+            }
+        }
+        documents.sort();
+
+        let (mut faded_images, mut faded_pages) = (0usize, 0usize);
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let Ok(list) = session.display_list() else {
+                    continue;
+                };
+                let alphas: Vec<f64> = list
+                    .ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        RenderOp::Image { alpha, .. } if *alpha < 1.0 => Some(*alpha),
+                        _ => None,
+                    })
+                    .collect();
+                if alphas.is_empty() {
+                    continue;
+                }
+                faded_pages += 1;
+                faded_images += alphas.len();
+                eprintln!("{} p{page}: {alphas:?}", path.display());
+            }
+        }
+        eprintln!(
+            "{} documents, first {pages} pages each: {faded_images} faded images on {faded_pages} pages",
+            documents.len()
+        );
+    }
 
     /// Render a page of any document and report what it took to draw it.
     ///
@@ -2562,3 +2765,4 @@ mod ligature_probe {
         }
     }
 }
+

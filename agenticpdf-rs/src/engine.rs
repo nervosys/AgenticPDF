@@ -1764,6 +1764,14 @@ pub enum RenderOp {
         w: f64,
         h: f64,
         name: String,
+        /// The constant alpha the image is painted with (the fill alpha in
+        /// force, `ca`). A picture at `ca 0.5` is a watermark, and drawing it
+        /// opaque puts a photograph over the text it was meant to sit behind.
+        ///
+        /// Defaults to 1 so a display list written before this field existed
+        /// still reads as fully opaque rather than invisible.
+        #[serde(default = "opaque")]
+        alpha: f64,
     },
     /// Save graphics state (push the clip/scissor stack).
     Save,
@@ -1776,6 +1784,15 @@ pub enum RenderOp {
         rect: [f64; 4],
         subpaths: Vec<Vec<[f64; 2]>>,
     },
+}
+
+/// The alpha an image is assumed to carry when a display list does not say.
+///
+/// `#[serde(default)]` on an `f64` is zero, and zero alpha means "do not draw
+/// it at all" — so an older display list, or one written by a producer that
+/// never set the field, would lose every picture on the page.
+fn opaque() -> f64 {
+    1.0
 }
 
 /// A page's display list in device space (origin bottom-left, y up — PDF
@@ -2773,13 +2790,11 @@ fn run_content(
                                 continue;
                             }
                             // An image is painted with the fill alpha, and at
-                            // zero it cannot mark the page. The op carries no
-                            // alpha of its own, so rather than hand every
-                            // renderer a picture it must then discover is
-                            // invisible, it is not emitted -- the same reason
-                            // a blend that cannot change the page suppresses a
-                            // fill. Partial alpha on an image is still drawn
-                            // opaque; correcting that needs an alpha on the op.
+                            // zero it cannot mark the page. It is dropped here
+                            // rather than handed to a renderer that would only
+                            // discover it is invisible -- the same reason a
+                            // blend that cannot change the page suppresses a
+                            // fill. Any other alpha travels on the op.
                             if fill_alpha <= 0.0 {
                                 stack.clear();
                                 continue;
@@ -2800,6 +2815,7 @@ fn run_content(
                                 w: right - left,
                                 h: top - bottom,
                                 name: image_key_in(doc, resources, name),
+                                alpha: fill_alpha.clamp(0.0, 1.0),
                             });
                         }
                     }
@@ -6217,6 +6233,66 @@ endobj
         assert!(
             !hidden.iter().any(|op| matches!(op, RenderOp::Image { .. })),
             "under ca 0 nothing the form paints can mark the page: {hidden:?}"
+        );
+    }
+
+    /// A partly transparent image is faded, not hidden and not opaque.
+    ///
+    /// A watermark is drawn exactly this way: one picture under `ca 0.15`,
+    /// behind the text. Drawn opaque it is not a watermark, it is a photograph
+    /// covering the page.
+    #[test]
+    fn an_image_carries_the_constant_alpha_it_was_drawn_under() {
+        let alpha_of = |ca: &str| -> Option<f64> {
+            const PAGE: &str = "q /G0 gs 100 0 0 100 10 10 cm /Im Do Q";
+            let pdf = format!(
+                concat!(
+                    "%PDF-1.5
+",
+                    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                    "/Resources<</ExtGState<</G0 6 0 R>>/XObject<</Im 5 0 R>>>>>>endobj
+",
+                    "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                    "5 0 obj<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace",
+                    "/DeviceRGB/BitsPerComponent 8/Length 3>>stream
+RGB
+endstream
+endobj
+",
+                    "6 0 obj<</Type/ExtGState/ca {}>>endobj
+",
+                    "startxref
+0
+%%EOF"
+                ),
+                PAGE.len(),
+                PAGE,
+                ca
+            );
+            extract_display_list(pdf.as_bytes(), 1)
+                .expect("a display list")
+                .ops
+                .iter()
+                .find_map(|op| match op {
+                    RenderOp::Image { alpha, .. } => Some(*alpha),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(alpha_of("1"), Some(1.0), "an opaque image is unchanged");
+        assert_eq!(alpha_of("0.4"), Some(0.4), "the op carries ca");
+        assert_eq!(
+            alpha_of("0"),
+            None,
+            "at zero it cannot mark the page and is not emitted at all"
         );
     }
 

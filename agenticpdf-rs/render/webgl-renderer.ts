@@ -22,7 +22,7 @@ export type RenderOp =
   | { op: "fill"; subpaths: [number, number][][]; color: RGBA; even_odd: boolean }
   | { op: "stroke"; subpaths: [number, number][][]; color: RGBA; width: number }
   | { op: "text"; text: string; x: number; y: number; size: number; width: number; advances: number[]; measured: boolean; rot: number; color: RGBA; font: string }
-  | { op: "image"; x: number; y: number; w: number; h: number; name: string }
+  | { op: "image"; x: number; y: number; w: number; h: number; name: string; alpha?: number }
   | { op: "save" }
   | { op: "restore" }
   | { op: "clip"; rect: [number, number, number, number]; subpaths: [number, number][][] };
@@ -71,7 +71,10 @@ void main(){ v_uv = a_uv; gl_Position = vec4((a_pos/u_page)*2.0-1.0, 0.0, 1.0); 
 
 const TEX_FS = `#version 300 es
 precision highp float;
-in vec2 v_uv; uniform sampler2D u_tex; out vec4 o; void main(){ o = texture(u_tex, v_uv); }`;
+in vec2 v_uv; uniform sampler2D u_tex; uniform float u_alpha; out vec4 o;
+// Blending is straight-alpha (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), so the
+// constant alpha of a ca scales the texture's own alpha and nothing else.
+void main(){ o = texture(u_tex, v_uv); o.a *= u_alpha; }`;
 
 function shader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const s = gl.createShader(type)!;
@@ -289,6 +292,9 @@ export function renderDisplayList(
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]), gl.STREAM_DRAW);
       gl.enableVertexAttribArray(1);
       gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+      // A display list written before images carried an alpha has none: an
+      // absent field is an opaque image, not an invisible one.
+      gl.uniform1f(gl.getUniformLocation(tex, "u_alpha"), op.alpha ?? 1);
       gl.bindTexture(gl.TEXTURE_2D, t);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.disableVertexAttribArray(1);
