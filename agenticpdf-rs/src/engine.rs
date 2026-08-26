@@ -3320,6 +3320,39 @@ fn run_content(
                 }
                 stack.clear();
             }
+            Token::Inline(data) => {
+                // The dictionary arrived as the tokens between `BI` and `ID`.
+                let dict = inline_image_dict(&stack);
+                stack.clear();
+                if fill_alpha <= 0.0 {
+                    continue;
+                }
+                let corners = [
+                    transform_point(&ctm, 0.0, 0.0),
+                    transform_point(&ctm, 1.0, 0.0),
+                    transform_point(&ctm, 1.0, 1.0),
+                    transform_point(&ctm, 0.0, 1.0),
+                ];
+                let xs = corners.map(|c| c.0);
+                let ys = corners.map(|c| c.1);
+                let left = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+                let right = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let bottom = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+                let top = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let stencil = matches!(dict.get("ImageMask"), Some(Object::Bool(true)));
+                ops.push(RenderOp::Image {
+                    x: left,
+                    y: bottom,
+                    w: right - left,
+                    h: top - bottom,
+                    name: inline_image_key(&dict, &data),
+                    alpha: fill_alpha.clamp(0.0, 1.0),
+                    tint: match stencil {
+                        true => Some(fill),
+                        false => None,
+                    },
+                });
+            }
             other => {
                 stack.push(other);
                 if stack.len() > 64 {
@@ -3703,6 +3736,163 @@ fn image_key(entry: &Object, name: &str) -> String {
 }
 
 /// The same key, looked up by the name a `Do` operator gives.
+/// The keys an inline image abbreviates, spelled out.
+///
+/// An inline image writes `/W` where an XObject writes `/Width`. Both spellings
+/// are legal in either place, so the dictionary is normalised here and every
+/// reader of it downstream -- the decoder especially -- sees one vocabulary.
+fn inline_key(abbrev: &str) -> &str {
+    match abbrev {
+        "W" => "Width",
+        "H" => "Height",
+        "BPC" => "BitsPerComponent",
+        "CS" => "ColorSpace",
+        "F" => "Filter",
+        "D" => "Decode",
+        "DP" => "DecodeParms",
+        "IM" => "ImageMask",
+        "I" => "Interpolate",
+        other => other,
+    }
+}
+
+/// The colour-space names an inline image abbreviates.
+fn inline_space(name: &str) -> &str {
+    match name {
+        "G" => "DeviceGray",
+        "RGB" => "DeviceRGB",
+        "CMYK" => "DeviceCMYK",
+        "I" => "Indexed",
+        other => other,
+    }
+}
+
+/// Rebuild an inline image's dictionary from the tokens before its `ID`.
+fn inline_image_dict(stack: &[Token]) -> Dict {
+    let mut dict = Dict::new();
+    let mut at = 0;
+    while at < stack.len() {
+        let Token::Name(key) = &stack[at] else {
+            at += 1;
+            continue;
+        };
+        let key = inline_key(key).to_string();
+        let value = match stack.get(at + 1) {
+            Some(Token::Num(n)) => Object::Int(*n as i64),
+            Some(Token::Bool(v)) => Object::Bool(*v),
+            Some(Token::Name(n)) => Object::Name(inline_space(n).to_string()),
+            // `/D [1 0]` and `/F [/Fl]` arrive as an array token.
+            Some(Token::ArrStr(parts)) => Object::Array(
+                parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ArrPart::Num(n) => Some(Object::Int(*n as i64)),
+                        ArrPart::Str(_) => None,
+                    })
+                    .collect(),
+            ),
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        dict.insert(key, value);
+        at += 2;
+    }
+    dict
+}
+
+/// A texture name for an inline image, stable across the two passes.
+///
+/// An inline image has no resource name -- it *is* its bytes. The display list
+/// and the texture walk each meet it separately and must agree on what to call
+/// it, so the name is derived from the samples and the shape they decode to
+/// rather than from where it sits on the page. Two identical inline images
+/// then also share one texture, which the documents that use hundreds of them
+/// very much want.
+fn inline_image_key(dict: &Dict, data: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    eat(data);
+    for key in ["Width", "Height", "BitsPerComponent", "ImageMask", "Decode"] {
+        eat(key.as_bytes());
+        if let Some(v) = dict.get(key) {
+            eat(format!("{v:?}").as_bytes());
+        }
+    }
+    format!("inline {hash:016x}")
+}
+
+/// Gather every inline image a content stream draws, following what it draws.
+///
+/// An inline image belongs to the stream rather than to a resource dictionary,
+/// so the walk that finds XObjects cannot see one. This walk mirrors it: the
+/// page's own content, then every form it draws and every tiling pattern it
+/// fills with, to the same depth limit.
+fn collect_inline_images(
+    doc: &Document,
+    content: &[u8],
+    resources: &Dict,
+    depth: usize,
+    out: &mut Vec<(Dict, Vec<u8>)>,
+) {
+    if depth > MAX_FORM_DEPTH {
+        return;
+    }
+    let mut lex = ContentLexer::new(content);
+    let mut stack: Vec<Token> = Vec::new();
+    while let Some(tok) = lex.next_token() {
+        match tok {
+            Token::Inline(data) => {
+                out.push((inline_image_dict(&stack), data));
+                stack.clear();
+            }
+            Token::Op(op) => {
+                if op == "Do"
+                    && let Some(Token::Name(name)) = stack.last()
+                    && let Some((dict, inner)) = form_xobject(doc, resources, name)
+                {
+                    let inner_resources = doc
+                        .get(&dict, "Resources")
+                        .and_then(|o| o.as_dict().cloned())
+                        .unwrap_or_else(|| resources.clone());
+                    collect_inline_images(doc, &inner, &inner_resources, depth + 1, out);
+                }
+                stack.clear();
+            }
+            other => {
+                stack.push(other);
+                if stack.len() > 64 {
+                    stack.remove(0);
+                }
+            }
+        }
+    }
+    // A tiling pattern is a content stream too, and a page that fills with one
+    // never names what the tile draws.
+    if let Some(patterns) = doc
+        .get(resources, "Pattern")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        for entry in patterns.values() {
+            if let Object::Stream(d, raw) = doc.resolve(entry)
+                && let Ok(tile) = decode_stream(&d, &raw)
+            {
+                let inner = doc
+                    .get(&d, "Resources")
+                    .and_then(|o| o.as_dict().cloned())
+                    .unwrap_or_else(|| resources.clone());
+                collect_inline_images(doc, &tile, &inner, depth + 1, out);
+            }
+        }
+    }
+}
+
 /// Whether the named image XObject is a stencil rather than a picture.
 fn is_image_mask(doc: &Document, resources: &Dict, name: &str) -> bool {
     doc.get(resources, "XObject")
@@ -3874,6 +4064,32 @@ pub fn extract_page_textures(
             width,
             height,
             rgba,
+        });
+    }
+
+    // Inline images are not in any resource dictionary: they are the content
+    // stream. The display list names them by a hash of their own samples, so
+    // the two walks agree without either knowing where the other looked.
+    let mut inline = Vec::new();
+    collect_inline_images(&doc, &page_contents(&doc, pd), &resources, 0, &mut inline);
+    for (dict, data) in &inline {
+        let name = inline_image_key(dict, data);
+        if out.iter().any(|t| t.name == name) {
+            continue;
+        }
+        let Some((format, width, height, bytes)) = image_to_rgba(&doc, dict, data) else {
+            continue;
+        };
+        // The `jpeg` form is a stream of coded bytes for a host that decodes
+        // them; a texture is pixels, so only the decoded form is one.
+        if format != "rgba" {
+            continue;
+        }
+        out.push(PageTexture {
+            name,
+            width,
+            height,
+            rgba: bytes,
         });
     }
     Ok(out)
@@ -6061,6 +6277,13 @@ enum ArrPart {
 enum Token {
     Num(f64),
     Str(Vec<u8>),
+    /// The samples of an inline image, already stepped over by the lexer.
+    /// Its dictionary arrives before it as ordinary name/value tokens.
+    Inline(Vec<u8>),
+    /// `true` or `false`. A keyword, never an operator: read as one it takes
+    /// the operand-clearing path and an inline image's `/IM true` wipes the
+    /// dictionary being accumulated in front of it.
+    Bool(bool),
     Name(String),
     ArrStr(Vec<ArrPart>),
     Op(String),
@@ -6143,8 +6366,10 @@ impl<'a> ContentLexer<'a> {
                     // constantly, so a photograph can fill the page, clip away
                     // the text under it, or stroke a line as wide as the sheet.
                     if op == "ID" {
-                        self.skip_inline_image_data();
-                        return Some(Token::Op("EI".into()));
+                        return Some(Token::Inline(self.take_inline_image_data()));
+                    }
+                    if op == "true" || op == "false" {
+                        return Some(Token::Bool(op == "true"));
                     }
                     return Some(Token::Op(op));
                 }
@@ -6200,17 +6425,18 @@ impl<'a> ContentLexer<'a> {
             .and_then(|s| s.parse::<f64>().ok())
     }
 
-    /// Step over an inline image's samples, leaving `pos` after its `EI`.
+    /// Take an inline image's samples, leaving `pos` after its `EI`.
     ///
     /// The data begins after exactly one whitespace byte and ends at an `EI`
     /// that stands as its own token. Nothing in the format says the samples
     /// cannot contain those two bytes, so this is a heuristic rather than a
     /// parse -- but it is the same one every reader uses, and being wrong here
     /// costs part of one image, where not skipping at all costs the page.
-    fn skip_inline_image_data(&mut self) {
+    fn take_inline_image_data(&mut self) -> Vec<u8> {
         if self.pos < self.buf.len() && Lexer::is_ws(self.buf[self.pos]) {
             self.pos += 1;
         }
+        let start = self.pos;
         let mut at = self.pos;
         while at + 1 < self.buf.len() {
             let is_ei = self.buf[at] == b'E'
@@ -6223,12 +6449,15 @@ impl<'a> ContentLexer<'a> {
                     .is_none_or(|&b| Lexer::is_ws(b) || Lexer::is_delim(b));
             if is_ei {
                 self.pos = at + 2;
-                return;
+                // `at` is the `E`, and the whitespace before it delimits the
+                // operator rather than belonging to the samples.
+                return self.buf[start..at.saturating_sub(1)].to_vec();
             }
             at += 1;
         }
         // Unterminated: the rest of the stream is image data, not content.
         self.pos = self.buf.len();
+        self.buf[start..].to_vec()
     }
 
     fn read_op(&mut self) -> String {
@@ -6799,6 +7028,81 @@ endobj
             vec![255, 0, 255, 0, 255, 0, 255, 0],
             "/Decode [1 0] swaps which bit marks the page"
         );
+    }
+
+    /// An inline image is drawn, and its texture is found by the other walk.
+    ///
+    /// It has no resource name -- it *is* its bytes -- so the display list and
+    /// the texture walk meet it separately and must agree on what to call it.
+    /// They agree by hashing the samples, which also means two identical
+    /// inline images cost one texture.
+    #[test]
+    fn an_inline_image_is_drawn_and_its_texture_is_found() {
+        // Eight one-bit samples, `/D [1 0]` inverted, drawn as a stencil in
+        // red over a 100-point square.
+        const PAGE: &str = concat!(
+            "1 0 0 rg q 80 0 0 40 10 10 cm ",
+            "BI /W 8 /H 1 /IM true /BPC 1 /D [1 0] ID ª EI Q"
+        );
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5
+",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R>>endobj
+",
+                "4 0 obj<</Length {}>>stream
+{}
+endstream
+endobj
+",
+                "startxref
+0
+%%EOF"
+            ),
+            PAGE.len(),
+            PAGE
+        );
+        let bytes: Vec<u8> = pdf.chars().map(|c| c as u8).collect();
+
+        let ops = extract_display_list(&bytes, 1).expect("a display list").ops;
+        let placed: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Image {
+                    name, w, h, tint, ..
+                } => Some((name.clone(), *w, *h, *tint)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            placed.len(),
+            1,
+            "the inline image should be placed: {ops:?}"
+        );
+        let (name, w, h, tint) = &placed[0];
+        assert!(
+            (*w - 80.0).abs() < 0.01 && (*h - 40.0).abs() < 0.01,
+            "placed by the CTM"
+        );
+        assert_eq!(
+            *tint,
+            Some([1.0, 0.0, 0.0, 1.0]),
+            "an inline stencil takes the fill colour, like any other"
+        );
+
+        let textures = extract_page_textures(&bytes, 1).expect("textures");
+        let found = textures
+            .iter()
+            .find(|t| t.name == *name)
+            .expect("the texture walk must reach the same image under the same name");
+        assert_eq!((found.width, found.height), (8, 1));
+        // `/D [1 0]` inverts, so the set bits of 0xAA are what paints.
+        let coverage: Vec<u8> = found.rgba.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
+        assert_eq!(coverage, vec![255, 0, 255, 0, 255, 0, 255, 0]);
     }
 
     /// An inline image's bytes are samples, not operators.

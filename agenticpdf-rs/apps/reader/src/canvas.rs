@@ -1995,6 +1995,64 @@ mod render_report {
         documents
     }
 
+    /// Count the inline images a tree of documents actually draws.
+    ///
+    /// `BI ... ID ... EI` cannot be counted by searching bytes: the samples
+    /// are binary and two of them spell `BI` often enough that a grep over a
+    /// corpus reports thousands where the interpreter reaches a handful. Only
+    /// the lexer knows, so only the lexer is asked.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
+    /// -- --ignored inline_images_reached`
+    #[test]
+    #[ignore = "needs a tree of documents; run deliberately"]
+    fn inline_images_reached() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let (mut total, mut documents_with) = (0usize, 0usize);
+        let documents = documents_under(&root);
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            let mut here = 0usize;
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let Ok(list) = session.display_list() else {
+                    continue;
+                };
+                here += list
+                    .ops
+                    .iter()
+                    .filter(|op| {
+                        matches!(op, RenderOp::Image { name, .. } if name.starts_with("inline "))
+                    })
+                    .count();
+            }
+            if here > 0 {
+                documents_with += 1;
+                total += here;
+                eprintln!("{}: {here} inline", path.display());
+            }
+        }
+        eprintln!(
+            "{} documents, first {pages} pages each: {total} inline images drawn, across {documents_with} documents",
+            documents.len()
+        );
+    }
+
     /// Report every image in a tree of documents that is drawn faded.
     ///
     /// Constant alpha on an image is invisible to `compare_corpus`: a page
