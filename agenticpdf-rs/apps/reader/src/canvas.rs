@@ -255,6 +255,19 @@ pub struct Texture {
     pub rgba: Vec<u8>,
 }
 
+/// The overlap of two rectangles, empty where they do not meet.
+///
+/// An empty result is a zero-sized rectangle rather than an absent one: a clip
+/// that meets nothing must still be pushed, so the Restore that matches it
+/// finds something to pop.
+fn intersect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+}
+
 /// Apply an image op's constant alpha and, for a stencil, its colour.
 ///
 /// `None` rather than a clone is the point: almost every image on almost every
@@ -393,6 +406,17 @@ pub fn paint_page(
     // clip and let drawing escape onto the rest of the UI.
     let mut clip_depth = 0usize;
     let mut saved_clips: Vec<usize> = Vec::new();
+    // The rectangle actually in force at each level, page clip first.
+    //
+    // A display list's clips are absolute device rectangles, each the box of
+    // one `W n` or one form's `/BBox`, so a nested one has to be *intersected*
+    // with what is already in force rather than pushed as it stands. Pushed as
+    // it stands it can widen the clip around it: a tiling pattern is confined
+    // by the shape it fills and each tile then re-clips to its own box, which
+    // for every tile but the first lies outside that shape. One cover drew
+    // nine copies of the same photograph across the page, over its own title,
+    // because the second tile's box replaced the fill's.
+    let mut clips: Vec<Rect> = vec![page];
 
     for op in &list.ops {
         match op {
@@ -556,17 +580,21 @@ pub fn paint_page(
                 while clip_depth > level {
                     clip_depth -= 1;
                     painter.pop_clip();
+                    clips.pop();
                 }
             }
             RenderOp::Clip { rect, .. } => {
                 let top_left = transform.point(rect[0], rect[3]);
                 let bottom_right = transform.point(rect[2], rect[1]);
-                painter.push_clip(Rect::new(
+                let wanted = Rect::new(
                     top_left.x,
                     top_left.y,
                     (bottom_right.x - top_left.x).abs(),
                     (bottom_right.y - top_left.y).abs(),
-                ));
+                );
+                let narrowed = intersect(clips.last().copied().unwrap_or(page), wanted);
+                painter.push_clip(narrowed);
+                clips.push(narrowed);
                 clip_depth += 1;
             }
         }
@@ -1365,6 +1393,103 @@ mod tests {
             json.matches(r#""pixels":""#).count(),
             2,
             "the faded copy is different pixels and has to travel: {json}"
+        );
+    }
+
+    /// An image is confined by the clip in force, like anything else.
+    ///
+    /// A tiling pattern draws its tile past the edge of the shape being
+    /// filled and relies on the clip to cut it. If images escape clips, a
+    /// pattern fill covers the page with repeats of its own tile.
+    #[test]
+    fn an_image_is_clipped_like_anything_else() {
+        let mut painter = ImagePainter::new(100, 100);
+        let texture = Texture {
+            name: "Im1".into(),
+            width: 1,
+            height: 1,
+            rgba: vec![0, 0, 0, 255],
+        };
+        // Clip to the left half of the page in document space, then draw an
+        // image over the whole page.
+        let ops = vec![
+            RenderOp::Save,
+            RenderOp::Clip {
+                rect: [0.0, 0.0, 50.0, 100.0],
+                subpaths: vec![vec![[0.0, 0.0], [50.0, 0.0], [50.0, 100.0], [0.0, 100.0]]],
+            },
+            RenderOp::Image {
+                x: 0.0,
+                y: 0.0,
+                w: 100.0,
+                h: 100.0,
+                name: "Im1".into(),
+                alpha: 1.0,
+                tint: None,
+            },
+            RenderOp::Restore,
+        ];
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            std::slice::from_ref(&texture),
+            &crate::glyphs::FontSet::without_substitution(b""),
+        );
+        assert!(
+            painter.get_pixel(25, 50).r < 0.2,
+            "the clipped half is drawn"
+        );
+        assert!(
+            painter.get_pixel(75, 50).r > 0.8,
+            "the image escaped the clip"
+        );
+    }
+
+    /// A clip inside a clip narrows it; it cannot widen it.
+    ///
+    /// Nesting is how a pattern is confined to the shape it fills: the fill's
+    /// path clips, and the tile's own box clips inside that. If the inner box
+    /// replaced the outer instead of intersecting it, every tile that hangs
+    /// past the edge draws in full and one photograph covers the page.
+    #[test]
+    fn a_nested_clip_cannot_widen_the_one_around_it() {
+        let mut painter = ImagePainter::new(100, 100);
+        let ops = vec![
+            RenderOp::Save,
+            // The left half of the page.
+            RenderOp::Clip {
+                rect: [0.0, 0.0, 50.0, 100.0],
+                subpaths: Vec::new(),
+            },
+            RenderOp::Save,
+            // The right half: disjoint from what is already in force.
+            RenderOp::Clip {
+                rect: [50.0, 0.0, 100.0, 100.0],
+                subpaths: Vec::new(),
+            },
+            RenderOp::Fill {
+                subpaths: vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]],
+                color: [0.0, 0.0, 0.0, 1.0],
+                even_odd: false,
+            },
+            RenderOp::Restore,
+            RenderOp::Restore,
+        ];
+        paint_page(
+            &mut painter,
+            &list(ops),
+            Transform::fit(&list(Vec::new()), area(), 1.0),
+            &[],
+            &crate::glyphs::FontSet::without_substitution(b""),
+        );
+        assert!(
+            painter.get_pixel(75, 50).r > 0.8,
+            "the inner clip widened the outer one"
+        );
+        assert!(
+            painter.get_pixel(25, 50).r > 0.8,
+            "nothing may be painted outside both"
         );
     }
 
