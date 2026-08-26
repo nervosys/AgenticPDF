@@ -17,8 +17,8 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **650 of 683 — 95.2 %** |
 | Over the threshold | 33 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 590 crate + 45 integration, 68 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 66 commits ahead of `master`, unpushed |
+| Tests | 591 crate + 45 integration, 68 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 67 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
@@ -138,6 +138,15 @@ the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
 
+**An inline image's samples were being lexed as content.** `BI ... ID
+<bytes> EI` was not handled at all, so the raw bytes went through the content
+lexer, where a `(` swallows everything to the next unbalanced `)` and the short
+operator names turn up constantly. `ID` now steps to the `EI`. **This moved
+nothing**: nine documents use inline images, 2,742 of them, the skip fires 936
+times on one page of one manual, and not one of 683 pages changed by 0.0005.
+A hazard removed, not a defect observed — the synthetic case in the test shows
+what a payload that does spell an operator costs, which is the whole page.
+
 **Image masks were dropped rather than stencilled.** An `/ImageMask` is one
 bit a sample with no colour space, painted in the fill colour in force at the
 `Do`. Nothing matched it, so it decoded to nothing and drew a grey frame. The
@@ -165,13 +174,22 @@ through the group's soft mask. Text and images inside one still paint at full
 strength, and a mask whose own group paints with text or an image produces no
 regions and is skipped. Both fail unmasked, which is the safe direction.
 
-**Two heavy image-mask documents that this did not explain.**
+**Inline images are skipped but never drawn.** Nine documents place 2,742 of
+them and we emit no op for any. Drawing them is a real piece of work rather
+than a flag: textures are gathered by walking XObjects, and an inline image
+lives in the content stream, so the gathering would have to run the stream too.
+Four failing pages belong to these documents (three MIT papers at 0.120–0.132),
+though all four have a mean absolute difference under 0.008, so it is the
+sparse-page effect as much as the missing content.
+
+**Two heavy image-mask documents that stencils did not explain.**
 `atmosphere-10-00549` p3 sits at 0.469 with 32 image ops and no tint among
-them, so whatever it masks is not reached as a page-level image XObject —
-likely an inline image (`BI`/`ID`/`EI`), which the display list does not
-emit at all. `ADA617071` p1 (on the *Desktop*, not `~/Documents`) draws the
-same 32×32 indexed 1-bit image 523 times and carries the second-highest mean
-absolute difference in the corpus at 0.089. Neither has been looked into.
+them, so whatever it masks is not reached as a page-level image XObject. It
+was *not* inline images — the document contains none; that hypothesis was
+checked and is wrong. `ADA617071` p1 (on the *Desktop*, not `~/Documents`)
+draws the same 32×32 indexed one-bit image 523 times and carries the
+second-highest mean absolute difference in the corpus at 0.089. Neither has
+been explained.
 
 **Page textures on mobile.** Confirmed by running the Android app rather than
 inferred: text now renders correctly, including the font-subset fix, but the
@@ -231,6 +249,10 @@ pay for them twice.
 - **This machine mislays files.** A directory listing has returned a Rust
   toolchain as missing while a search listed files inside it. Retry before
   concluding anything is gone.
+- **Check whether a document actually contains the thing you blamed.** The
+  0.469 page was written up as probably inline images; it contains none. One
+  grep over its inflated streams settled it, and would have settled it before
+  the claim was written down rather than after.
 - **A missing picture is nearly invisible to the ink metric.** The painter draws
   a grey frame where a texture will not decode, and a frame has ink of its own,
   in roughly the right place. Forty-three dropped images across fourteen
