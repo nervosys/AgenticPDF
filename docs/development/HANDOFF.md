@@ -17,8 +17,8 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **653 of 683 — 95.6 %** |
 | Over the threshold | 30 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 593 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 70 commits ahead of `master`, unpushed |
+| Tests | 594 crate + 45 integration, 70 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 72 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
@@ -161,14 +161,26 @@ force, so a clip could add paint rather than remove it. Found through patterns,
 where it is unmissable — one cover drew nine copies of the same photograph
 across the page and over its own title — but it was never specific to them.
 
-**An inline image's samples were being lexed as content.** `BI ... ID
-<bytes> EI` was not handled at all, so the raw bytes went through the content
-lexer, where a `(` swallows everything to the next unbalanced `)` and the short
-operator names turn up constantly. `ID` now steps to the `EI`. **This moved
-nothing**: nine documents use inline images, 2,742 of them, the skip fires 936
-times on one page of one manual, and not one of 683 pages changed by 0.0005.
-A hazard removed, not a defect observed — the synthetic case in the test shows
-what a payload that does spell an operator costs, which is the whole page.
+**Inline images: lexed as content, then not drawn, and both are fixed.**
+`BI ... ID <bytes> EI` had no handling at all, so the raw samples went through
+the content lexer, where a `(` swallows everything to the next unbalanced `)`
+and the short operator names turn up constantly. They are stepped over now, and
+then decoded and drawn — dictionary rebuilt from the tokens in front of the
+samples, keyed by a hash of them so the display list and the texture walk agree
+without either knowing where the other looked.
+
+Also `true` and `false` were lexed as **operators**, and an operator clears the
+operand stack, so `/IM true` wiped the dictionary being accumulated in front of
+it. They are keywords and are now operands. That one is not specific to inline
+images.
+
+**None of it moved a single page, and the number that motivated it was wrong.**
+A grep over inflated streams said 2,742 inline images across nine documents.
+The lexer says **five**, in two documents, over the first eight pages — the
+samples are binary and two of them spell `BI` often enough to fool a grep. All
+683 comparable pages are unchanged to three decimals, and so are all sixteen
+pages of the two documents that really do contain them, whose references were
+captured to eight pages to check exactly that.
 
 **Image masks were dropped rather than stencilled.** An `/ImageMask` is one
 bit a sample with no colour space, painted in the fill colour in force at the
@@ -196,14 +208,6 @@ Ordered by what it costs, cheapest first.
 through the group's soft mask. Text and images inside one still paint at full
 strength, and a mask whose own group paints with text or an image produces no
 regions and is skipped. Both fail unmasked, which is the safe direction.
-
-**Inline images are skipped but never drawn.** Nine documents place 2,742 of
-them and we emit no op for any. Drawing them is a real piece of work rather
-than a flag: textures are gathered by walking XObjects, and an inline image
-lives in the content stream, so the gathering would have to run the stream too.
-Four failing pages belong to these documents (three MIT papers at 0.120–0.132),
-though all four have a mean absolute difference under 0.008, so it is the
-sparse-page effect as much as the missing content.
 
 **One page nothing has explained.** `atmosphere-10-00549` p3 came down from
 0.469 to 0.328 with pattern fills and is still the third-worst page in the
@@ -279,6 +283,11 @@ pay for them twice.
 - **This machine mislays files.** A directory listing has returned a Rust
   toolchain as missing while a search listed files inside it. Retry before
   concluding anything is gone.
+- **Never count a content-stream construct with a grep.** Inline images were
+  reported as 2,742 across nine documents from a regex over inflated streams.
+  The real figure, counted by the lexer, is *five* in two documents: image
+  samples are binary and two bytes spell `BI` often. `inline_images_reached`
+  exists for this. The same doubt applies to any `BI`/`ID`/`EI`-shaped search.
 - **A visual difference is not automatically our defect.** The reference is one
   more renderer, not the truth. A cover whose title looked wrong beside PDF.js
   turned out to be a document naming a font nobody embedded: we substitute a
