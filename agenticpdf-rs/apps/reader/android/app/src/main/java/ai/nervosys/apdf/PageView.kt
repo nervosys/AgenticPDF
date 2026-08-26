@@ -70,20 +70,24 @@ class PageView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean =
         gestures.onTouchEvent(event) || super.onTouchEvent(event)
 
-    /// Decoded masks, kept so a redraw does not decode the same letter again.
-    ///
-    /// The Android recording carries every mask's pixels on every frame -- the
-    /// native side builds a fresh painter each time and remembers nothing --
-    /// so this may be cleared whenever it likes. If that ever changes, and the
-    /// sender starts omitting pixels for masks it believes are held here, then
-    /// clearing this without telling it will make text silently stop
-    /// appearing, exactly as the browser shell's comment warns.
+    /**
+     * Decoded masks, kept so a redraw does not decode the same letter again.
+     *
+     * The Android recording carries every mask's pixels on every frame — the
+     * native side builds a fresh painter each time and remembers nothing — so
+     * this may be cleared whenever it likes. If that ever changes, and the
+     * sender starts omitting pixels for masks it believes are held here, then
+     * clearing this without telling it will make text silently stop appearing,
+     * exactly as the browser shell's comment warns.
+     */
     private val glyphTiles = HashMap<String, Bitmap>()
 
-    /// Decode a mask, or return one already decoded.
-    ///
-    /// Guarded at every step: a recording that does not carry what this needs
-    /// falls back to the placeholder frame rather than throwing out of a draw.
+    /**
+     * Decode a mask, or return one already decoded.
+     *
+     * Guarded at every step: a recording that does not carry what this needs
+     * falls back to the placeholder frame rather than throwing out of a draw.
+     */
     private fun glyphTile(op: JSONObject): Bitmap? {
         val key = op.optString("key")
         if (key.isEmpty()) return null
@@ -99,8 +103,8 @@ class PageView @JvmOverloads constructor(
             return null
         }
         if (bytes.size < w * h * 4) return null
-        // The recording is RGBA; Android's ARGB_8888 wants the bytes in that
-        // order too, but setPixels takes packed ints, so pack them.
+        // The recording is one byte each of R, G, B, A; ARGB_8888 wants them
+        // packed into an int the other way round.
         val pixels = IntArray(w * h)
         for (i in 0 until w * h) {
             val r = bytes[i * 4].toInt() and 0xFF
