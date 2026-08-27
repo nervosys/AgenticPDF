@@ -337,6 +337,60 @@ fn placed(rgba: &[u8], src_w: u32, src_h: u32, mat: [f64; 4]) -> Option<(u32, u3
     Some((out_w, out_h, out))
 }
 
+/// Clear an image's alpha outside the clip shapes in force, or `None` when
+/// there are none.
+///
+/// `Painter` clips to a rectangle, so a clip that is not one has always been
+/// applied as its bounding box. For a fill that is survivable -- the shape is
+/// usually the thing being filled. For an image it is not: one brochure cover
+/// frames five photographs in hexagons, and each came out as a full rectangle
+/// with a hexagon drawn on top of it.
+///
+/// A point is inside when it is inside *every* shape, since nested clips
+/// intersect. Each is tested by the even-odd rule, which is what a clip path
+/// without an explicit winding uses and what the ops carry.
+fn cut_to_shapes(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    rect: Rect,
+    shapes: &[Vec<Vec<Position>>],
+) -> Option<Vec<u8>> {
+    if shapes.is_empty() || width == 0 || height == 0 || rect.width <= 0.0 || rect.height <= 0.0 {
+        return None;
+    }
+    // One shape, all of its subpaths together, by the even-odd rule.
+    let inside = |shape: &[Vec<Position>], x: f32, y: f32| -> bool {
+        let mut hit = false;
+        for poly in shape {
+            for i in 0..poly.len() {
+                let a = poly[i];
+                let b = poly[(i + 1) % poly.len()];
+                if (a.y > y) != (b.y > y) {
+                    let t = (y - a.y) / (b.y - a.y);
+                    if x < a.x + t * (b.x - a.x) {
+                        hit = !hit;
+                    }
+                }
+            }
+        }
+        hit
+    };
+    let mut out = rgba.to_vec();
+    for row in 0..height {
+        // The middle of the pixel, so an edge landing on a boundary does not
+        // decide the whole row.
+        let y = rect.y + rect.height * (row as f32 + 0.5) / height as f32;
+        for col in 0..width {
+            let x = rect.x + rect.width * (col as f32 + 0.5) / width as f32;
+            if !shapes.iter().all(|shape| inside(shape, x, y)) {
+                out[(row as usize * width as usize + col as usize) * 4 + 3] = 0;
+            }
+        }
+    }
+    Some(out)
+}
+
 /// The overlap of two rectangles, empty where they do not meet.
 ///
 /// An empty result is a zero-sized rectangle rather than an absent one: a clip
@@ -499,6 +553,13 @@ pub fn paint_page(
     // nine copies of the same photograph across the page, over its own title,
     // because the second tile's box replaced the fill's.
     let mut clips: Vec<Rect> = vec![page];
+    // The clip *shapes* in force, in screen space, for the levels that have
+    // one. `Painter` clips to a rectangle, so a `W n` around a hexagon has
+    // always been applied as the hexagon's box -- which is why five
+    // photographs on one brochure cover spilled out of their frames and filled
+    // the squares around them instead. A fill can at least be scanned into
+    // spans; an image cannot, so its pixels are masked by the shape instead.
+    let mut clip_shapes: Vec<Vec<Vec<Vec<Position>>>> = vec![Vec::new()];
 
     for op in &list.ops {
         match op {
@@ -653,6 +714,9 @@ pub fn paint_page(
                             Some((w, h, bytes)) => (*w, *h, bytes.as_slice()),
                             None => (texture.width, texture.height, pixels),
                         };
+                        let shapes = clip_shapes.last().map(Vec::as_slice).unwrap_or(&[]);
+                        let cut = cut_to_shapes(pixels, iw, ih, rect, shapes);
+                        let pixels = cut.as_deref().unwrap_or(pixels);
                         painter.draw_image(rect, &ImageData::new(iw, ih, pixels))
                     }
                     None => painter.stroke_rect(rect, Color::GRAY, 1.0, 0.0),
@@ -669,9 +733,10 @@ pub fn paint_page(
                     clip_depth -= 1;
                     painter.pop_clip();
                     clips.pop();
+                    clip_shapes.pop();
                 }
             }
-            RenderOp::Clip { rect, .. } => {
+            RenderOp::Clip { rect, subpaths } => {
                 let top_left = transform.point(rect[0], rect[3]);
                 let bottom_right = transform.point(rect[2], rect[1]);
                 let wanted = Rect::new(
@@ -683,6 +748,25 @@ pub fn paint_page(
                 let narrowed = intersect(clips.last().copied().unwrap_or(page), wanted);
                 painter.push_clip(narrowed);
                 clips.push(narrowed);
+                // One clip path is one region, however many subpaths draw it:
+                // a ring is two circles and a point between them is *outside*.
+                // Treating each subpath as a region of its own and demanding a
+                // point be inside all of them empties every clip that is drawn
+                // with more than one, which on one brochure erased the page.
+                //
+                // A path whose subpaths are all four-cornered is already
+                // described by the rectangle, so it is not carried.
+                let mut shapes = clip_shapes.last().cloned().unwrap_or_default();
+                if subpaths.iter().any(|sp| sp.len() > 5) {
+                    shapes.push(
+                        subpaths
+                            .iter()
+                            .filter(|sp| sp.len() >= 3)
+                            .map(|sp| sp.iter().map(|p| transform.point(p[0], p[1])).collect())
+                            .collect(),
+                    );
+                }
+                clip_shapes.push(shapes);
                 clip_depth += 1;
             }
         }
@@ -1391,6 +1475,57 @@ mod tests {
             (0.35..=0.65).contains(&half),
             "half alpha over a white page should be mid-grey, got {half}"
         );
+    }
+
+    /// An image is cut to the shape of its clip, not to the shape's box.
+    #[test]
+    fn an_image_is_cut_to_a_clip_that_is_not_a_rectangle() {
+        // A triangle over the left half of a 4x4 image's box.
+        let px = vec![255u8; 4 * 4 * 4];
+        let tri = vec![vec![
+            Position::new(0.0, 0.0),
+            Position::new(4.0, 0.0),
+            Position::new(0.0, 4.0),
+        ]];
+        let out = cut_to_shapes(&px, 4, 4, Rect::new(0.0, 0.0, 4.0, 4.0), &[tri])
+            .expect("a shape was given");
+        // Top-left is inside the triangle, bottom-right is not.
+        assert_eq!(out[3], 255, "the covered corner keeps its alpha");
+        let far = (3usize * 4 + 3) * 4 + 3;
+        assert_eq!(out[far], 0, "the corner outside is cleared");
+    }
+
+    /// One clip path is one region, however many subpaths draw it.
+    ///
+    /// A ring is two circles, and a point between them is inside the region
+    /// even though it is inside only one of the circles. Treating each subpath
+    /// as a region of its own and demanding a point be inside all of them
+    /// empties every clip drawn with more than one -- which on one brochure
+    /// erased the page, and on the corpus cost 0.9 across eighteen pages
+    /// before it was caught.
+    #[test]
+    fn the_subpaths_of_one_clip_are_one_region() {
+        let px = vec![255u8; 4 * 4 * 4];
+        // Two disjoint squares, as one shape: the left half and nothing else.
+        let ring = vec![
+            vec![
+                Position::new(0.0, 0.0),
+                Position::new(2.0, 0.0),
+                Position::new(2.0, 4.0),
+                Position::new(0.0, 4.0),
+            ],
+            vec![
+                Position::new(10.0, 10.0),
+                Position::new(12.0, 10.0),
+                Position::new(12.0, 14.0),
+                Position::new(10.0, 14.0),
+            ],
+        ];
+        let out = cut_to_shapes(&px, 4, 4, Rect::new(0.0, 0.0, 4.0, 4.0), &[ring])
+            .expect("a shape was given");
+        // A pixel in the first square survives, though it is outside the second.
+        assert_eq!(out[3], 255, "one subpath covering it is enough");
+        assert_eq!(out[3 * 4 + 3], 0, "and outside both, nothing is drawn");
     }
 
     /// An upright placement is left alone; anything else is resampled.
