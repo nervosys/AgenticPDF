@@ -110,20 +110,47 @@ tracked:
    `eframe`. Remediation is an upstream `accesskit`/`eframe` bump; a local
    `cargo update` does not move it. Tracked, not patched.
 
-**JavaScript — `npm audit`.**
+**JavaScript — `npm audit`.** There are **two** npm projects in this
+repository, and they must be audited separately. A first pass of this revision
+ran only the root and reported "production: 0", which was true of the root and
+silent about the website. GitHub's own Dependabot showed alerts at
+`scope=runtime` that a root-only audit cannot see, and that is how the gap was
+found. It is the same shape of omission this revision criticises in §9 — a
+scope narrower than the sentence describing it — and it is recorded here rather
+than quietly repaired.
 
-| Scope                    | critical | high | moderate | low |
-| ------------------------ | -------- | ---- | -------- | --- |
-| **Production (shipped)** | 0        | 0    | 0        | 0   |
-| Development only         | 1        | 12   | 1        | 2   |
+| Project                                 | critical | high | moderate | low | Ships to a user?                    |
+| --------------------------------------- | -------- | ---- | -------- | --- | ----------------------------------- |
+| Root package — production               | 0        | 0    | 0        | 0   | Yes (npm package)                   |
+| Root package — development              | 1        | 12   | 1        | 2   | No                                  |
+| `website/` — **before** this revision   | 0        | 4    | 0        | 0   | No (static export; build-time only) |
+| `website/` — **after** `npm audit fix`  | 0        | 1    | 1        | 0   | No                                  |
 
-The package ships one runtime dependency (`tsx`) and a `files` allowlist, so
-none of the sixteen advisories reach a consumer. They are a **build-chain**
-concern: `handlebars` (critical, JS injection via AST type confusion),
-`undici` (TLS validation bypass via SOCKS5 proxy), `glob` (command injection in
-its CLI), `js-yaml`, `minimatch`, `picomatch`, `brace-expansion`, `flatted` and
-the `@typescript-eslint` family. These execute on developer and CI machines,
-which is exactly the surface CMMC SR and NIST SSDF care about (see §4.6).
+*Root package.* One runtime dependency (`tsx`) and a `files` allowlist, so none
+of the sixteen advisories reach a consumer. They are a **build-chain** concern:
+`handlebars` (critical, JS injection via AST type confusion), `undici` (TLS
+validation bypass via SOCKS5 proxy), `glob` (command injection in its CLI),
+`js-yaml`, `minimatch`, `picomatch`, `brace-expansion`, `flatted` and the
+`@typescript-eslint` family. These execute on developer and CI machines, which
+is exactly the surface CMMC SR and NIST SSDF care about (see §4.6). Dependabot
+has already opened branches for `brace-expansion` and `undici`.
+
+*Website.* Four HIGH advisories were present: `next` (SSRF in Server Actions and
+in rewrites, DoS in the App Router), `postcss` (path traversal and XSS via
+stringify), `nanoid` (unbounded loop on negative size) and `sharp` (four
+inherited libvips CVEs). **The severity that matters here is lower than the
+label**, for one structural reason: `website/next.config.mjs` sets
+`output: 'export'`, so the site is a **static export**. There is no Next.js
+server in the deployed artefact, and the SSRF and App-Router DoS classes need
+one. What remains is genuine but build-time — a path to compromising the build,
+not a visitor.
+
+Remediated in this revision by `npm audit fix` within the existing semver
+ranges (`next` 15.5.14 → 15.5.24), taking the website from four HIGH to one HIGH
+and one moderate, with `npm run build` verified afterwards to still produce the
+static export. **The remaining two are deliberately not fixed:** they require
+`next@16.3.3`, a major version, and a breaking framework upgrade is an owner's
+decision rather than an auditor's (§11.0, item 7).
 
 ### 1.3b New Parsing Surface (Revision 3)
 
@@ -645,6 +672,8 @@ outputs stay in scratch space and are never committed.
 | 4 | Decide whether a **FIPS-capable build** is a product requirement. If it is, §3.1 lists the four steps; if it is not, say so in `SECURITY.md` so the question stops being asked. | —        | **Yes**         |
 | 5 | Plan replacements for `paste` and `ttf-parser` before "unmaintained" becomes "vulnerable".                                   | LOW      | No              |
 | 6 | Keep the corpus convention in §10: documents by kind, never by filename, no rendered output committed.                       | ONGOING  | No              |
+| 7 | Decide whether to take `website/` to **Next.js 16** — a major upgrade that clears the last HIGH (`postcss`) and the moderate. Left undone deliberately: a breaking framework bump is not an auditor's call. | MEDIUM   | **Yes**         |
+| 8 | Audit **both** npm projects, always. A root-only `npm audit` reports a clean production scope while `website/` carries four HIGH. | ONGOING  | No              |
 
 ### 11.1 Immediate (Priority: HIGH)
 
