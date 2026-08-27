@@ -127,11 +127,19 @@ pub extern "C" fn apdf_render_page(width: f32, height: f32, zoom: f32) -> *mut c
 
         let area = dewey::core::Rect::new(0.0, 0.0, width, height);
         let mut painter = RecordingPainter::new();
+        // The page's own pictures, decoded and sampled to what this surface can
+        // show. Passing none, as this did, is not a blank slot: the painter
+        // draws a grey frame where a texture is missing, so every photograph in
+        // every document came out as an empty box on both mobile shells while
+        // the browser -- the one host that passed them -- was fine.
+        let scale = session.fonts().raster_scale();
+        let budget = (width as f64 * height as f64 * scale * scale).max(1.0) as usize;
+        let textures = session.textures(budget);
         crate::canvas::paint_page(
             &mut painter,
             &list,
             Transform::fit(&list, area, zoom),
-            &[],
+            &textures,
             session.fonts(),
         );
         into_c(painter.to_json())
