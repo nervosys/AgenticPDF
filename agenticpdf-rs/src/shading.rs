@@ -7,9 +7,9 @@
 //! constant colour needs none of that: the ops already exist, and at sixty-four
 //! bands the seams are below the resolution anything is compared at.
 //!
-//! Axial and radial shadings are covered, which is what documents use. The
-//! function-based and mesh types are declined rather than approximated: a mesh
-//! guessed at wrongly is worse than a gap, because a gap is visible.
+//! Axial and radial shadings are covered, and so are the Coons and tensor
+//! patch meshes, which are sliced into small flat quads for the same reason a
+//! gradient is sliced into bands. The function-based type is still declined.
 
 use crate::engine::{Dict, Document, Object, decode_stream};
 
@@ -33,12 +33,30 @@ const CIRCLE_STEPS: usize = 48;
 /// `matrix` maps the shading's own space to device space; `clip` is the device
 /// rectangle the paint is confined to, which for `sh` is the current clip.
 pub fn bands(doc: &Document, sh: &Dict, matrix: [f64; 6], clip: [f64; 4]) -> Vec<Band> {
+    bands_of(doc, sh, &[], matrix, clip)
+}
+
+/// As [`bands`], with the shading stream's own bytes.
+///
+/// A mesh shading keeps its geometry in the stream rather than in the
+/// dictionary, so it cannot be drawn from the dictionary alone. `raw` is empty
+/// for the shadings that are wholly described by their dictionary.
+pub fn bands_of(
+    doc: &Document,
+    sh: &Dict,
+    raw: &[u8],
+    matrix: [f64; 6],
+    clip: [f64; 4],
+) -> Vec<Band> {
     let kind = doc
         .get(sh, "ShadingType")
         .and_then(|o| o.as_int())
         .unwrap_or(0);
     let space = doc.get(sh, "ColorSpace").map(|o| doc.resolve(&o));
     let components = space.as_ref().map(|s| components_of(doc, s)).unwrap_or(3);
+    if matches!(kind, 6 | 7) {
+        return patches(doc, sh, raw, matrix, components, kind == 7);
+    }
     let Some(function) = doc.get(sh, "Function") else {
         return Vec::new();
     };
@@ -285,6 +303,233 @@ fn clip_half(
             if denom.abs() > f64::EPSILON {
                 let t = (bound - ua) / denom;
                 out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+            }
+        }
+    }
+    out
+}
+
+/// How finely each patch is diced: `N` across and `N` down, so N-squared quads.
+const PATCH_STEPS: usize = 6;
+
+/// A ceiling on the quads one mesh may produce, so a document with thousands of
+/// patches cannot turn a single `sh` into a display list nothing can draw.
+const MAX_PATCH_QUADS: usize = 60_000;
+
+/// A reader for big-endian bit fields, which is how a mesh packs its numbers.
+struct Bits<'a> {
+    data: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Bits<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Bits { data, at: 0 }
+    }
+
+    fn take(&mut self, bits: usize) -> Option<u64> {
+        if bits == 0 || bits > 32 || self.at + bits > self.data.len() * 8 {
+            return None;
+        }
+        let mut out: u64 = 0;
+        for _ in 0..bits {
+            let byte = self.data[self.at / 8];
+            let bit = (byte >> (7 - self.at % 8)) & 1;
+            out = (out << 1) | bit as u64;
+            self.at += 1;
+        }
+        Some(out)
+    }
+
+    fn done(&self) -> bool {
+        self.at + 8 > self.data.len() * 8
+    }
+}
+
+/// A patch's twelve boundary control points and its four corner colours: what
+/// the next patch in a strip may inherit an edge from.
+type Patch = ([[f64; 2]; 12], [[f64; 4]; 4]);
+
+/// A cubic Bezier through four control points.
+fn bezier(p: [[f64; 2]; 4], t: f64) -> [f64; 2] {
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    [
+        a * p[0][0] + b * p[1][0] + c * p[2][0] + d * p[3][0],
+        a * p[0][1] + b * p[1][1] + c * p[2][1] + d * p[3][1],
+    ]
+}
+
+/// Slice a Coons or tensor patch mesh into small flat-coloured quads.
+///
+/// A patch is bounded by four cubic Beziers with a colour at each corner, and
+/// the surface between them is the Coons interpolation of those edges. The four
+/// extra control points a tensor patch (type 7) adds bend the interior; they are
+/// read past rather than used, which shows only where a patch's interior is
+/// pulled far from the surface its own edges describe. That is not what these
+/// are used for -- they are used for smooth backgrounds, and a background that
+/// is nearly right is worth far more than one that is absent. The ebook that
+/// prompted this sets its table of contents in white on such a background, so
+/// declining the mesh made the gradient and thirty-four lines of text disappear
+/// together, and the page still scored only 0.872 for losing both.
+fn patches(
+    doc: &Document,
+    sh: &Dict,
+    raw: &[u8],
+    matrix: [f64; 6],
+    components: usize,
+    tensor: bool,
+) -> Vec<Band> {
+    let Ok(data) = decode_stream(sh, raw) else {
+        return Vec::new();
+    };
+    let int = |key: &str| {
+        doc.get(sh, key)
+            .and_then(|o| o.as_int())
+            .map(|v| v as usize)
+    };
+    let (Some(coord_bits), Some(comp_bits), Some(flag_bits)) = (
+        int("BitsPerCoordinate"),
+        int("BitsPerComponent"),
+        int("BitsPerFlag"),
+    ) else {
+        return Vec::new();
+    };
+    let decode: Vec<f64> = doc
+        .get(sh, "Decode")
+        .and_then(|o| {
+            o.as_array()
+                .map(|a| a.iter().filter_map(|v| doc.resolve(v).as_f64()).collect())
+        })
+        .unwrap_or_default();
+    // A `/Function` maps one parametric value to a colour; without it each
+    // corner carries its colour components directly.
+    let function = doc.get(sh, "Function");
+    let per_corner = match function.is_some() {
+        true => 1,
+        false => components,
+    };
+    if decode.len() < 4 + per_corner * 2 || coord_bits > 32 || comp_bits > 32 {
+        return Vec::new();
+    }
+
+    let coord_max = ((1u64 << coord_bits) - 1) as f64;
+    let comp_max = ((1u64 << comp_bits) - 1) as f64;
+    let mut bits = Bits::new(&data);
+    let mut out: Vec<Band> = Vec::new();
+    // The previous patch's boundary and corner colours. A mesh is written as a
+    // strip: every patch after the first names which edge of the one before it
+    // it grows from, and carries only the points and colours that adds.
+    let mut prev: Option<Patch> = None;
+
+    while !bits.done() && out.len() < MAX_PATCH_QUADS {
+        let Some(flag) = bits.take(flag_bits) else {
+            break;
+        };
+        let shared = flag != 0 && prev.is_some();
+        let new_points = match (tensor, shared) {
+            (true, false) => 16,
+            (true, true) => 12,
+            (false, false) => 12,
+            (false, true) => 8,
+        };
+        let new_colors = if shared { 2 } else { 4 };
+
+        let mut read = Vec::with_capacity(new_points);
+        for _ in 0..new_points {
+            let (Some(xr), Some(yr)) = (bits.take(coord_bits), bits.take(coord_bits)) else {
+                return out;
+            };
+            let x = decode[0] + (xr as f64 / coord_max) * (decode[1] - decode[0]);
+            let y = decode[2] + (yr as f64 / coord_max) * (decode[3] - decode[2]);
+            read.push(point(&matrix, x, y));
+        }
+        let mut colors = Vec::with_capacity(new_colors);
+        for _ in 0..new_colors {
+            let mut v = Vec::with_capacity(per_corner);
+            for k in 0..per_corner {
+                let Some(cr) = bits.take(comp_bits) else {
+                    return out;
+                };
+                let (lo, hi) = (decode[4 + k * 2], decode[5 + k * 2]);
+                v.push(lo + (cr as f64 / comp_max) * (hi - lo));
+            }
+            let rgb = match &function {
+                Some(f) => to_rgb(&eval(doc, f, v[0], components).unwrap_or_default()),
+                None => to_rgb(&v),
+            };
+            colors.push(rgb);
+        }
+
+        // The twelve boundary points, clockwise from the first corner, with the
+        // four corner colours to go with them.
+        let (boundary, corners) = match (shared, prev) {
+            (false, _) => {
+                let mut b = [[0.0f64; 2]; 12];
+                b.copy_from_slice(&read[..12]);
+                let mut c = [[0.0f64; 4]; 4];
+                c.copy_from_slice(&colors[..4]);
+                (b, c)
+            }
+            (true, Some((pb, pc))) => {
+                let (edge, first, second) = match flag {
+                    1 => ([pb[3], pb[4], pb[5], pb[6]], pc[1], pc[2]),
+                    2 => ([pb[6], pb[7], pb[8], pb[9]], pc[2], pc[3]),
+                    _ => ([pb[9], pb[10], pb[11], pb[0]], pc[3], pc[0]),
+                };
+                let mut b = [[0.0f64; 2]; 12];
+                b[..4].copy_from_slice(&edge);
+                b[4..12].copy_from_slice(&read[..8]);
+                (b, [first, second, colors[0], colors[1]])
+            }
+            (true, None) => return out,
+        };
+        prev = Some((boundary, corners));
+
+        let top = [boundary[0], boundary[1], boundary[2], boundary[3]];
+        let right = [boundary[3], boundary[4], boundary[5], boundary[6]];
+        let bottom = [boundary[9], boundary[8], boundary[7], boundary[6]];
+        let left = [boundary[0], boundary[11], boundary[10], boundary[9]];
+        let corner = [boundary[0], boundary[3], boundary[6], boundary[9]];
+        let at = |u: f64, v: f64| -> [f64; 2] {
+            let t = bezier(top, u);
+            let b = bezier(bottom, u);
+            let l = bezier(left, v);
+            let r = bezier(right, v);
+            let mut p = [0.0; 2];
+            for k in 0..2 {
+                let edges = (1.0 - v) * t[k] + v * b[k] + (1.0 - u) * l[k] + u * r[k];
+                let bilinear = (1.0 - u) * (1.0 - v) * corner[0][k]
+                    + u * (1.0 - v) * corner[1][k]
+                    + u * v * corner[2][k]
+                    + (1.0 - u) * v * corner[3][k];
+                p[k] = edges - bilinear;
+            }
+            p
+        };
+        let shade = |u: f64, v: f64| -> [f64; 4] {
+            let mut c = [0.0; 4];
+            for k in 0..4 {
+                c[k] = (1.0 - u) * (1.0 - v) * corners[0][k]
+                    + u * (1.0 - v) * corners[1][k]
+                    + u * v * corners[2][k]
+                    + (1.0 - u) * v * corners[3][k];
+            }
+            c
+        };
+
+        let step = 1.0 / PATCH_STEPS as f64;
+        for i in 0..PATCH_STEPS {
+            for j in 0..PATCH_STEPS {
+                let (u0, u1) = (i as f64 * step, (i + 1) as f64 * step);
+                let (v0, v1) = (j as f64 * step, (j + 1) as f64 * step);
+                out.push(Band {
+                    points: vec![at(u0, v0), at(u1, v0), at(u1, v1), at(u0, v1)],
+                    color: shade((u0 + u1) / 2.0, (v0 + v1) / 2.0),
+                });
+                if out.len() >= MAX_PATCH_QUADS {
+                    return out;
+                }
             }
         }
     }

@@ -2303,16 +2303,18 @@ fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec
 }
 
 /// The shading a name refers to in the resource dictionary.
-fn shading_in(doc: &Document, resources: &Dict, name: &str) -> Option<Dict> {
+fn shading_in(doc: &Document, resources: &Dict, name: &str) -> Option<(Dict, Vec<u8>)> {
     let shadings = doc.get(resources, "Shading").map(|o| doc.resolve(&o))?;
     let entry = doc
         .get(shadings.as_dict()?, name)
         .map(|o| doc.resolve(&o))?;
     match entry {
-        // A shading is given as a stream when it carries mesh data; the
-        // dictionary is what the supported types read.
-        Object::Stream(d, _) => Some(d),
-        other => other.as_dict().cloned(),
+        // A shading is a stream when it carries mesh data, and the mesh *is*
+        // that data: a patch's geometry and its corner colours are nowhere in
+        // the dictionary. Keeping only the dictionary, as this did, leaves a
+        // mesh with nothing to be drawn from.
+        Object::Stream(d, raw) => Some((d, raw)),
+        other => other.as_dict().cloned().map(|d| (d, Vec::new())),
     }
 }
 
@@ -2420,12 +2422,12 @@ fn paint_pattern(
     // bands here for the same reason -- three renderers would otherwise have
     // to learn to draw a gradient.
     if kind == Some(2) {
-        let Some(shading) =
+        let Some((shading, mesh)) =
             doc.get(dict, "Shading")
                 .map(|o| doc.resolve(&o))
                 .and_then(|o| match o {
-                    Object::Stream(d, _) => Some(d),
-                    other => other.as_dict().cloned(),
+                    Object::Stream(d, raw) => Some((d, raw)),
+                    other => other.as_dict().cloned().map(|d| (d, Vec::new())),
                 })
         else {
             return;
@@ -2435,7 +2437,9 @@ fn paint_pattern(
             rect: [minx, miny, maxx, maxy],
             subpaths: paths.iter().filter(|s| s.len() >= 3).cloned().collect(),
         });
-        for band in crate::shading::bands(doc, &shading, anchored, [minx, miny, maxx, maxy]) {
+        for band in
+            crate::shading::bands_of(doc, &shading, &mesh, anchored, [minx, miny, maxx, maxy])
+        {
             ops.push(RenderOp::Fill {
                 subpaths: vec![band.points],
                 color: with_alpha(band.color, state.fill_alpha),
@@ -2816,11 +2820,11 @@ fn run_content(
                     // own: the gradient *is* the paint.
                     "sh" => {
                         if let Some(Token::Name(name)) = stack.last()
-                            && let Some(sh) = shading_in(doc, resources, name)
+                            && let Some((sh, raw)) = shading_in(doc, resources, name)
                         {
                             let region = [clip[0].max(0.0), clip[1].max(0.0), clip[2], clip[3]];
                             if region[2] > region[0] && region[3] > region[1] {
-                                for band in crate::shading::bands(doc, &sh, ctm, region) {
+                                for band in crate::shading::bands_of(doc, &sh, &raw, ctm, region) {
                                     ops.push(RenderOp::Fill {
                                         subpaths: vec![band.points],
                                         color: with_alpha(band.color, fill_alpha),
@@ -6927,6 +6931,125 @@ endobj
             None,
             "at zero it cannot mark the page and is not emitted at all"
         );
+    }
+
+    /// A Coons patch mesh is drawn rather than declined.
+    ///
+    /// One infographic ebook draws its page background with tensor patches and
+    /// sets its table of contents in *white* on top. Declining the mesh lost
+    /// the background and thirty-four lines of text together, and the page
+    /// scored 0.872 for losing both.
+    #[test]
+    fn a_patch_mesh_is_sliced_into_flat_quads() {
+        // One patch covering a 100-point square: red along the top edge, blue
+        // along the bottom. Coordinates are one byte each over a `/Decode` of
+        // 0..100, so a byte of 0 is 0 and 255 is 100.
+        let q = |v: f64| (v / 100.0 * 255.0).round() as u8;
+        let mut mesh: Vec<u8> = vec![0]; // flag 0: a patch that shares no edge
+        // Twelve boundary points clockwise from the top-left corner.
+        let boundary: [(f64, f64); 12] = [
+            (0.0, 100.0),
+            (33.0, 100.0),
+            (67.0, 100.0),
+            (100.0, 100.0),
+            (100.0, 67.0),
+            (100.0, 33.0),
+            (100.0, 0.0),
+            (67.0, 0.0),
+            (33.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 33.0),
+            (0.0, 67.0),
+        ];
+        for (x, y) in boundary {
+            mesh.push(q(x));
+            mesh.push(q(y));
+        }
+        // Corner colours, in the same order: red, red, blue, blue.
+        for rgb in [[255u8, 0, 0], [255, 0, 0], [0, 0, 255], [0, 0, 255]] {
+            mesh.extend_from_slice(&rgb);
+        }
+
+        const PAGE: &str = "q 0 0 100 100 re W n /Sh0 sh Q";
+        let mut pdf: Vec<u8> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.5\n");
+        pdf.extend_from_slice(b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+        pdf.extend_from_slice(b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R\
+/Resources<</Shading<</Sh0 5 0 R>>>>>>endobj\n",
+        );
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj<</Length {}>>stream\n{PAGE}\nendstream\nendobj\n",
+                PAGE.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj<</ShadingType 6/ColorSpace/DeviceRGB/BitsPerCoordinate 8\
+/BitsPerComponent 8/BitsPerFlag 8/Decode[0 100 0 100 0 1 0 1 0 1]/Length {}>>stream\n",
+                mesh.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&mesh);
+        pdf.extend_from_slice(b"\nendstream\nendobj\nstartxref\n0\n%%EOF");
+
+        let ops = extract_display_list(&pdf, 1).expect("a display list").ops;
+        let fills: Vec<_> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill {
+                    subpaths, color, ..
+                } => Some((subpaths, *color)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fills.len() > 8,
+            "a patch is diced into many quads, got {}: {ops:?}",
+            fills.len()
+        );
+
+        // The mesh's own colours, not the black a declined shading leaves.
+        let highest = fills
+            .iter()
+            .max_by(|a, b| {
+                let ay = a.0.iter().flatten().map(|p| p[1]).fold(f64::MIN, f64::max);
+                let by = b.0.iter().flatten().map(|p| p[1]).fold(f64::MIN, f64::max);
+                ay.total_cmp(&by)
+            })
+            .expect("a topmost quad");
+        let lowest = fills
+            .iter()
+            .min_by(|a, b| {
+                let ay = a.0.iter().flatten().map(|p| p[1]).fold(f64::MAX, f64::min);
+                let by = b.0.iter().flatten().map(|p| p[1]).fold(f64::MAX, f64::min);
+                ay.total_cmp(&by)
+            })
+            .expect("a bottom quad");
+        assert!(
+            highest.1[0] > 0.6 && highest.1[2] < 0.4,
+            "the top of the patch is its red corners, got {:?}",
+            highest.1
+        );
+        assert!(
+            lowest.1[2] > 0.6 && lowest.1[0] < 0.4,
+            "the bottom of the patch is its blue corners, got {:?}",
+            lowest.1
+        );
+
+        // And nothing is painted outside the patch's own square.
+        for (subpaths, _) in &fills {
+            for p in subpaths.iter().flatten() {
+                assert!(
+                    (-0.5..=100.5).contains(&p[0]) && (-0.5..=100.5).contains(&p[1]),
+                    "a quad escaped the patch: {p:?}"
+                );
+            }
+        }
     }
 
     /// A stencil carries the fill colour it was drawn in, and no picture does.
