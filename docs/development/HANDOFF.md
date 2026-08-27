@@ -246,6 +246,28 @@ through the group's soft mask. Text and images inside one still paint at full
 strength, and a mask whose own group paints with text or an image produces no
 regions and is skipped. Both fail unmasked, which is the safe direction.
 
+**A half-page of artwork that nothing has explained.**
+`design-article-optimizing-bldc-motor-control` p3 (on the *Desktop*) is the
+worst page in the corpus that is not the mesh-shading ebook: 0.208, absolute
+difference 0.096, and its **entire left half renders white** where the
+reference shows a title, body text and a large product photograph.
+
+What is measured, not guessed: the page places thirteen full-half-page images.
+The first, `4128`, decodes to real artwork (mean RGB 214). The twelve after it
+decode **fully opaque** — not one transparent pixel between them — at mean RGB
+253–254, so each paints a white sheet over what came before. Their streams are
+9 KB for 7.7 M samples, so they really are near-uniform.
+
+Four causes were checked and are **not** it:
+- *A soft mask on the group.* Masking images inside a transparency group was
+  implemented and measured: the branch fired **zero** times across 60 documents,
+  and the change moved no page. Reverted as unverified code that can only remove
+  paint — the same call this repository made once before.
+- *A blend mode.* The whole file contains one `/BM /Multiply`.
+- *Optional content.* No `/OCProperties`, no `/OCGs`, no `/OC` on the XObjects.
+- *An undecodable texture.* Every one of the thirteen resolves; the diagnostic
+  reports 1 image without pixels in the entire Desktop tree, in another file.
+
 **One page nothing has explained.** `atmosphere-10-00549` p3 came down from
 0.469 to 0.328 with pattern fills and is still the third-worst page in the
 corpus. Its 32 image ops carry no stencil tint, so whatever it masks is not
