@@ -18,7 +18,7 @@ harnesses, the branch, the traps.
 | Over the threshold | 17 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
 | Tests | 595 crate + 45 integration, 75 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 80 commits ahead of `master`, unpushed |
+| Branch | 81 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
@@ -136,6 +136,10 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**Both mobile shells were passing no textures at all.** See the open list for
+what remains; the fix itself was three lines each and is verified on Android by
+running it.
 
 **An image was clipped to its clip path's bounding box.** `Painter` clips to a
 rectangle, so a non-rectangular clip has always been applied as its box. For a
@@ -316,10 +320,17 @@ and substitutes regular Arial. Ours is the closer of the two to what the
 document asked for. Nothing to fix; chasing the reference here would make us
 *less* faithful.
 
-**Page textures on mobile.** Confirmed by running the Android app rather than
-inferred: text now renders correctly, including the font-subset fix, but the
-handbook cover's photograph is absent — the page shows its gradient over white.
-Neither mobile host resolves page images.
+**Large images on mobile.** The photographs are there now — `android.rs` and
+`apple.rs` were passing `&[]` where the browser passes `session.textures(...)`,
+and a missing texture draws a grey frame rather than nothing, so every picture
+on both shells was an empty box. Confirmed by running the Android app: a
+brochure cover that frames five photographs in hexagons shows all five, clipped
+correctly. **iOS is the same three lines against the same shared function and
+is unverified** — it needs macOS.
+
+What survives: an image past the inline bound is left to the host to resolve by
+index, and neither mobile host resolves one, so a *full-page* background
+photograph is still absent where the smaller ones now appear.
 
 **Annotation appearance streams.** Collected for extraction, never rendered:
 every form field, stamp, signature and highlight is invisible in our output.
