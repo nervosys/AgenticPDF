@@ -6933,6 +6933,125 @@ endobj
         );
     }
 
+    /// Hostile bytes in the new parsers terminate, bounded, without panicking.
+    ///
+    /// A pattern, a mesh and an inline image are all read straight out of a
+    /// document, which is to say straight out of whatever an attacker sent.
+    /// Each is a loop over attacker-chosen counts and bit widths, so each needs
+    /// a bound that does not depend on the input agreeing to be reasonable.
+    /// This drives them with deliberately malformed dictionaries and random
+    /// stream bytes and asserts only that the work finishes and stays small --
+    /// what it draws for nonsense is not interesting, that it stops is.
+    #[test]
+    fn malformed_meshes_and_patterns_terminate_within_bounds() {
+        // A cheap deterministic byte source; no RNG, so a failure reproduces.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut byte = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        };
+        let mut junk = vec![0u8; 40_000];
+        for b in junk.iter_mut() {
+            *b = byte();
+        }
+
+        // Bit widths and counts a document is free to lie about, including the
+        // degenerate ones: a zero flag width would loop forever if the reader
+        // treated "no bits" as a value rather than as the end.
+        let shapes: [(&str, &str); 6] = [
+            ("6", "/BitsPerCoordinate 8/BitsPerComponent 8/BitsPerFlag 8"),
+            (
+                "7",
+                "/BitsPerCoordinate 32/BitsPerComponent 16/BitsPerFlag 8",
+            ),
+            ("7", "/BitsPerCoordinate 1/BitsPerComponent 1/BitsPerFlag 2"),
+            ("6", "/BitsPerCoordinate 0/BitsPerComponent 0/BitsPerFlag 0"),
+            (
+                "7",
+                "/BitsPerCoordinate 64/BitsPerComponent 64/BitsPerFlag 64",
+            ),
+            ("6", "/BitsPerCoordinate 8/BitsPerComponent 8/BitsPerFlag 4"),
+        ];
+
+        for (kind, bits) in shapes {
+            const PAGE: &str = "q 0 0 200 200 re W n /Sh0 sh Q";
+            let mut pdf: Vec<u8> = Vec::new();
+            pdf.extend_from_slice(b"%PDF-1.5\n");
+            pdf.extend_from_slice(b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+            pdf.extend_from_slice(b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+            pdf.extend_from_slice(
+                b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R\
+/Resources<</Shading<</Sh0 5 0 R>>>>>>endobj\n",
+            );
+            pdf.extend_from_slice(
+                format!(
+                    "4 0 obj<</Length {}>>stream\n{PAGE}\nendstream\nendobj\n",
+                    PAGE.len()
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(
+                format!(
+                    "5 0 obj<</ShadingType {kind}/ColorSpace/DeviceRGB{bits}\
+/Decode[0 200 0 200 0 1 0 1 0 1]/Length {}>>stream\n",
+                    junk.len()
+                )
+                .as_bytes(),
+            );
+            pdf.extend_from_slice(&junk);
+            pdf.extend_from_slice(b"\nendstream\nendobj\nstartxref\n0\n%%EOF");
+
+            // The only contract: it returns, and it does not hand back a
+            // display list too large to draw.
+            let ops = extract_display_list(&pdf, 1)
+                .map(|d| d.ops)
+                .unwrap_or_default();
+            assert!(
+                ops.len() <= 200_000,
+                "shading type {kind} with {bits} produced {} ops from noise",
+                ops.len()
+            );
+        }
+    }
+
+    /// A tiling pattern whose step is a rounding error does not tile forever.
+    ///
+    /// The repeat count is the fill's size over the pattern's step, and a
+    /// document chooses both. A step near zero asks for an unbounded number of
+    /// tiles, each of which is a content stream to run.
+    #[test]
+    fn a_pattern_with_a_vanishing_step_is_capped() {
+        const TILE: &str = "0 0 1 1 re f";
+        const PAGE: &str = "/Pattern cs /P0 scn 0 0 600 600 re f";
+        let pdf = format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 600 600]/Contents 4 0 R",
+                "/Resources<</Pattern<</P0 5 0 R>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream\nendobj\n",
+                "5 0 obj<</PatternType 1/PaintType 1/TilingType 1/BBox[0 0 0.0001 0.0001]",
+                "/XStep 0.0001/YStep 0.0001/Resources<<>>/Length {}>>stream\n{}\n",
+                "endstream\nendobj\nstartxref\n0\n%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            TILE.len(),
+            TILE
+        );
+        let ops = extract_display_list(pdf.as_bytes(), 1)
+            .map(|d| d.ops)
+            .unwrap_or_default();
+        assert!(
+            ops.len() <= 200_000,
+            "a vanishing step produced {} ops",
+            ops.len()
+        );
+    }
+
     /// A Coons patch mesh is drawn rather than declined.
     ///
     /// One infographic ebook draws its page background with tensor patches and
