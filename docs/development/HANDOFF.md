@@ -14,20 +14,19 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **664 of 683 — 97.2 %** |
-| Over the threshold | 19 |
+| Matching (total variation ≤ 0.12) | **666 of 683 — 97.5 %** |
+| Over the threshold | 17 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 594 crate + 45 integration, 73 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 76 commits ahead of `master`, unpushed |
+| Tests | 595 crate + 45 integration, 73 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 79 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 19 failures, **two** have a mean absolute difference above 0.10 — and
-both are the one infographic ebook whose artwork is mesh shadings, which we
-decline. Four sit between 0.04 and 0.10. The remaining thirteen are below 0.04: sparse pages where the normalised score
+Of the 17 failures, **none** has a mean absolute difference above 0.10. Four
+sit between 0.04 and 0.10. The remaining thirteen are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -137,6 +136,22 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**Mesh shadings were declined, and the gap cost more than a guess would
+have.** The reasoning was that a mesh guessed at wrongly is worse than a gap.
+That had never been checked against what a gap costs. One infographic ebook
+draws its backgrounds with tensor patches and sets its contents page in
+**white** on top: declining the mesh lost the background and thirty-four lines
+of text together. Coons and tensor patches are now diced into flat quads, the
+same trade this module already makes for axial and radial gradients. The four
+interior control points a type 7 adds are read past rather than used — an
+approximation, said plainly. **2 pages improved, none regressed, net -1.396**,
+and they were the two worst in the corpus: 0.872 → **0.020** and 0.568 →
+**0.024**.
+
+`shading_in` had been keeping only the shading's *dictionary*, so a mesh had
+nothing to be drawn from even once there was code to draw it — the geometry and
+the corner colours are entirely in the stream.
 
 **An image was placed by its bounding box rather than its own transform.** A
 PDF image is painted into the *unit square* under the current transform, which
@@ -295,9 +310,8 @@ every form field, stamp, signature and highlight is invisible in our output.
 HTML layer rather than the canvas, so rendering them would read as divergence in
 this harness while being right for our own reader.
 
-**Mesh shadings (types 4–7).** Coons and tensor patches, declined rather than
-approximated. Exactly one document in the corpus draws its artwork with them, and
-stays at 0.872 and 0.568.
+**Mesh shadings of types 4 and 5.** Free-form and lattice triangle meshes are
+still declined; no document in the corpus uses one. Types 6 and 7 are drawn.
 
 **Web recording volume.** Measured, not estimated: 672 KB per steady-state frame
 for a text page, 74 % of it 5,325 per-glyph ops at 92 bytes each. A positional
