@@ -17,8 +17,8 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **666 of 683 — 97.5 %** |
 | Over the threshold | 17 |
 | Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 595 crate + 45 integration, 73 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 79 commits ahead of `master`, unpushed |
+| Tests | 595 crate + 45 integration, 75 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
+| Branch | 80 commits ahead of `master`, unpushed |
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
@@ -136,6 +136,23 @@ compositing every host does — and the WebGL renderer scales the texel's alpha 
 the fragment shader. The fade happens before the content key is taken, or the
 first placement of a picture would win and every later one would be drawn at
 whatever opacity that one had.
+
+**An image was clipped to its clip path's bounding box.** `Painter` clips to a
+rectangle, so a non-rectangular clip has always been applied as its box. For a
+fill that is survivable; for an image it is not. One brochure frames five
+photographs in hexagons and every one came out as a full rectangle with a
+hexagon drawn on top. An image's pixels are now masked by the shape, folded
+into the same copy that applies alpha, tint and placement. **21 pages improved,
+none regressed, net -0.201** — and the hexagon cover moves only 0.131 → 0.128
+for it, which is the usual story about a metric that measures where ink is
+rather than what shape it is in.
+
+The first attempt was **net -0.9 across eighteen regressed pages**: it treated
+each subpath of a clip path as a region of its own and demanded a point be
+inside all of them. One clip path is one region however many subpaths draw it —
+a ring is two circles and a point between them is inside. One page went 0.034 →
+0.555. *The per-page diff caught it; the summary count would not have*, because
+twenty-one other pages improved in the same run.
 
 **Mesh shadings were declined, and the gap cost more than a guess would
 have.** The reasoning was that a mesh guessed at wrongly is worse than a gap.
