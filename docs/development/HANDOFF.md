@@ -17,7 +17,7 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **671 of 681 — 98.5 %** |
 | Over the threshold | 10 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 609 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 614 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -135,6 +135,28 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**Dash patterns are drawn, and the corpus has nothing to say about it.** The `d`
+operator was not implemented at all, so every dashed rule was drawn solid. It is
+now applied in the geometry -- each stroke's polylines are cut into the
+pattern's lit runs before they are emitted -- which is the choice already made
+for gradient bands and clipped shading: every renderer draws it, none of them
+learns anything.
+
+**Corpus effect: exactly zero, across all 681 pages**, and the reason is worth
+more than the change. 219 `d` operators set a pattern across 270 documents and
+**not one stroke is painted while one is in force**: every `d` is undone by the
+`Q` that follows it, or is followed only by fills. So the five tests are what
+justify this -- phase, corners, degenerate patterns, and the piece budget --
+exactly as with mesh types 4 and 5.
+
+The first census said 517. That number was wrong, and the way it was wrong is
+the lesson: the counter was a plain `bool` that was not part of the graphics
+state, so it stayed true past the `Q` that popped the dash and counted every
+later stroke as dashed. **A counter for a piece of graphics state has to be
+graphics state**, or it reports the wrong number with complete confidence -- the
+same shape of mistake as counting inline images with a grep.
+
 
 **A spot colour is the ink, not the coverage.** A Separation names one colorant
 and carries a *tint*; the engine read that tint as ink coverage on white, so
@@ -505,6 +527,10 @@ the question can be re-asked against a corpus that exercises it properly.
 uses one, so the sweep after them is flat by construction rather than by
 evidence. They are verified by synthetic tests against decoded geometry instead.
 Treat the corpus as silent on them, not as endorsing them.
+
+**Dashes are implemented and unmeasured.** No stroke in the corpus is painted
+under a live dash pattern, so the sweep is flat by construction rather than by
+evidence -- read it as silence, not endorsement.
 
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the

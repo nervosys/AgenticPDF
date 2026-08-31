@@ -2742,6 +2742,15 @@ mod render_report {
         for (name, n) in &counts {
             eprintln!("  {name:8} {n}");
         }
+        let stroke_subpaths: usize = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Stroke { subpaths, .. } => Some(subpaths.len()),
+                _ => None,
+            })
+            .sum();
+        eprintln!("  stroke subpaths in total: {stroke_subpaths}");
         eprintln!("  clip paths that are not axis-aligned rectangles:");
         for op in &list.ops {
             if let RenderOp::Clip { rect, subpaths } = op {
@@ -2887,17 +2896,23 @@ mod render_report {
             let Ok(mut session) = crate::session::Session::open(bytes) else {
                 continue;
             };
-            let before = agenticpdf::engine::soft_mask_census().seen;
+            let census = agenticpdf::engine::soft_mask_census();
+            let before = (census.seen, census.strokes_under_a_dash);
             for page in 1..=pages.min(session.page_count()) {
                 if page > 1 {
                     session.next_page();
                 }
                 let _ = session.display_list();
             }
-            let here = agenticpdf::engine::soft_mask_census().seen - before;
-            if here > 0 {
-                with_masks += 1;
-                eprintln!("{}: {here} soft masks", path.display());
+            let now = agenticpdf::engine::soft_mask_census();
+            let here = now.seen - before.0;
+            let dashes = now.strokes_under_a_dash - before.1;
+            if here > 0 || dashes > 0 {
+                with_masks += usize::from(here > 0);
+                eprintln!(
+                    "{}: {here} soft masks, {dashes} dashed strokes",
+                    path.display()
+                );
             }
         }
         let c = agenticpdf::engine::soft_mask_census();
@@ -2959,6 +2974,23 @@ mod render_report {
             "  images declined under a text clip:{}",
             c.images_under_text_clip
         );
+        eprintln!(
+            "  dash patterns set:                {}",
+            c.dash_patterns_set
+        );
+        eprintln!(
+            "  strokes painted while dashed:     {}",
+            c.strokes_under_a_dash
+        );
+        eprintln!(
+            "    declined, a zero-length entry:  {}",
+            c.dash_declined_zero_entry
+        );
+        eprintln!(
+            "    declined, over the budget:      {}",
+            c.dash_declined_over_budget
+        );
+        eprintln!("    pieces actually emitted:        {}", c.dash_pieces);
     }
 
     /// Report every image in a tree of documents that is drawn faded.

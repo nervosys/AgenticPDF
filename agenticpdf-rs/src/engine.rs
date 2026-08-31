@@ -2231,6 +2231,102 @@ fn with_alpha(mut color: [f64; 4], alpha: f64) -> [f64; 4] {
     color
 }
 
+/// A ceiling on the pieces one dashed path may become.
+///
+/// A pattern of a hundredth of a point across a page-wide rule is sixty
+/// thousand segments, and a document is free to ask for exactly that. Past
+/// this the path is drawn solid, which is how it looked before any of this
+/// existed.
+const MAX_DASH_PIECES: usize = 20_000;
+
+/// Cut polylines into the lit runs of a dash pattern.
+///
+/// The pattern alternates lit and unlit, starting lit, and `phase` is how far
+/// into it the first point already stands. Both arrive in the same units as
+/// the points -- the caller scales them out of user space first.
+///
+/// Done in the geometry rather than on the op, which is the same choice made
+/// for gradient bands and for clipped shading: the display list already says
+/// "stroke these polylines", every renderer already draws that, and none of
+/// them has to learn what a dash is.
+///
+/// **The measurement corpus does not exercise this at all.** 219 `d` operators
+/// set a pattern across 270 documents and zero strokes are painted while one is
+/// in force, so the sweep after this change is flat by construction. What
+/// justifies it is the same thing that justifies mesh types 4 and 5: the tests
+/// below check decoded geometry directly, and the cost when no dash is live is
+/// a matched `None` arm.
+fn dash_subpaths(paths: &[Vec<[f64; 2]>], pattern: &[f64], phase: f64) -> Vec<Vec<[f64; 2]>> {
+    let total: f64 = pattern.iter().sum();
+    if total <= 0.0 || pattern.iter().any(|v| *v <= 0.0) {
+        // A zero-length entry would advance the walk below by nothing and spin
+        // there forever. Solid is the honest answer to a pattern like that.
+        tally(|c| c.dash_declined_zero_entry += 1);
+        return paths.to_vec();
+    }
+    let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
+    for path in paths {
+        if path.len() < 2 {
+            continue;
+        }
+        // Each subpath restarts the pattern, which is what the specification
+        // says and what keeps the corners of a dashed rectangle from drifting.
+        let mut at = phase % total;
+        let mut index = 0usize;
+        while at >= pattern[index] {
+            at -= pattern[index];
+            index = (index + 1) % pattern.len();
+        }
+        let mut lit = index.is_multiple_of(2);
+        let mut left = pattern[index] - at;
+        let mut run: Vec<[f64; 2]> = match lit {
+            true => vec![path[0]],
+            false => Vec::new(),
+        };
+        for pair in path.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let span = dx.hypot(dy);
+            if span <= 0.0 {
+                continue;
+            }
+            let mut walked = 0.0;
+            while span - walked > left {
+                walked += left;
+                let t = walked / span;
+                let cut = [a[0] + dx * t, a[1] + dy * t];
+                match lit {
+                    true => {
+                        run.push(cut);
+                        if run.len() >= 2 {
+                            out.push(std::mem::take(&mut run));
+                        } else {
+                            run.clear();
+                        }
+                    }
+                    false => run = vec![cut],
+                }
+                lit = !lit;
+                index = (index + 1) % pattern.len();
+                left = pattern[index];
+                if out.len() >= MAX_DASH_PIECES {
+                    tally(|c| c.dash_declined_over_budget += 1);
+                    return paths.to_vec();
+                }
+            }
+            left -= span - walked;
+            if lit {
+                run.push(b);
+            }
+        }
+        if run.len() >= 2 {
+            out.push(run);
+        }
+    }
+    tally(|c| c.dash_pieces += out.len());
+    out
+}
+
 /// True when painting `color` under `blend` cannot change the page.
 ///
 /// White is the identity of multiply and black is the identity of screen: a
@@ -2281,6 +2377,8 @@ struct GState<'a> {
     /// A text object used `Tr` 4-7, so the clip in force is the outline of
     /// its glyphs. Graphics state, restored by `Q` like any other clip.
     text_clip: bool,
+    /// `d`: the dash pattern in user space, and its phase.
+    dash: Option<(Vec<f64>, f64)>,
     /// The clip as a *polygon*, where it is one convex shape rather than a
     /// rectangle. `clip` alone is the bounding box, and a bounding box is the
     /// same thing as the path only when the path is an axis-aligned rectangle.
@@ -2372,6 +2470,22 @@ pub struct SoftMaskCensus {
     /// because an image has no single colour to test.
     pub images_under_multiply: usize,
     pub images_under_other_blend: usize,
+    /// A `d` set a non-empty dash pattern, and strokes painted while one was
+    /// still in force at the moment of painting.
+    ///
+    /// The gap between these two numbers is the point. Across 270 documents,
+    /// 219 patterns are set and **not one stroke is painted under one**: every
+    /// `d` is undone by the `Q` that follows it, or is followed only by fills.
+    /// An earlier version of this counter was a plain `bool` that was not part
+    /// of the graphics state, so it stayed true past the `Q` that should have
+    /// popped it and reported 517. A counter for a piece of graphics state has
+    /// to be graphics state, or it measures the wrong thing confidently.
+    pub dash_patterns_set: usize,
+    pub strokes_under_a_dash: usize,
+    /// Why a dashed stroke came out solid anyway.
+    pub dash_declined_zero_entry: usize,
+    pub dash_declined_over_budget: usize,
+    pub dash_pieces: usize,
     /// Images declined because a text clipping path was in force. Text
     /// clipping (`Tr` 4-7) confines everything painted after `ET` to the
     /// glyph outlines, and this engine has no glyph outlines to confine it
@@ -2386,6 +2500,8 @@ thread_local! {
             group_text_only: 0, group_image_only: 0, built: 0, built_from_images: 0,
             groups_masked: 0,
             unmasked_text_ops: 0, unmasked_image_ops: 0, unmasked_stroke_ops: 0,
+            dash_patterns_set: 0, strokes_under_a_dash: 0,
+            dash_declined_zero_entry: 0, dash_declined_over_budget: 0, dash_pieces: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
             mask_ignored_at_form: 0, images_under_multiply: 0,
@@ -3229,6 +3345,9 @@ fn run_content(
     // currently open is building one.
     let mut text_clip = false;
     let mut clipping_text = false;
+    // `d`: the pattern and its phase, in user space. `None` is a solid line,
+    // which is also what an all-zero pattern means.
+    let mut dash: Option<(Vec<f64>, f64)> = None;
     // The clip as a convex polygon, where it is one. `None` means "take the
     // bounding box", which is what everything did before.
     let mut clip_path: Option<Vec<[f64; 2]>> = None;
@@ -3278,6 +3397,7 @@ fn run_content(
                             clip,
                             soft_mask: soft_mask.clone(),
                             text_clip,
+                            dash: dash.clone(),
                             clip_path: clip_path.clone(),
                         });
                         ops.push(RenderOp::Save);
@@ -3308,6 +3428,7 @@ fn run_content(
                             clip = state.clip;
                             soft_mask = state.soft_mask;
                             text_clip = state.text_clip;
+                            dash = state.dash;
                             clip_path = state.clip_path;
                         }
                         ops.push(RenderOp::Restore);
@@ -3396,6 +3517,37 @@ fn run_content(
                         if let Some(m) = last6(&stack) {
                             ctm = mat_mul(&m, &ctm);
                         }
+                    }
+                    // `[a b ...] phase d`. An empty array, or one whose
+                    // lengths are all zero, is the solid line it also means in
+                    // the specification.
+                    "d" => {
+                        let pattern: Vec<f64> = stack
+                            .iter()
+                            .rev()
+                            .find_map(|t| match t {
+                                Token::ArrStr(a) => Some(
+                                    a.iter()
+                                        .filter_map(|v| match v {
+                                            ArrPart::Num(n) => Some(n.max(0.0)),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                ),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let phase = match stack.last() {
+                            Some(Token::Num(v)) => v.max(0.0),
+                            _ => 0.0,
+                        };
+                        dash = match pattern.iter().any(|v| *v > 0.0) {
+                            true => {
+                                tally(|c| c.dash_patterns_set += 1);
+                                Some((pattern, phase))
+                            }
+                            false => None,
+                        };
                     }
                     "w" => {
                         if let Some(Token::Num(v)) = stack.last() {
@@ -3553,6 +3705,22 @@ fn run_content(
                                 // wrong by four orders of magnitude, which is
                                 // a stroke wider than the page.
                                 let scale = (ctm[0] * ctm[3] - ctm[1] * ctm[2]).abs().sqrt();
+                                // The pattern is in user space and scales with
+                                // the CTM, exactly as the width does and for
+                                // the same reason.
+                                let paths = match &dash {
+                                    Some((pattern, phase)) => {
+                                        tally(|c| c.strokes_under_a_dash += 1);
+                                        let scaled: Vec<f64> =
+                                            pattern.iter().map(|v| v * scale).collect();
+                                        dash_subpaths(&paths, &scaled, phase * scale)
+                                    }
+                                    None => paths,
+                                };
+                                if paths.is_empty() {
+                                    stack.clear();
+                                    continue;
+                                }
                                 ops.push(RenderOp::Stroke {
                                     subpaths: paths,
                                     color: stroke_color,
@@ -8397,6 +8565,76 @@ startxref
             c[0] < 0.01 && c[1] < 0.01 && c[2] < 0.01,
             "full tint of an unreadable ink is still full coverage, so black: {c:?}"
         );
+    }
+
+    /// A dash pattern cuts a line into its lit runs.
+    ///
+    /// Ten units of line under `[2 2]` is five pieces: lit from 0, dark from 2,
+    /// and so on, with the last piece running out at the end.
+    #[test]
+    fn a_dash_pattern_cuts_a_line_into_pieces() {
+        let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
+        let out = dash_subpaths(&line, &[2.0, 2.0], 0.0);
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[0], vec![[0.0, 0.0], [2.0, 0.0]]);
+        assert_eq!(out[1], vec![[4.0, 0.0], [6.0, 0.0]]);
+        assert_eq!(out[2], vec![[8.0, 0.0], [10.0, 0.0]]);
+    }
+
+    /// The phase says how far into the pattern the line already stands.
+    ///
+    /// A phase of two under `[2 2]` starts in the gap, so the first piece
+    /// begins where the second would have without it.
+    #[test]
+    fn a_dash_phase_shifts_where_the_pattern_starts() {
+        let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
+        let out = dash_subpaths(&line, &[2.0, 2.0], 2.0);
+        // Two, not three: shifted by one gap, the line now *ends* in a gap
+        // rather than in a dash.
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0], vec![[2.0, 0.0], [4.0, 0.0]]);
+        assert_eq!(out[1], vec![[6.0, 0.0], [8.0, 0.0]]);
+    }
+
+    /// A pattern is measured along the path, not along each segment.
+    ///
+    /// The corner of a dashed box falls wherever the running length puts it,
+    /// which is the whole reason this walks the polyline rather than each of
+    /// its segments in turn.
+    #[test]
+    fn a_dash_runs_across_a_corner() {
+        let path = vec![vec![[0.0, 0.0], [3.0, 0.0], [3.0, 3.0]]];
+        let out = dash_subpaths(&path, &[4.0, 1.0], 0.0);
+        // The first lit run is four units long: three across and one up, so it
+        // has to carry the corner point between them.
+        assert_eq!(out[0], vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0]], "{out:?}");
+    }
+
+    /// A pattern that cannot be walked leaves the path solid.
+    ///
+    /// A zero-length entry advances the walk by nothing, which would spin
+    /// forever; an all-zero array is the spec's own way of saying solid. Both
+    /// return the path untouched rather than an empty one, because a rule that
+    /// vanishes is worse than a rule that is too heavy.
+    #[test]
+    fn an_unwalkable_dash_pattern_leaves_the_line_solid() {
+        let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
+        for pattern in [vec![0.0, 0.0], vec![3.0, 0.0], vec![0.0]] {
+            let out = dash_subpaths(&line, &pattern, 0.0);
+            assert_eq!(out, line, "pattern {pattern:?} should leave the line alone");
+        }
+    }
+
+    /// A pattern fine enough to shatter a page is declined, not drawn.
+    ///
+    /// A hundredth of a point across a page-wide rule is sixty thousand
+    /// pieces, and a document may ask for it. Past the budget the line is
+    /// solid, which is exactly how it looked before dashes existed.
+    #[test]
+    fn a_dash_pattern_finer_than_the_budget_stays_solid() {
+        let line = vec![vec![[0.0, 0.0], [600.0, 0.0]]];
+        let out = dash_subpaths(&line, &[0.005, 0.005], 0.0);
+        assert_eq!(out, line, "{} pieces", out.len());
     }
 
     /// A shading pattern is a dictionary, not a stream.
