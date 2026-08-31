@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **668 of 681 — 98.1 %** |
-| Over the threshold | 13 |
+| Matching (total variation ≤ 0.12) | **671 of 681 — 98.5 %** |
+| Over the threshold | 10 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 606 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 609 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -135,6 +135,33 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**A spot colour is the ink, not the coverage.** A Separation names one colorant
+and carries a *tint*; the engine read that tint as ink coverage on white, so
+full tint was black. Right sense, often wrong value -- and where it is wrong it
+is very wrong: a catalogue sets a fifth of its page in one Pantone at full
+tint, and that ink is an orange.
+
+The tint transform is now evaluated. `shading::eval` already did functions of
+one variable, which is exactly what a Separation's transform is, so this is
+mostly plumbing: the space carries its function and what the function's output
+means, and the colour comes out the far end. DeviceN keeps the coverage
+reading -- its function takes one input per colorant and `eval` takes one
+input -- and so does anything whose transform cannot be evaluated.
+
+**The alternate space's component count is not enough to read its numbers.**
+The first version assumed three components meant RGB. A Lab alternate also has
+three, running 0..100 and -128..127, and a datasheet's PANTONE 2768 C came out
+as `rgba(11.37, 6.00, -31.00)` -- not a colour, and worth **+0.073** on that
+page, the largest single regression of the session. Lab is now converted
+properly, through XYZ with the Bradford-adapted D50 matrix and the sRGB curve,
+and anything still unrecognised falls back to coverage rather than being read
+as if it were RGB.
+
+Corpus: **22 improved, 1 regressed, net -0.572**; 668 to 671 of 681. Insurance
+forms, brochures, datasheets and the catalogue all moved, three of them across
+the threshold. The one regression is +0.011 on a page at 0.073, well inside it.
+
 
 **A clip is a shape, not a box.** A catalogue page went from 0.236 to 0.010 --
 it was the worst dense page left -- and the cause was two places that had
@@ -478,6 +505,10 @@ the question can be re-asked against a corpus that exercises it properly.
 uses one, so the sweep after them is flat by construction rather than by
 evidence. They are verified by synthetic tests against decoded geometry instead.
 Treat the corpus as silent on them, not as endorsing them.
+
+**DeviceN still reads as coverage.** Its tint transform takes one input per
+colorant and this engine evaluates functions of one variable. Nothing in the
+corpus made it matter; the Separation case did, twenty-two times.
 
 **The worst pages left are sparse ones.** An order-details receipt p1 at 0.266
 (mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at

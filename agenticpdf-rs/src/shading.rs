@@ -826,6 +826,15 @@ fn components_of(doc: &Document, cs: &Object) -> usize {
 
 /// Component values to RGBA, by count, matching how the interpreter reads a
 /// colour operand.
+/// As [`to_rgb`], for a caller outside this module.
+///
+/// The mapping is by component count, which is the only thing a decoded
+/// colour carries: one is grey, three is RGB, four is CMYK, and anything else
+/// is read as ink coverage.
+pub fn to_rgb_components(v: &[f64]) -> [f64; 4] {
+    to_rgb(v)
+}
+
 fn to_rgb(v: &[f64]) -> [f64; 4] {
     match v.len() {
         0 => [0.0, 0.0, 0.0, 1.0],

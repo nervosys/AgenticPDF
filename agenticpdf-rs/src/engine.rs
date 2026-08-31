@@ -1970,11 +1970,15 @@ impl ColorKind {
 
 /// The colour an `sc`/`scn` names, given the space in force.
 ///
-/// A tint is treated as ink coverage on white: full tint is black. Evaluating
-/// the space's tint transform into its alternate would be exact, but coverage
-/// is the right sense of the number, and the sense is what matters -- the
-/// alternative is text painted in the inverse of its own colour.
-fn color_in_space(stack: &[Token], space: &Space) -> [f64; 4] {
+/// A Separation's tint transform is evaluated where there is one, which is
+/// exact. Failing that a tint is read as ink coverage on white -- full tint is
+/// black -- which has the right *sense* even when it has the wrong value, and
+/// the sense is what matters: the alternative is text painted in the inverse of
+/// its own colour. A catalogue that sets a masthead panel in one spot ink at
+/// full tint is the case that made the difference worth closing: coverage
+/// called it black, the ink is a mid grey, and the panel is a fifth of the
+/// page.
+fn color_in_space(doc: &Document, stack: &[Token], space: &Space) -> [f64; 4] {
     let nums: Vec<f64> = stack.iter().rev().map_while(|t| t.as_num()).collect();
     if space.kind == ColorKind::Indexed
         && let Some(palette) = &space.palette
@@ -1985,6 +1989,22 @@ fn color_in_space(stack: &[Token], space: &Space) -> [f64; 4] {
     }
     let kind = space.kind;
     if kind == ColorKind::Tint && !nums.is_empty() {
+        if nums.len() == 1
+            && let Some((function, alternate)) = &space.tint
+        {
+            let want = match alternate {
+                Alternate::Unit(n) => *n,
+                Alternate::Lab(_) => 3,
+            };
+            if let Some(v) = crate::shading::eval(doc, function, nums[0], want)
+                && v.len() == want
+            {
+                return match alternate {
+                    Alternate::Unit(_) => crate::shading::to_rgb_components(&v),
+                    Alternate::Lab(white) => lab_to_rgb(&v, *white),
+                };
+            }
+        }
         // DeviceN carries one tint per colorant; the heaviest governs.
         let ink = nums.iter().cloned().fold(0.0f64, f64::max).clamp(0.0, 1.0);
         let level = 1.0 - ink;
@@ -2009,6 +2029,7 @@ fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, Space> {
             Space {
                 kind: ColorKind::of(doc, &resolved),
                 palette: palette_from_space(doc, &resolved),
+                tint: tint_transform(doc, &resolved),
             },
         );
     }
@@ -2021,6 +2042,113 @@ fn build_color_spaces_in(doc: &Document, rd: &Dict) -> HashMap<String, Space> {
 struct Space {
     kind: ColorKind,
     palette: Option<Palette>,
+    /// A Separation's tint transform: the function that turns one tint into a
+    /// colour, and what that colour then means. Absent where there is no
+    /// usable one -- see [`tint_transform`].
+    tint: Option<(Object, Alternate)>,
+}
+
+/// What a tint transform's output means.
+///
+/// Component *count* is not enough. A Lab alternate also has three of them,
+/// and they run 0..100 and -128..127 rather than 0..1 -- read as RGB, a
+/// Pantone in Lab comes out as `rgba(11.37, 6.00, -31.00)`, which is not a
+/// colour at all. One datasheet in the corpus does exactly that.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Alternate {
+    /// A space whose components run 0..1: grey, RGB or CMYK by count.
+    Unit(usize),
+    /// CIE L*a*b*, with its white point.
+    Lab([f64; 3]),
+}
+
+/// A Separation's tint transform, where it can be evaluated.
+///
+/// `[/Separation name alternate transform]`. Only the one-colorant form is
+/// taken: a DeviceN function has one input per colorant and [`shading::eval`]
+/// evaluates functions of one variable, so DeviceN keeps the coverage
+/// approximation rather than being fed a number that means something else.
+fn tint_transform(doc: &Document, cs: &Object) -> Option<(Object, Alternate)> {
+    let a = cs.as_array()?;
+    if a.first().and_then(|o| o.as_name()) != Some("Separation") {
+        return None;
+    }
+    let alternate = doc.resolve(a.get(2)?);
+    let function = doc.resolve(a.get(3)?);
+    // A PostScript calculator function is declined by `eval`; a colour that
+    // cannot be evaluated still has to be something, so the coverage reading
+    // stays the fallback rather than the absence of one.
+    Some((function, alternate_of(doc, &alternate)?))
+}
+
+/// Classify the space a tint transform lands in.
+///
+/// Anything not recognised returns `None`, which sends the colour back to the
+/// coverage approximation. That is deliberate: a space whose component ranges
+/// this does not know is a space whose numbers it cannot read, and reading
+/// them anyway is how a Pantone became `rgba(11.37, 6.00, -31.00)`.
+fn alternate_of(doc: &Document, cs: &Object) -> Option<Alternate> {
+    match cs {
+        Object::Name(n) => match n.as_str() {
+            "DeviceGray" | "CalGray" | "G" => Some(Alternate::Unit(1)),
+            "DeviceRGB" | "CalRGB" | "RGB" => Some(Alternate::Unit(3)),
+            "DeviceCMYK" | "CMYK" => Some(Alternate::Unit(4)),
+            _ => None,
+        },
+        Object::Array(a) => match a.first().and_then(|o| o.as_name()) {
+            Some("Lab") => {
+                // The white point is required by the spec and defaulted here
+                // to D50 anyway, because a missing one should cost a slightly
+                // wrong white rather than the whole colour.
+                let white = a
+                    .get(1)
+                    .map(|o| doc.resolve(o))
+                    .and_then(|d| d.as_dict().and_then(|d| doc.get(d, "WhitePoint")))
+                    .and_then(|o| {
+                        let v: Vec<f64> = o.as_array()?.iter().filter_map(|x| x.as_f64()).collect();
+                        (v.len() == 3).then(|| [v[0], v[1], v[2]])
+                    })
+                    .unwrap_or([0.9642, 1.0, 0.8249]);
+                Some(Alternate::Lab(white))
+            }
+            Some("CalGray") => Some(Alternate::Unit(1)),
+            Some("CalRGB") => Some(Alternate::Unit(3)),
+            Some("ICCBased") => Some(Alternate::Unit(color_space_components(doc, cs) as usize)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// CIE L*a*b* to sRGB, through XYZ.
+///
+/// The inverse of the usual forward transform, with the piecewise-linear
+/// segment near black that keeps the cube root from blowing up, then the
+/// Bradford-adapted D50 matrix and the sRGB transfer curve. Out-of-gamut
+/// results are clamped, which is what every renderer does with them.
+fn lab_to_rgb(lab: &[f64], white: [f64; 3]) -> [f64; 4] {
+    let (l, a, b) = (lab[0], lab[1], lab[2]);
+    let fy = (l + 16.0) / 116.0;
+    let (fx, fz) = (fy + a / 500.0, fy - b / 200.0);
+    let g = |t: f64| match t > 6.0 / 29.0 {
+        true => t * t * t,
+        false => 3.0 * (6.0f64 / 29.0).powi(2) * (t - 4.0 / 29.0),
+    };
+    let (x, y, z) = (white[0] * g(fx), white[1] * g(fy), white[2] * g(fz));
+    let linear = [
+        3.1338561 * x - 1.6168667 * y - 0.4906146 * z,
+        -0.9787684 * x + 1.9161415 * y + 0.0334540 * z,
+        0.0719453 * x - 0.2289914 * y + 1.4052427 * z,
+    ];
+    let mut out = [0.0, 0.0, 0.0, 1.0];
+    for (k, c) in linear.iter().enumerate() {
+        let c = c.clamp(0.0, 1.0);
+        out[k] = match c <= 0.0031308 {
+            true => 12.92 * c,
+            false => 1.055 * c.powf(1.0 / 2.4) - 0.055,
+        };
+    }
+    out
 }
 
 /// Resolve the name `cs` was given against the page's spaces, treating the
@@ -2043,6 +2171,7 @@ fn named_space(stack: &[Token], spaces: &HashMap<String, Space>) -> Space {
     Space {
         kind,
         palette: None,
+        tint: None,
     }
 }
 
@@ -3304,10 +3433,10 @@ fn run_content(
                         }
                         _ => {
                             fill_pattern = None;
-                            fill = color_in_space(&stack, &fill_space);
+                            fill = color_in_space(doc, &stack, &fill_space);
                         }
                     },
-                    "SC" | "SCN" => stroke = color_in_space(&stack, &stroke_space),
+                    "SC" | "SCN" => stroke = color_in_space(doc, &stack, &stroke_space),
                     "m" => {
                         if let Some([x, y]) = last2(&stack) {
                             close_cur(&mut subpaths, &mut cur);
@@ -8146,6 +8275,127 @@ startxref
         assert!(
             !ops.iter().any(|op| matches!(op, RenderOp::Fill { .. })),
             "nothing should survive a fully black luminosity mask: {ops:?}"
+        );
+    }
+
+    /// A page that fills a rectangle in one Separation at a named tint.
+    ///
+    /// `alternate` and `transform` go into the space array verbatim, so a test
+    /// can pick what the ink actually is.
+    fn page_in_separation(alternate: &str, transform: &str, tint: &str) -> Vec<u8> {
+        let content = format!("/CS0 cs {tint} scn 0 0 100 100 re f");
+        format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R",
+                "/Resources<</ColorSpace<</CS0[/Separation/Spot {}{}]>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "startxref\n0\n%%EOF"
+            ),
+            alternate,
+            transform,
+            content.len(),
+            content
+        )
+        .into_bytes()
+    }
+
+    /// The one fill colour a page paints.
+    fn only_fill(pdf: &[u8]) -> [f64; 4] {
+        let ops = extract_display_list(pdf, 1).expect("a display list").ops;
+        ops.iter()
+            .find_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .expect("a fill")
+    }
+
+    /// A Separation is the colour its tint transform gives, not the inverse of
+    /// its tint.
+    ///
+    /// The approximation this replaces read a tint as ink coverage: full tint
+    /// is black. It has the right *sense* and often the wrong value, and where
+    /// the value matters it matters a lot -- a catalogue sets a fifth of its
+    /// page in one Pantone at full tint, and coverage called that black when
+    /// the ink is an orange.
+    #[test]
+    fn a_separation_takes_its_colour_from_the_tint_transform() {
+        let pdf = page_in_separation(
+            "/DeviceRGB",
+            "<</FunctionType 2/Domain[0 1]/C0[1 1 1]/C1[0.88 0.27 0.01]/N 1>>",
+            "1",
+        );
+        let c = only_fill(&pdf);
+        assert!(
+            (c[0] - 0.88).abs() < 0.01 && (c[1] - 0.27).abs() < 0.01 && (c[2] - 0.01).abs() < 0.01,
+            "full tint should be the ink itself, got {c:?}"
+        );
+        // And half tint is half way there, not half black.
+        let half = only_fill(&page_in_separation(
+            "/DeviceRGB",
+            "<</FunctionType 2/Domain[0 1]/C0[1 1 1]/C1[0.88 0.27 0.01]/N 1>>",
+            "0.5",
+        ));
+        assert!(
+            (half[0] - 0.94).abs() < 0.02 && (half[1] - 0.635).abs() < 0.02,
+            "half tint should be half way from white to the ink, got {half:?}"
+        );
+    }
+
+    /// A Lab alternate is converted, not read as if its numbers were RGB.
+    ///
+    /// L*a*b* runs 0..100 and -128..127. Read as RGB, the PANTONE 2768 C in one
+    /// datasheet comes out `rgba(11.37, 6.00, -31.00)` -- not a colour at all,
+    /// and worth 0.073 of divergence on that page. It is a dark navy.
+    #[test]
+    fn a_lab_alternate_is_converted_rather_than_read_as_rgb() {
+        let pdf = page_in_separation(
+            "[/Lab<</WhitePoint[0.9642 1 0.8249]/Range[-128 127 -128 127]>>]",
+            "<</FunctionType 2/Domain[0 1]/C0[100 0 0]/C1[11.3725 6 -31]/N 1>>",
+            "1",
+        );
+        let c = only_fill(&pdf);
+        assert!(
+            (0.0..=1.0).contains(&c[0])
+                && (0.0..=1.0).contains(&c[1])
+                && (0.0..=1.0).contains(&c[2]),
+            "a colour has to be in range: {c:?}"
+        );
+        assert!(
+            c[2] > c[0] && c[2] > c[1] && c[2] < 0.5,
+            "PANTONE 2768 C is a dark navy: {c:?}"
+        );
+        // L* 100 with no chroma is the white point.
+        let white = only_fill(&page_in_separation(
+            "[/Lab<</WhitePoint[0.9642 1 0.8249]>>]",
+            "<</FunctionType 2/Domain[0 1]/C0[0 0 0]/C1[100 0 0]/N 1>>",
+            "1",
+        ));
+        assert!(
+            white.iter().take(3).all(|c| *c > 0.99),
+            "L* 100 is white: {white:?}"
+        );
+    }
+
+    /// An alternate space this cannot read falls back to ink coverage.
+    ///
+    /// Declining is the point. A space whose component ranges are unknown is a
+    /// space whose numbers cannot be read, and reading them anyway is exactly
+    /// how a Lab Pantone became a negative blue.
+    #[test]
+    fn an_unreadable_alternate_falls_back_to_coverage() {
+        let pdf = page_in_separation(
+            "/DeviceMysterious",
+            "<</FunctionType 2/Domain[0 1]/C0[0]/C1[1]/N 1>>",
+            "1",
+        );
+        let c = only_fill(&pdf);
+        assert!(
+            c[0] < 0.01 && c[1] < 0.01 && c[2] < 0.01,
+            "full tint of an unreadable ink is still full coverage, so black: {c:?}"
         );
     }
 
