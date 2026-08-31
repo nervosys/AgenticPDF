@@ -14,6 +14,9 @@
     "react-dom": "^19.1.0",
     "shiki": "^4.0.2"
   },
+  "overrides": {
+    "postcss": "^8.5.26"
+  },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.0.0",

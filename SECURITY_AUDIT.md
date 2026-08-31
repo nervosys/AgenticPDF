@@ -23,6 +23,11 @@ open items are all owner decisions rather than defects: a breaking Next.js
 major, an ESLint 9 migration, and whether a FIPS-capable build is a product
 requirement.
 
+Both npm projects report **zero** advisories at every scope. Neither breaking
+upgrade that Revision 3 said would be required turned out to be required: in
+each project the count was inflated by one transitive package, and one
+`overrides` pin inside the existing major cleared it (§1.3a).
+
 **Revision 3 rating (retained for history): LOW.** Two HIGH advisories exist in the dependency graph
 and neither is reachable from document input; the crypto surface is larger than
 Revisions 1-2 claimed and is now inventoried honestly; the four decoders added
@@ -134,6 +139,8 @@ than quietly repaired.
 | Root package — development              | 1        | 12   | 1        | 2   | No                                  |
 | `website/` — **before** this revision   | 0        | 4    | 0        | 0   | No (static export; build-time only) |
 | `website/` — **after** `npm audit fix`  | 0        | 1    | 1        | 0   | No                                  |
+| Root package — development, **after R4** | 0        | 0    | 0        | 0   | No                                  |
+| `website/` — **after R4**               | 0        | 0    | 0        | 0   | No                                  |
 
 *Root package.* One runtime dependency (`tsx`) and a `files` allowlist, so none
 of the sixteen advisories reach a consumer. They are a **build-chain** concern:
@@ -157,9 +164,29 @@ not a visitor.
 Remediated in this revision by `npm audit fix` within the existing semver
 ranges (`next` 15.5.14 → 15.5.24), taking the website from four HIGH to one HIGH
 and one moderate, with `npm run build` verified afterwards to still produce the
-static export. **The remaining two are deliberately not fixed:** they require
-`next@16.3.3`, a major version, and a breaking framework upgrade is an owner's
-decision rather than an auditor's (§11.0, item 7).
+static export.
+
+**R4: both npm projects are now at zero advisories, and neither breaking
+upgrade was needed.** Revision 3 framed the remainder as a choice between
+living with the advisories and taking a major version. That framing was wrong
+in both projects, because in both the advisory count was inflated by a single
+transitive package that a `overrides` entry can pin directly:
+
+| Project    | What was left after R3                                        | Root cause                                                                                    | R4 fix                                              |
+| ---------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Root       | 6 HIGH — five `@typescript-eslint/*` packages and `minimatch` | **One** package. `minimatch` 9.0.3 (three ReDoS advisories) reaches the tree only through `@typescript-eslint/typescript-estree`; the five `@typescript-eslint` rows are that one dependency counted again at each level above it. | `"minimatch@^9.0.0": "^9.0.9"` — a patch-level move inside the same major. No ESLint 9 flat-config migration, no `@typescript-eslint` v6→v8. |
+| `website/` | 1 HIGH + 1 moderate — `postcss` and `next`                   | **One** package. `next` 15.5.24 pins `postcss` 8.4.31; the `next` moderate is `via: postcss`, not a defect in Next. | `"postcss": "^8.5.26"` — a minor move inside 8.x, and the version `@tailwindcss/postcss` in the same tree already used, so the override *unifies* rather than diverges. No Next.js 16. |
+
+Verified after both overrides: `npm audit` reports **0 vulnerabilities** in each
+project, the website still exports statically with the CSP present in
+`out/index.html`, and the root passes lint, `tsc --noEmit` and 950 tests across
+25 suites.
+
+The general lesson is worth keeping: **read the advisory graph before quoting
+its count.** Six HIGH findings sounded like six problems and a framework
+migration; it was one ReDoS in one transitive package and a one-line pin. An
+audit that reports totals without `effects` and `via` will recommend expensive
+work that the graph does not require.
 
 ### 1.3b New Parsing Surface (Revision 3)
 
@@ -699,11 +726,11 @@ outputs stay in scratch space and are never committed.
 | - | -------------------------------------------------------------------------------------------------------------------------- | -------- | --------------- |
 | 1 | **Wire `cargo audit` and `npm audit` into CI** so the next stale "no known CVEs" line cannot be written by hand.            | HIGH     | No              |
 | 2 | Track `accesskit`/`eframe` for an upgrade that moves `quick-xml` past 0.30.0; it cannot be fixed from this repository.       | MEDIUM   | No              |
-| 3 | Reduce the dev chain: 16 advisories, one critical, all in tooling that runs on developer and CI machines.                    | MEDIUM   | No              |
+| 3 | ~~Reduce the dev chain: 16 advisories, one critical, all in tooling that runs on developer and CI machines.~~ — **done in R4.** `npm audit fix` cleared ten; a `minimatch` override cleared the last six. Root development scope is now zero. | —        | No              |
 | 4 | Decide whether a **FIPS-capable build** is a product requirement. If it is, §3.1 lists the four steps; if it is not, say so in `SECURITY.md` so the question stops being asked. | —        | **Yes**         |
 | 5 | Plan replacements for `paste` and `ttf-parser` before "unmaintained" becomes "vulnerable".                                   | LOW      | No              |
 | 6 | Keep the corpus convention in §10: documents by kind, never by filename, no rendered output committed.                       | ONGOING  | No              |
-| 7 | Decide whether to take `website/` to **Next.js 16** — a major upgrade that clears the last HIGH (`postcss`) and the moderate. Left undone deliberately: a breaking framework bump is not an auditor's call. | MEDIUM   | **Yes**         |
+| 7 | ~~Decide whether to take `website/` to **Next.js 16**~~ — **moot in R4.** A `postcss` override clears the HIGH and the moderate without it. Upgrading remains worth doing on its own merits; it is no longer a security item. | —        | **Yes**         |
 | 8 | Audit **both** npm projects, always. A root-only `npm audit` reports a clean production scope while `website/` carries four HIGH. | ONGOING  | No              |
 
 ### 11.1 Immediate (Priority: HIGH)
@@ -784,7 +811,7 @@ revision.
 ---
 
 *Revision History:*
-- 2026-08-31 (R4): F-001 through F-007 re-checked against the source instead of restated. Four were already closed; F-003, F-004, F-006 and F-007 fixed. Advisory scanning wired into CI for both npm projects, and the `cargo audit` ignores documented.
+- 2026-08-31 (R4): npm advisories driven to zero in both projects by two `overrides` pins rather than the two breaking upgrades R3 assumed were needed. F-001 through F-007 re-checked against the source instead of restated. Four were already closed; F-003, F-004, F-006 and F-007 fixed. Advisory scanning wired into CI for both npm projects, and the `cargo audit` ignores documented.
 - 2026-08-26 (R3): Advisory scanning run for the first time; FIPS section corrected; private-data exposure review added ahead of publishing 91 commits to a public repository.
 - *2026-04-01 (Rev 2): Expanded scope to CLI, dev server, website, SSRF, regex, PRNG. Added findings F-001 through F-007. Updated test counts, dependency audit, CMMC/NIST sections.*
 - *2026-03-14 (Rev 1): Initial audit — CVE, MITRE ATT&CK, NIST FIPS 140-3, CMMC 2.0 Level 2.*
