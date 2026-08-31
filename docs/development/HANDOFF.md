@@ -14,8 +14,8 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **667 of 681 — 98.0 %** |
-| Over the threshold | 14 |
+| Matching (total variation ≤ 0.12) | **668 of 681 — 98.1 %** |
+| Over the threshold | 13 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
 | Tests | 606 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
@@ -135,6 +135,40 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**A clip is a shape, not a box.** A catalogue page went from 0.236 to 0.010 --
+it was the worst dense page left -- and the cause was two places that had
+quietly replaced a clip path with the rectangle around it.
+
+The page clips both a gradient and a full-width photograph to the same wedge:
+`(0,119) (0,0) (612,0) (612,413)`, a trapezoid whose slanted edge crosses the
+whole page. Its bounding box is nearly twice its area.
+
+*In the engine*, `sh` fills the current clip, and the current clip was carried
+as four numbers. The clip is now also kept as a polygon while it is a single
+convex one, and each band is cut to it before it is emitted -- which is the same
+argument that made gradients into bands in the first place: doing it once in the
+geometry fixes every renderer and none of them has to learn anything.
+
+*In the painter*, the shape was carried only when a subpath had more than five
+points, on the reasoning that a four-cornered path "is already described by the
+rectangle". That is true of an axis-aligned rectangle and of nothing else. A
+trapezoid has four corners. So the photograph was drawn across the whole box,
+over artwork the page had clipped it away from.
+
+Corpus: 3 improved, 4 regressed, net -0.235, and one more page inside the
+threshold. **The four regressions are real and small** -- +0.006 each, on
+journal covers whose logos are clipped to rotated squares that we now honour and
+whose edges we draw hard where the reference antialiases. They are the price of
+clipping correctly, and they are named rather than buried.
+
+*Rejected on the way, both measured:* sixteen-sample coverage antialiasing for
+the polygon clip, which changed the four pages it was written for by **nothing**
+and made two corpus shards slow enough to stall -- it is O(pixels x shapes x
+vertices). And a half-point "too small to see" tolerance on the rectangle test,
+which over 681 pages also changed nothing, so the tolerance is back to being
+slack for arithmetic rather than a judgement.
+
 
 **The two pages nobody could explain are explained.** Both were found the same
 way -- by dumping our render and the reference as coarse ASCII and looking at
@@ -445,11 +479,20 @@ uses one, so the sweep after them is flat by construction rather than by
 evidence. They are verified by synthetic tests against decoded geometry instead.
 Treat the corpus as silent on them, not as endorsing them.
 
-**A prepress page and a receipt remain the worst two.** The Kubota catalogue p3
-at 0.236 (mae 0.079) and an order-details receipt p1 at 0.266 (mae 0.004) are
-now the top of the list. The receipt is the sparse-page artefact the threshold
-note below describes -- four thousandths of mean absolute difference is not a
-broken page. The catalogue has not been looked at.
+**The worst pages left are sparse ones.** An order-details receipt p1 at 0.266
+(mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at
+0.239 (mae 0.012). Every one of them has a *mean absolute difference under
+0.04*: the normalised score is dividing by very little ink, which is the
+artefact the threshold note below describes rather than a broken page. The
+densest failure left is a catalogue p2 at 0.156 (mae 0.043), which is the same
+document whose p3 this round fixed and is the one worth looking at next.
+
+**Hard edges on a polygon clip.** Where a clip is a shape rather than a box, the
+painter masks pixel by pixel with no coverage, so a small rotated shape comes
+out jagged against a reference that antialiases. Antialiasing it was tried and
+measured at zero (see *Done*); the four +0.006 regressions this round are this,
+and a cheaper approach than sixteen samples a pixel would probably collect
+them.
 
 ## Needs a decision
 

@@ -376,10 +376,17 @@ fn cut_to_shapes(
         }
         hit
     };
+    // One sample at the middle of the pixel, so an edge landing on a boundary
+    // does not decide the whole row.
+    //
+    // Sixteen samples a pixel were tried, to soften the hard edge this leaves
+    // on a small rotated shape. They changed the four pages that motivated
+    // them by *nothing at all*, and made two corpus shards slow enough to
+    // stall, because this is O(pixels x shapes x vertices) and a page can
+    // carry a fifty-vertex clip over a full-page picture. Correct-looking and
+    // measurably useless is the shape of change this repository declines.
     let mut out = rgba.to_vec();
     for row in 0..height {
-        // The middle of the pixel, so an edge landing on a boundary does not
-        // decide the whole row.
         let y = rect.y + rect.height * (row as f32 + 0.5) / height as f32;
         for col in 0..width {
             let x = rect.x + rect.width * (col as f32 + 0.5) / width as f32;
@@ -754,10 +761,15 @@ pub fn paint_page(
                 // point be inside all of them empties every clip that is drawn
                 // with more than one, which on one brochure erased the page.
                 //
-                // A path whose subpaths are all four-cornered is already
-                // described by the rectangle, so it is not carried.
+                // Only a path that is *actually a rectangle* is described by
+                // its bounding box. The test used to be "more than five
+                // points", which is not the same thing: a trapezoid has four
+                // corners and is nothing like the box around it. One catalogue
+                // page clips both a photograph and a gradient to a wedge that
+                // is tall at one edge of the page and three points tall at the
+                // other, and the box let the whole of both through.
                 let mut shapes = clip_shapes.last().cloned().unwrap_or_default();
-                if subpaths.iter().any(|sp| sp.len() > 5) {
+                if subpaths.iter().any(|sp| !is_rectangle(sp)) {
                     shapes.push(
                         subpaths
                             .iter()
@@ -1192,6 +1204,36 @@ impl Painter for RecordingPainter {
             rect.x, rect.y, rect.width, rect.height, width, height
         ));
     }
+}
+
+/// Slack for arithmetic, not for judgement.
+///
+/// A clip that is a rectangle in user space arrives here through a matrix
+/// multiply and can miss square by a rounding error. This absorbs that and
+/// nothing else. Half a point was tried instead, on the theory that a lean too
+/// small to see is not a lean; over 681 pages it changed **nothing**, so the
+/// smaller and more honest number is the one kept.
+const CLIP_SQUARE_ENOUGH: f64 = 1e-6;
+
+/// Whether a subpath is close enough to an axis-aligned rectangle to say
+/// nothing its bounding box does not.
+///
+/// Four corners with every edge horizontal or vertical to within
+/// [`CLIP_SQUARE_ENOUGH`]. A closing vertex repeating the first is expected and
+/// ignored; anything else -- a trapezoid, a rotated box, a triangle, a
+/// staircase -- is a shape that has to be carried.
+fn is_rectangle(sp: &[[f64; 2]]) -> bool {
+    let mut p = sp;
+    if p.len() >= 2 && p[0] == p[p.len() - 1] {
+        p = &p[..p.len() - 1];
+    }
+    if p.len() != 4 {
+        return false;
+    }
+    (0..4).all(|i| {
+        let (a, b) = (p[i], p[(i + 1) % 4]);
+        (a[0] - b[0]).abs().min((a[1] - b[1]).abs()) <= CLIP_SQUARE_ENOUGH
+    })
 }
 
 fn to_points(subpath: &[[f64; 2]], transform: &Transform) -> Vec<Position> {
@@ -2632,6 +2674,116 @@ mod render_report {
             image.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
             "with no usable mask the image stays opaque"
         );
+    }
+
+    /// Summarise what a page's display list actually contains.
+    ///
+    /// When a rendered page carries ink the reference does not, the question is
+    /// always "what painted that", and neither a score nor a texture listing
+    /// answers it. This prints the op histogram and then the largest fills by
+    /// area, with their colours and bounds, which is usually enough to
+    /// recognise a panel that should have been clipped or a gradient that
+    /// should have been bounded.
+    ///
+    /// `APDF_RENDER_PDF=<file> [APDF_RENDER_PAGE=n] [APDF_OPS_TOP=n]
+    /// cargo test --release -- --ignored page_ops`
+    #[test]
+    #[ignore = "needs one document; run deliberately"]
+    fn page_ops() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            eprintln!("set APDF_RENDER_PDF to a document");
+            return;
+        };
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let top: usize = std::env::var("APDF_OPS_TOP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(12);
+        let bytes = std::fs::read(&path).expect("read the document");
+        let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
+        eprintln!("page {page}: {:.0} x {:.0}", list.width, list.height);
+
+        let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
+        let mut fills: Vec<(f64, [f64; 4], [f64; 4], usize)> = Vec::new();
+        for op in &list.ops {
+            let name = match op {
+                RenderOp::Fill { .. } => "fill",
+                RenderOp::Stroke { .. } => "stroke",
+                RenderOp::Text { .. } => "text",
+                RenderOp::Image { .. } => "image",
+                RenderOp::Clip { .. } => "clip",
+                RenderOp::Save => "save",
+                RenderOp::Restore => "restore",
+            };
+            *counts.entry(name).or_default() += 1;
+            if let RenderOp::Fill {
+                subpaths, color, ..
+            } = op
+            {
+                let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+                let mut points = 0;
+                for sp in subpaths {
+                    points += sp.len();
+                    for p in sp {
+                        r[0] = r[0].min(p[0]);
+                        r[1] = r[1].min(p[1]);
+                        r[2] = r[2].max(p[0]);
+                        r[3] = r[3].max(p[1]);
+                    }
+                }
+                if points > 0 {
+                    fills.push(((r[2] - r[0]) * (r[3] - r[1]), *color, r, points));
+                }
+            }
+        }
+        for (name, n) in &counts {
+            eprintln!("  {name:8} {n}");
+        }
+        eprintln!("  clip paths that are not axis-aligned rectangles:");
+        for op in &list.ops {
+            if let RenderOp::Clip { rect, subpaths } = op {
+                for sp in subpaths {
+                    if sp.len() < 3 || is_rectangle(sp) {
+                        continue;
+                    }
+                    // How far the shape departs from its own bounding box, as
+                    // the largest off-axis run of any edge.
+                    let mut skew: f64 = 0.0;
+                    for i in 0..sp.len() {
+                        let (p, q) = (sp[i], sp[(i + 1) % sp.len()]);
+                        skew = skew.max((p[0] - q[0]).abs().min((p[1] - q[1]).abs()));
+                    }
+                    eprintln!(
+                        "    {} pts, skew {skew:.3}, box [{:.0},{:.0} to {:.0},{:.0}]",
+                        sp.len(),
+                        rect[0],
+                        rect[1],
+                        rect[2],
+                        rect[3]
+                    );
+                }
+            }
+        }
+        fills.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        let page_area = list.width * list.height;
+        eprintln!("  largest fills (page area {page_area:.0}):");
+        for (area, color, r, points) in fills.iter().take(top) {
+            eprintln!(
+                "    {:>6.1}% of the page  rgba({:.2},{:.2},{:.2},{:.2})  [{:.0},{:.0} to {:.0},{:.0}]  {points} pts",
+                area / page_area * 100.0,
+                color[0],
+                color[1],
+                color[2],
+                color[3],
+                r[0],
+                r[1],
+                r[2],
+                r[3]
+            );
+        }
     }
 
     /// List every picture a page decodes to one flat colour.

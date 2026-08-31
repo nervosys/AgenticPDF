@@ -2152,6 +2152,10 @@ struct GState<'a> {
     /// A text object used `Tr` 4-7, so the clip in force is the outline of
     /// its glyphs. Graphics state, restored by `Q` like any other clip.
     text_clip: bool,
+    /// The clip as a *polygon*, where it is one convex shape rather than a
+    /// rectangle. `clip` alone is the bounding box, and a bounding box is the
+    /// same thing as the path only when the path is an axis-aligned rectangle.
+    clip_path: Option<Vec<[f64; 2]>>,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -3096,6 +3100,9 @@ fn run_content(
     // currently open is building one.
     let mut text_clip = false;
     let mut clipping_text = false;
+    // The clip as a convex polygon, where it is one. `None` means "take the
+    // bounding box", which is what everything did before.
+    let mut clip_path: Option<Vec<[f64; 2]>> = None;
     // Constant alpha and blend mode, both graphics state, both set by `gs`.
     let mut fill_alpha = inherited.fill_alpha;
     let mut stroke_alpha = inherited.stroke_alpha;
@@ -3142,6 +3149,7 @@ fn run_content(
                             clip,
                             soft_mask: soft_mask.clone(),
                             text_clip,
+                            clip_path: clip_path.clone(),
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -3171,6 +3179,7 @@ fn run_content(
                             clip = state.clip;
                             soft_mask = state.soft_mask;
                             text_clip = state.text_clip;
+                            clip_path = state.clip_path;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -3199,6 +3208,21 @@ fn run_content(
                                 clip[2].min(maxx),
                                 clip[3].min(maxy),
                             ];
+                            // Keep the shape as well as the box when it is a
+                            // single convex polygon. A gradient fills the clip,
+                            // and a clip that is a wedge -- tall at one edge of
+                            // the page and three points tall at the other -- is
+                            // nothing like its bounding box. Anything else, or
+                            // a second subpath, falls back to the box.
+                            clip_path = match clip_subpaths.as_slice() {
+                                [only] if crate::shading::is_convex(only) => {
+                                    Some(match &clip_path {
+                                        Some(prev) => crate::shading::clip_to_convex(prev, only),
+                                        None => only.clone(),
+                                    })
+                                }
+                                _ => None,
+                            };
                             ops.push(RenderOp::Clip {
                                 rect: [minx, miny, maxx, maxy],
                                 subpaths: clip_subpaths,
@@ -3215,8 +3239,23 @@ fn run_content(
                             let region = [clip[0].max(0.0), clip[1].max(0.0), clip[2], clip[3]];
                             if region[2] > region[0] && region[3] > region[1] {
                                 for band in crate::shading::bands_of(doc, &sh, &raw, ctm, region) {
+                                    // The bands are cut to the clip's *shape*
+                                    // here rather than left to a renderer,
+                                    // which is the same argument that made them
+                                    // bands in the first place: doing it once
+                                    // in the geometry fixes every renderer, and
+                                    // no renderer has to learn anything.
+                                    let points = match &clip_path {
+                                        Some(shape) => {
+                                            crate::shading::clip_to_convex(&band.points, shape)
+                                        }
+                                        None => band.points,
+                                    };
+                                    if points.len() < 3 {
+                                        continue;
+                                    }
                                     ops.push(RenderOp::Fill {
-                                        subpaths: vec![band.points],
+                                        subpaths: vec![points],
                                         color: with_alpha(band.color, fill_alpha),
                                         even_odd: false,
                                     });

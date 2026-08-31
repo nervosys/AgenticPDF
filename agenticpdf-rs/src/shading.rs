@@ -228,6 +228,40 @@ fn clip_rect(poly: &[[f64; 2]], r: [f64; 4]) -> Vec<[f64; 2]> {
 /// Every band a shading produces is convex -- a rectangle cut by half-planes,
 /// or a disc -- which is what lets one clip the other with a fixed number of
 /// half-plane passes and no general polygon library.
+/// Whether a polygon is convex, so [`clip_to_convex`] may be used with it.
+///
+/// Sutherland-Hodgman clips against every edge line in turn, which is only the
+/// intersection when the clipper is convex; against a concave one it removes
+/// area that should have stayed. So this is asked first, and a clip path that
+/// fails it is left to the bounding rectangle it always had.
+///
+/// A trailing vertex repeating the first is ignored -- a closed subpath from a
+/// content stream carries one, and it is a zero-length edge rather than a
+/// reflex corner.
+pub fn is_convex(poly: &[[f64; 2]]) -> bool {
+    let mut p = poly;
+    if p.len() >= 2 && p[0] == p[p.len() - 1] {
+        p = &p[..p.len() - 1];
+    }
+    if p.len() < 3 {
+        return false;
+    }
+    let mut sign = 0.0f64;
+    for i in 0..p.len() {
+        let (a, b, c) = (p[i], p[(i + 1) % p.len()], p[(i + 2) % p.len()]);
+        let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if cross.abs() <= 1e-9 {
+            continue;
+        }
+        if sign == 0.0 {
+            sign = cross.signum();
+        } else if cross.signum() != sign {
+            return false;
+        }
+    }
+    sign != 0.0
+}
+
 pub fn clip_to_convex(subject: &[[f64; 2]], convex: &[[f64; 2]]) -> Vec<[f64; 2]> {
     if convex.len() < 3 {
         return Vec::new();
