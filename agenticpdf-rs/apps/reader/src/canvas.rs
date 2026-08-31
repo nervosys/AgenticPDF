@@ -876,19 +876,42 @@ fn fit_to_draw(
     rect: Rect,
     raster_scale: f32,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let want_w = (rect.width.abs() * raster_scale).ceil().max(1.0) as u32;
-    let want_h = (rect.height.abs() * raster_scale).ceil().max(1.0) as u32;
     let (src_w, src_h) = (image.width, image.height);
-    // Never an enlargement, and not for a saving too small to pay for the
-    // work. The threshold was four times the pixels, which sounds harmless
-    // and is not: a full-page scan drawn at nine hundred pixels wide is only
-    // 3.6 times its drawn size, so it was sent whole, blew the inline bound,
-    // and the host drew an empty frame where the page should be. Anything
-    // past a half again is worth sampling -- it is the difference between
-    // fifteen megabytes and four.
-    if src_w <= want_w
-        || src_h <= want_h
-        || (src_w as u64 * src_h as u64) * 2 <= (want_w as u64 * want_h as u64) * 3
+    if src_w == 0 || src_h == 0 {
+        return None;
+    }
+    // Never an enlargement.
+    let want_w = ((rect.width.abs() * raster_scale).ceil().max(1.0) as u32).min(src_w);
+    let want_h = ((rect.height.abs() * raster_scale).ceil().max(1.0) as u32).min(src_h);
+
+    // Whatever size is chosen has to fit the inline bound. It did not before,
+    // and the consequence was not a bigger picture -- it was no picture: an
+    // image over the bound is sent with neither pixels nor a key, to be
+    // resolved by the host, and only the browser resolves one. On both mobile
+    // shells a full-page background photograph was simply absent, which on a
+    // page whose content *is* that photograph is the whole page. Sampling one
+    // step further is the difference between a slightly soft picture and none.
+    const CAP: u64 = (MAX_INLINE_IMAGE_BYTES / 4) as u64;
+    let (want_w, want_h) = match want_w as u64 * want_h as u64 > CAP {
+        true => {
+            let k = (CAP as f64 / (want_w as f64 * want_h as f64)).sqrt();
+            (
+                ((want_w as f64 * k) as u32).max(1),
+                ((want_h as f64 * k) as u32).max(1),
+            )
+        }
+        false => (want_w, want_h),
+    };
+    if (want_w, want_h) == (src_w, src_h) {
+        return None;
+    }
+    // Not for a saving too small to pay for the work -- but only while the
+    // source is inside the bound already. The threshold was once four times
+    // the pixels, which sounds harmless and is not: a full-page scan drawn at
+    // nine hundred pixels wide is only 3.6 times its drawn size, so it was
+    // sent whole and vanished. Anything past a half again is worth sampling.
+    if (src_w as u64 * src_h as u64) <= CAP
+        && (src_w as u64 * src_h as u64) * 2 <= (want_w as u64 * want_h as u64) * 3
     {
         return None;
     }
@@ -2425,6 +2448,141 @@ mod render_report {
         );
     }
 
+    /// A picture too big for the inline bound is sampled down, not dropped.
+    ///
+    /// The recording protocol lets an image be sent as geometry alone, for a
+    /// host that already holds the pixels and can resolve them itself. The
+    /// browser does. Neither mobile shell does, so on Android and iOS the one
+    /// image on the page that most needed sending -- the full-page background
+    /// photograph, the only one large enough to trip the bound -- was the one
+    /// that never arrived, and the page drew an empty frame.
+    ///
+    /// This is the same class of mistake as the mobile texture gap that came
+    /// before it: a fallback path that reads as reasonable, taken by exactly
+    /// the case it ruins. The fix is not to teach two more hosts a protocol --
+    /// one of which cannot even be built on this machine -- but to stop
+    /// producing the op that needs it.
+    #[test]
+    fn an_image_over_the_inline_bound_is_still_sent() {
+        // 2400 x 1600 is 15 MB of RGBA, comfortably past the 6 MB bound, and
+        // it is drawn at a size that would not otherwise trigger sampling.
+        let (w, h) = (2400u32, 1600u32);
+        let pixels = vec![200u8; w as usize * h as usize * 4];
+        let image = ImageData {
+            width: w,
+            height: h,
+            pixels: &pixels,
+        };
+        let mut painter = RecordingPainter::default();
+        painter.raster_scale = 4.0;
+        painter.draw_image(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 533.0,
+            },
+            &image,
+        );
+        let recorded = painter.ops.join(",");
+        assert!(
+            recorded.contains("\"pixels\""),
+            "the picture must carry its pixels: {}",
+            &recorded[..recorded.len().min(300)]
+        );
+        assert!(
+            recorded.contains("\"key\""),
+            "and a key, so a repeat costs nothing"
+        );
+        // Whatever was sent has to be inside the bound, or the host is back to
+        // being handed something it cannot draw.
+        let encoded = recorded
+            .split("\"pixels\":\"")
+            .nth(1)
+            .and_then(|t| t.split('"').next())
+            .expect("the pixels field");
+        assert!(
+            encoded.len() / 4 * 3 <= MAX_INLINE_IMAGE_BYTES,
+            "sent {} bytes, bound is {MAX_INLINE_IMAGE_BYTES}",
+            encoded.len() / 4 * 3
+        );
+    }
+
+    /// Ask a tree of documents how often the soft-mask paths are reached.
+    ///
+    /// Soft masking is where this project has already shipped a correct change
+    /// that moved nothing, because the branch it added never ran. The rule kept
+    /// from that is to count first. This counts: how many masks a corpus
+    /// contains, how many are thrown away for being drawn with text or an image
+    /// rather than fills, and how much text and how many images ride through a
+    /// masked group unmasked. A change to either path is worth writing only if
+    /// the number beside it is not zero.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=n] cargo test --release
+    /// -- --ignored soft_masks_reached`
+    #[test]
+    #[ignore = "needs a tree of documents; run deliberately"]
+    fn soft_masks_reached() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let documents = documents_under(&root);
+        let mut with_masks = 0usize;
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            let before = agenticpdf::engine::soft_mask_census().seen;
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let _ = session.display_list();
+            }
+            let here = agenticpdf::engine::soft_mask_census().seen - before;
+            if here > 0 {
+                with_masks += 1;
+                eprintln!("{}: {here} soft masks", path.display());
+            }
+        }
+        let c = agenticpdf::engine::soft_mask_census();
+        eprintln!(
+            "{} documents, first {pages} pages each; {with_masks} carry a soft mask",
+            documents.len()
+        );
+        eprintln!("  /SMask dictionaries seen:        {}", c.seen);
+        eprintln!("    declined, not /Luminosity:     {}", c.not_luminosity);
+        eprintln!("    declined, group painted nothing:{}", c.group_empty);
+        eprintln!(
+            "    declined, group had no fills:  {}",
+            c.group_had_no_fills
+        );
+        eprintln!("      of those, text only:         {}", c.group_text_only);
+        eprintln!("      of those, images only:       {}", c.group_image_only);
+        eprintln!("    built into regions:            {}", c.built);
+        eprintln!("      of those, from images:       {}", c.built_from_images);
+        eprintln!("  masked groups composited:        {}", c.groups_masked);
+        eprintln!("    abandoned, over budget:        {}", c.over_budget);
+        eprintln!("    text ops riding through:       {}", c.unmasked_text_ops);
+        eprintln!(
+            "    image ops riding through:      {}",
+            c.unmasked_image_ops
+        );
+        eprintln!(
+            "    stroke ops riding through:     {}",
+            c.unmasked_stroke_ops
+        );
+    }
+
     /// Report every image in a tree of documents that is drawn faded.
     ///
     /// Constant alpha on an image is invisible to `compare_corpus`: a page
@@ -3340,13 +3498,21 @@ mod recording_glyphs {
         assert!(fit_to_draw(&image, Rect::new(0.0, 0.0, 32.0, 32.0), 0.25).is_some());
     }
 
-    /// An image that is still enormous after sampling is left to the host,
-    /// which draws its frame: a picture drawn at wall size has nothing to
-    /// sample away, and inlining it per frame would be megabytes of JSON.
+    /// An image too large for the bound is sampled to fit it, not dropped.
+    ///
+    /// This test used to assert the opposite -- that past the bound the host
+    /// draws a frame instead -- on the reasoning that "inlining it per frame
+    /// would be megabytes of JSON". The reasoning was wrong on both halves.
+    /// It is not per frame: pixels go once and every repeat carries the key
+    /// alone, which the test below this one has been proving all along. And
+    /// the host that was supposed to resolve the image itself is only the
+    /// browser; Android and iOS never learned to, so the single image on a
+    /// page big enough to trip the bound -- the full-page photograph -- was
+    /// the one that never arrived.
     #[test]
-    fn an_image_too_large_even_when_sampled_is_left_to_the_host() {
-        // Drawn as large as it is stored, so there is nothing to sample away
-        // and the whole thing would have to travel.
+    fn an_image_too_large_even_when_sampled_is_sent_smaller() {
+        // Drawn as large as it is stored, so the drawn size alone would save
+        // nothing and only the bound can decide how big this may be.
         let side = 1400u32; // 1400^2 * 4 bytes is past the inline bound
         let mut painter = RecordingPainter::new();
         let pixels = vec![0u8; (side * side * 4) as usize];
@@ -3357,8 +3523,18 @@ mod recording_glyphs {
         let json = painter.to_json();
         assert!(json.contains(r#""op":"image""#), "its geometry still goes");
         assert!(
-            !json.contains(r#""pixels":""#),
-            "past the bound the host draws the frame instead"
+            json.contains(r#""pixels":""#),
+            "and so do its pixels, at whatever size fits"
+        );
+        let sent = json
+            .split(r#""pixels":""#)
+            .nth(1)
+            .and_then(|t| t.split('"').next())
+            .expect("the pixels field");
+        assert!(
+            sent.len() / 4 * 3 <= MAX_INLINE_IMAGE_BYTES,
+            "sampled to {} bytes, bound is {MAX_INLINE_IMAGE_BYTES}",
+            sent.len() / 4 * 3
         );
     }
 

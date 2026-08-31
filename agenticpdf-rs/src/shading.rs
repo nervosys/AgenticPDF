@@ -7,9 +7,10 @@
 //! constant colour needs none of that: the ops already exist, and at sixty-four
 //! bands the seams are below the resolution anything is compared at.
 //!
-//! Axial and radial shadings are covered, and so are the Coons and tensor
-//! patch meshes, which are sliced into small flat quads for the same reason a
-//! gradient is sliced into bands. The function-based type is still declined.
+//! Axial and radial shadings are covered, and so are all four mesh types --
+//! the free-form and lattice triangle meshes, and the Coons and tensor patch
+//! meshes -- each sliced into small flat pieces for the same reason a gradient
+//! is sliced into bands. Only the function-based type (1) is still declined.
 
 use crate::engine::{Dict, Document, Object, decode_stream};
 
@@ -54,6 +55,9 @@ pub fn bands_of(
         .unwrap_or(0);
     let space = doc.get(sh, "ColorSpace").map(|o| doc.resolve(&o));
     let components = space.as_ref().map(|s| components_of(doc, s)).unwrap_or(3);
+    if matches!(kind, 4 | 5) {
+        return triangles(doc, sh, raw, matrix, components, kind == 5);
+    }
     if matches!(kind, 6 | 7) {
         return patches(doc, sh, raw, matrix, components, kind == 7);
     }
@@ -312,6 +316,10 @@ fn clip_half(
 /// How finely each patch is diced: `N` across and `N` down, so N-squared quads.
 const PATCH_STEPS: usize = 6;
 
+/// How finely each triangle is diced: `N` along each edge, so N-squared
+/// sub-triangles -- the same count a patch gets, and for the same reason.
+const TRIANGLE_STEPS: usize = 6;
+
 /// A ceiling on the quads one mesh may produce, so a document with thousands of
 /// patches cannot turn a single `sh` into a display list nothing can draw.
 const MAX_PATCH_QUADS: usize = 60_000;
@@ -341,14 +349,128 @@ impl<'a> Bits<'a> {
         Some(out)
     }
 
+    /// Advance to the next byte boundary.
+    ///
+    /// A free-form triangle mesh pads every vertex out to a whole number of
+    /// bytes (PDF 8.7.4.5.5); the lattice and patch meshes do not pad at all.
+    /// That is the only structural difference between reading a type 4 and a
+    /// type 5, and getting it wrong does not fail loudly -- it shears every
+    /// vertex after the first by a few bits and draws confetti.
+    fn align(&mut self) {
+        self.at = self.at.div_ceil(8) * 8;
+    }
+
     fn done(&self) -> bool {
         self.at + 8 > self.data.len() * 8
+    }
+}
+
+/// The header every mesh shading is read through, and the stream it reads.
+///
+/// Types 4 through 7 differ in what they do with the numbers, not in how the
+/// numbers are packed: the same bit widths, the same `/Decode` ranges, and the
+/// same choice between one parametric value put through `/Function` and colour
+/// components carried directly.
+struct Mesh {
+    data: Vec<u8>,
+    coord_bits: usize,
+    comp_bits: usize,
+    flag_bits: usize,
+    decode: Vec<f64>,
+    function: Option<Object>,
+    /// Numbers per vertex or corner: one with a `/Function`, else the colour
+    /// space's component count.
+    per_corner: usize,
+    components: usize,
+    coord_max: f64,
+    comp_max: f64,
+}
+
+impl Mesh {
+    /// Read the header, or decline the shading.
+    ///
+    /// `flagged` is false only for the lattice-form mesh (type 5), the one mesh
+    /// with no per-vertex flag and therefore no `/BitsPerFlag`. Requiring the
+    /// key there would decline every valid type 5 there is.
+    fn read(
+        doc: &Document,
+        sh: &Dict,
+        raw: &[u8],
+        components: usize,
+        flagged: bool,
+    ) -> Option<Mesh> {
+        let data = decode_stream(sh, raw).ok()?;
+        let int = |key: &str| {
+            doc.get(sh, key)
+                .and_then(|o| o.as_int())
+                .map(|v| v as usize)
+        };
+        let coord_bits = int("BitsPerCoordinate")?;
+        let comp_bits = int("BitsPerComponent")?;
+        let flag_bits = match flagged {
+            true => int("BitsPerFlag")?,
+            false => 0,
+        };
+        let decode: Vec<f64> = doc
+            .get(sh, "Decode")
+            .and_then(|o| {
+                o.as_array()
+                    .map(|a| a.iter().filter_map(|v| doc.resolve(v).as_f64()).collect())
+            })
+            .unwrap_or_default();
+        // A `/Function` maps one parametric value to a colour; without it each
+        // vertex carries its colour components directly.
+        let function = doc.get(sh, "Function");
+        let per_corner = match function.is_some() {
+            true => 1,
+            false => components,
+        };
+        if decode.len() < 4 + per_corner * 2 || coord_bits > 32 || comp_bits > 32 {
+            return None;
+        }
+        Some(Mesh {
+            data,
+            coord_bits,
+            comp_bits,
+            flag_bits,
+            decode,
+            function,
+            per_corner,
+            components,
+            coord_max: ((1u64 << coord_bits) - 1) as f64,
+            comp_max: ((1u64 << comp_bits) - 1) as f64,
+        })
+    }
+
+    /// One vertex position, mapped through `/Decode` and then to device space.
+    fn point(&self, bits: &mut Bits, matrix: &[f64; 6]) -> Option<[f64; 2]> {
+        let (xr, yr) = (bits.take(self.coord_bits)?, bits.take(self.coord_bits)?);
+        let x = self.decode[0] + (xr as f64 / self.coord_max) * (self.decode[1] - self.decode[0]);
+        let y = self.decode[2] + (yr as f64 / self.coord_max) * (self.decode[3] - self.decode[2]);
+        Some(point(matrix, x, y))
+    }
+
+    /// One vertex or corner colour, as RGBA.
+    fn color(&self, doc: &Document, bits: &mut Bits) -> Option<[f64; 4]> {
+        let mut v = Vec::with_capacity(self.per_corner);
+        for k in 0..self.per_corner {
+            let cr = bits.take(self.comp_bits)?;
+            let (lo, hi) = (self.decode[4 + k * 2], self.decode[5 + k * 2]);
+            v.push(lo + (cr as f64 / self.comp_max) * (hi - lo));
+        }
+        Some(match &self.function {
+            Some(f) => to_rgb(&eval(doc, f, v[0], self.components).unwrap_or_default()),
+            None => to_rgb(&v),
+        })
     }
 }
 
 /// A patch's twelve boundary control points and its four corner colours: what
 /// the next patch in a strip may inherit an edge from.
 type Patch = ([[f64; 2]; 12], [[f64; 4]; 4]);
+
+/// One vertex of a triangle mesh: where it is, and what colour it is there.
+type Vertex = ([f64; 2], [f64; 4]);
 
 /// A cubic Bezier through four control points.
 fn bezier(p: [[f64; 2]; 4], t: f64) -> [f64; 2] {
@@ -358,6 +480,147 @@ fn bezier(p: [[f64; 2]; 4], t: f64) -> [f64; 2] {
         a * p[0][0] + b * p[1][0] + c * p[2][0] + d * p[3][0],
         a * p[0][1] + b * p[1][1] + c * p[2][1] + d * p[3][1],
     ]
+}
+
+/// Slice one Gouraud-shaded triangle into flat-coloured sub-triangles.
+///
+/// The corners carry three colours and the interior is their barycentric blend,
+/// which the display list has no way to express -- so the triangle is diced the
+/// way a gradient is sliced into bands, and each piece takes the colour at its
+/// own centroid. At six steps a triangle becomes thirty-six pieces: twenty-one
+/// pointing the same way as the original and fifteen pointing against it, which
+/// together tile it exactly, with no seam and no overlap.
+fn dice(tri: [Vertex; 3], out: &mut Vec<Band>) {
+    let at = |u: f64, v: f64| -> [f64; 2] {
+        let w = 1.0 - u - v;
+        [
+            u * tri[0].0[0] + v * tri[1].0[0] + w * tri[2].0[0],
+            u * tri[0].0[1] + v * tri[1].0[1] + w * tri[2].0[1],
+        ]
+    };
+    let shade = |u: f64, v: f64| -> [f64; 4] {
+        let w = 1.0 - u - v;
+        let mut c = [0.0; 4];
+        for (k, channel) in c.iter_mut().enumerate() {
+            *channel = u * tri[0].1[k] + v * tri[1].1[k] + w * tri[2].1[k];
+        }
+        c
+    };
+    let n = TRIANGLE_STEPS;
+    let s = 1.0 / n as f64;
+    for i in 0..n {
+        for j in 0..(n - i) {
+            let (u0, u1) = (i as f64 * s, (i + 1) as f64 * s);
+            let (v0, v1) = (j as f64 * s, (j + 1) as f64 * s);
+            out.push(Band {
+                points: vec![at(u0, v0), at(u1, v0), at(u0, v1)],
+                color: shade((2.0 * u0 + u1) / 3.0, (2.0 * v0 + v1) / 3.0),
+            });
+            if i + j + 2 <= n {
+                out.push(Band {
+                    points: vec![at(u1, v0), at(u1, v1), at(u0, v1)],
+                    color: shade((u0 + 2.0 * u1) / 3.0, (v0 + 2.0 * v1) / 3.0),
+                });
+            }
+        }
+    }
+}
+
+/// Slice a free-form (type 4) or lattice-form (type 5) triangle mesh.
+///
+/// Both describe the same surface, written two ways. A free-form mesh gives
+/// every vertex a flag saying which two vertices of the triangle before it this
+/// one joins -- so a strip costs one vertex per triangle rather than three --
+/// and a lattice-form mesh drops the flags entirely, saying instead how many
+/// vertices make a row, with the triangles implied between consecutive rows.
+///
+/// Neither appears anywhere in this project's measurement corpus, so **nothing
+/// here is backed by a score**, and no sweep can be cited for it. That is why
+/// the tests are synthetic and check decoded geometry directly: a corpus that
+/// does not exercise a path cannot be evidence that the path is right, and a
+/// flat sweep after this change means only that the corpus was silent.
+fn triangles(
+    doc: &Document,
+    sh: &Dict,
+    raw: &[u8],
+    matrix: [f64; 6],
+    components: usize,
+    lattice: bool,
+) -> Vec<Band> {
+    let Some(mesh) = Mesh::read(doc, sh, raw, components, !lattice) else {
+        return Vec::new();
+    };
+    let mut bits = Bits::new(&mesh.data);
+    let mut out: Vec<Band> = Vec::new();
+
+    if lattice {
+        // `/VerticesPerRow` is what makes a lattice mesh readable at all: with
+        // no flags, the row width is the only thing saying where a row ends.
+        // Two is the narrowest row that has a triangle in it.
+        let per_row = doc
+            .get(sh, "VerticesPerRow")
+            .and_then(|o| o.as_int())
+            .unwrap_or(0);
+        if per_row < 2 {
+            return Vec::new();
+        }
+        let per_row = per_row as usize;
+        let mut previous: Option<Vec<Vertex>> = None;
+        while !bits.done() && out.len() < MAX_PATCH_QUADS {
+            let mut row = Vec::with_capacity(per_row);
+            for _ in 0..per_row {
+                let (Some(p), Some(c)) =
+                    (mesh.point(&mut bits, &matrix), mesh.color(doc, &mut bits))
+                else {
+                    return out;
+                };
+                row.push((p, c));
+            }
+            if let Some(above) = &previous {
+                for i in 0..per_row - 1 {
+                    dice([above[i], above[i + 1], row[i]], &mut out);
+                    dice([above[i + 1], row[i + 1], row[i]], &mut out);
+                    if out.len() >= MAX_PATCH_QUADS {
+                        return out;
+                    }
+                }
+            }
+            previous = Some(row);
+        }
+        return out;
+    }
+
+    // Free-form. `tri` is the triangle last completed; a flag of 1 or 2 keeps
+    // two of its vertices and replaces the third, and a flag of 0 abandons it
+    // and starts a fresh one from this vertex and the next two.
+    let mut tri: Vec<Vertex> = Vec::new();
+    while !bits.done() && out.len() < MAX_PATCH_QUADS {
+        let Some(flag) = bits.take(mesh.flag_bits) else {
+            break;
+        };
+        let (Some(p), Some(c)) = (mesh.point(&mut bits, &matrix), mesh.color(doc, &mut bits))
+        else {
+            break;
+        };
+        bits.align();
+        let vertex = (p, c);
+        if tri.len() == 3 {
+            tri = match flag {
+                1 => vec![tri[1], tri[2], vertex],
+                2 => vec![tri[0], tri[2], vertex],
+                _ => vec![vertex],
+            };
+        } else {
+            // Mid-triangle, where the spec says the flag repeats the one that
+            // opened it. A file that says otherwise is read as continuing
+            // rather than declined: the vertex is present either way.
+            tri.push(vertex);
+        }
+        if tri.len() == 3 {
+            dice([tri[0], tri[1], tri[2]], &mut out);
+        }
+    }
+    out
 }
 
 /// Slice a Coons or tensor patch mesh into small flat-coloured quads.
@@ -380,42 +643,10 @@ fn patches(
     components: usize,
     tensor: bool,
 ) -> Vec<Band> {
-    let Ok(data) = decode_stream(sh, raw) else {
+    let Some(mesh) = Mesh::read(doc, sh, raw, components, true) else {
         return Vec::new();
     };
-    let int = |key: &str| {
-        doc.get(sh, key)
-            .and_then(|o| o.as_int())
-            .map(|v| v as usize)
-    };
-    let (Some(coord_bits), Some(comp_bits), Some(flag_bits)) = (
-        int("BitsPerCoordinate"),
-        int("BitsPerComponent"),
-        int("BitsPerFlag"),
-    ) else {
-        return Vec::new();
-    };
-    let decode: Vec<f64> = doc
-        .get(sh, "Decode")
-        .and_then(|o| {
-            o.as_array()
-                .map(|a| a.iter().filter_map(|v| doc.resolve(v).as_f64()).collect())
-        })
-        .unwrap_or_default();
-    // A `/Function` maps one parametric value to a colour; without it each
-    // corner carries its colour components directly.
-    let function = doc.get(sh, "Function");
-    let per_corner = match function.is_some() {
-        true => 1,
-        false => components,
-    };
-    if decode.len() < 4 + per_corner * 2 || coord_bits > 32 || comp_bits > 32 {
-        return Vec::new();
-    }
-
-    let coord_max = ((1u64 << coord_bits) - 1) as f64;
-    let comp_max = ((1u64 << comp_bits) - 1) as f64;
-    let mut bits = Bits::new(&data);
+    let mut bits = Bits::new(&mesh.data);
     let mut out: Vec<Band> = Vec::new();
     // The previous patch's boundary and corner colours. A mesh is written as a
     // strip: every patch after the first names which edge of the one before it
@@ -423,7 +654,7 @@ fn patches(
     let mut prev: Option<Patch> = None;
 
     while !bits.done() && out.len() < MAX_PATCH_QUADS {
-        let Some(flag) = bits.take(flag_bits) else {
+        let Some(flag) = bits.take(mesh.flag_bits) else {
             break;
         };
         let shared = flag != 0 && prev.is_some();
@@ -437,28 +668,17 @@ fn patches(
 
         let mut read = Vec::with_capacity(new_points);
         for _ in 0..new_points {
-            let (Some(xr), Some(yr)) = (bits.take(coord_bits), bits.take(coord_bits)) else {
+            let Some(p) = mesh.point(&mut bits, &matrix) else {
                 return out;
             };
-            let x = decode[0] + (xr as f64 / coord_max) * (decode[1] - decode[0]);
-            let y = decode[2] + (yr as f64 / coord_max) * (decode[3] - decode[2]);
-            read.push(point(&matrix, x, y));
+            read.push(p);
         }
         let mut colors = Vec::with_capacity(new_colors);
         for _ in 0..new_colors {
-            let mut v = Vec::with_capacity(per_corner);
-            for k in 0..per_corner {
-                let Some(cr) = bits.take(comp_bits) else {
-                    return out;
-                };
-                let (lo, hi) = (decode[4 + k * 2], decode[5 + k * 2]);
-                v.push(lo + (cr as f64 / comp_max) * (hi - lo));
-            }
-            let rgb = match &function {
-                Some(f) => to_rgb(&eval(doc, f, v[0], components).unwrap_or_default()),
-                None => to_rgb(&v),
+            let Some(c) = mesh.color(doc, &mut bits) else {
+                return out;
             };
-            colors.push(rgb);
+            colors.push(c);
         }
 
         // The twelve boundary points, clockwise from the first corner, with the
@@ -830,8 +1050,11 @@ mod tests {
     fn an_unsupported_shading_paints_nothing() {
         let doc = Document::empty();
         let mut sh: Dict = Default::default();
-        // Type 4: a mesh, deliberately not implemented.
-        sh.insert("ShadingType".into(), Object::Int(4));
+        // Type 1: the function-based shading, the one type still declined.
+        // This used to name type 4, which is now drawn -- a test asserting an
+        // absence has to be re-pointed when the absence is filled, or it goes
+        // on passing while asserting nothing.
+        sh.insert("ShadingType".into(), Object::Int(1));
         sh.insert("Function".into(), Object::Int(0));
         assert!(
             bands(
@@ -839,6 +1062,304 @@ mod tests {
                 &sh,
                 [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 10.0, 10.0]
+            )
+            .is_empty()
+        );
+    }
+
+    /// Pack bytes for a mesh with 8-bit coordinates and 8-bit components.
+    ///
+    /// Eight bits everywhere means one vertex is a whole number of bytes
+    /// already, so a type 4's padding is invisible here. That is deliberate:
+    /// these tests are about the triangle topology, and the padding gets its
+    /// own test below where it can actually be wrong.
+    fn mesh_dict(kind: i64, decode_hi: f64) -> Dict {
+        let mut sh: Dict = Default::default();
+        sh.insert("ShadingType".into(), Object::Int(kind));
+        sh.insert("ColorSpace".into(), Object::Name("DeviceRGB".into()));
+        sh.insert("BitsPerCoordinate".into(), Object::Int(8));
+        sh.insert("BitsPerComponent".into(), Object::Int(8));
+        sh.insert("BitsPerFlag".into(), Object::Int(8));
+        sh.insert(
+            "Decode".into(),
+            Object::Array(vec![
+                Object::Real(0.0),
+                Object::Real(decode_hi),
+                Object::Real(0.0),
+                Object::Real(decode_hi),
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+                Object::Real(0.0),
+                Object::Real(1.0),
+            ]),
+        );
+        sh
+    }
+
+    /// The bounding box of every point a set of bands covers.
+    fn extent(bands: &[Band]) -> [f64; 4] {
+        let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        for band in bands {
+            for p in &band.points {
+                r[0] = r[0].min(p[0]);
+                r[1] = r[1].min(p[1]);
+                r[2] = r[2].max(p[0]);
+                r[3] = r[3].max(p[1]);
+            }
+        }
+        r
+    }
+
+    /// A free-form triangle mesh is drawn, and drawn where it says.
+    ///
+    /// One triangle with red, green and blue corners over (0,0)-(255,255).
+    /// The check that matters is the extent: a mis-read of the bit packing
+    /// still produces bands, just in the wrong place, so counting them proves
+    /// nothing on its own.
+    #[test]
+    fn a_free_form_triangle_mesh_is_drawn() {
+        let doc = Document::empty();
+        let sh = mesh_dict(4, 255.0);
+        #[rustfmt::skip]
+        let data: Vec<u8> = vec![
+            0,   0,   0, 255,   0,   0,
+            0, 255,   0,   0, 255,   0,
+            0, 128, 255,   0,   0, 255,
+        ];
+        let out = bands_of(
+            &doc,
+            &sh,
+            &data,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 255.0, 255.0],
+        );
+        assert_eq!(out.len(), TRIANGLE_STEPS * TRIANGLE_STEPS, "{}", out.len());
+        let r = extent(&out);
+        assert!(r[0].abs() < 1e-6 && r[1].abs() < 1e-6, "{r:?}");
+        assert!(
+            (r[2] - 255.0).abs() < 1e-6 && (r[3] - 255.0).abs() < 1e-6,
+            "{r:?}"
+        );
+        // The corner colours survive the barycentric blend: some piece is
+        // mostly red and some piece is mostly blue.
+        assert!(out.iter().any(|b| b.color[0] > 0.7 && b.color[2] < 0.3));
+        assert!(out.iter().any(|b| b.color[2] > 0.7 && b.color[0] < 0.3));
+    }
+
+    /// A flag of 1 grows the next triangle from the previous one's second edge.
+    ///
+    /// Two triangles from four vertices rather than six is the whole point of
+    /// the free-form encoding, so a reader that ignores the flag and starts a
+    /// fresh triangle every three vertices produces one triangle here and looks
+    /// like it works.
+    #[test]
+    fn a_flagged_vertex_continues_the_previous_triangle() {
+        let doc = Document::empty();
+        let sh = mesh_dict(4, 255.0);
+        #[rustfmt::skip]
+        let data: Vec<u8> = vec![
+            0,   0,   0, 255,   0,   0,
+            0, 255,   0,   0, 255,   0,
+            0,   0, 255,   0,   0, 255,
+            1, 255, 255, 255, 255,   0,
+        ];
+        let out = bands_of(
+            &doc,
+            &sh,
+            &data,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 255.0, 255.0],
+        );
+        assert_eq!(
+            out.len(),
+            2 * TRIANGLE_STEPS * TRIANGLE_STEPS,
+            "one vertex should have added a whole second triangle, got {}",
+            out.len()
+        );
+    }
+
+    /// A lattice mesh reads its rows and stitches two triangles per cell.
+    ///
+    /// Three columns by two rows is one row-pair and two cells, so four
+    /// triangles. A reader that mistakes `/VerticesPerRow` for a triangle count
+    /// gets a different number and a sheared quad.
+    #[test]
+    fn a_lattice_triangle_mesh_is_drawn() {
+        let doc = Document::empty();
+        let mut sh = mesh_dict(5, 255.0);
+        sh.remove("BitsPerFlag");
+        sh.insert("VerticesPerRow".into(), Object::Int(3));
+        #[rustfmt::skip]
+        let data: Vec<u8> = vec![
+              0,   0, 255,   0,   0,
+            128,   0,   0, 255,   0,
+            255,   0,   0,   0, 255,
+              0, 255, 255, 255,   0,
+            128, 255,   0, 255, 255,
+            255, 255, 255,   0, 255,
+        ];
+        let out = bands_of(
+            &doc,
+            &sh,
+            &data,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 255.0, 255.0],
+        );
+        assert_eq!(
+            out.len(),
+            4 * TRIANGLE_STEPS * TRIANGLE_STEPS,
+            "two cells between two rows is four triangles, got {}",
+            out.len()
+        );
+        let r = extent(&out);
+        assert!(r[0].abs() < 1e-6 && r[1].abs() < 1e-6, "{r:?}");
+        assert!(
+            (r[2] - 255.0).abs() < 1e-6 && (r[3] - 255.0).abs() < 1e-6,
+            "{r:?}"
+        );
+    }
+
+    /// A lattice mesh with no usable `/VerticesPerRow` paints nothing.
+    ///
+    /// Without it there is no way to know where a row ends, and guessing a
+    /// width draws a shape the document never described.
+    #[test]
+    fn a_lattice_mesh_without_a_row_width_paints_nothing() {
+        let doc = Document::empty();
+        let mut sh = mesh_dict(5, 255.0);
+        sh.remove("BitsPerFlag");
+        let data = vec![0u8; 64];
+        assert!(
+            bands_of(
+                &doc,
+                &sh,
+                &data,
+                [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 255.0, 255.0]
+            )
+            .is_empty()
+        );
+        sh.insert("VerticesPerRow".into(), Object::Int(1));
+        assert!(
+            bands_of(
+                &doc,
+                &sh,
+                &data,
+                [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 255.0, 255.0]
+            )
+            .is_empty()
+        );
+    }
+
+    /// A free-form mesh pads each vertex to a byte; a lattice mesh does not.
+    ///
+    /// This is the one place the two readers genuinely differ, and it is
+    /// invisible whenever the field widths happen to be byte multiples -- which
+    /// is why every other test here uses eight bits and this one uses four. A
+    /// vertex is a 4-bit flag plus two 4-bit coordinates plus three 4-bit
+    /// components: 24 bits, which is already whole bytes for type 4 only
+    /// because the flag is counted. Drop the flag, as a lattice mesh does, and
+    /// the vertex is 20 bits, so the second vertex of a lattice row starts
+    /// mid-byte. A reader that aligned both would read the second row's
+    /// coordinates from padding and place the mesh somewhere else entirely.
+    #[test]
+    fn a_lattice_mesh_does_not_pad_its_vertices() {
+        let doc = Document::empty();
+        let mut sh = mesh_dict(5, 15.0);
+        sh.remove("BitsPerFlag");
+        sh.insert("BitsPerCoordinate".into(), Object::Int(4));
+        sh.insert("BitsPerComponent".into(), Object::Int(4));
+        sh.insert("VerticesPerRow".into(), Object::Int(2));
+        // Four vertices, 20 bits each, packed end to end: 80 bits = 10 bytes.
+        // (0,0) (15,0) / (0,15) (15,15), every colour full white.
+        let mut packed: Vec<u8> = Vec::new();
+        let mut acc: u32 = 0;
+        let mut held = 0usize;
+        let push = |v: u32, w: usize, packed: &mut Vec<u8>, acc: &mut u32, held: &mut usize| {
+            *acc = (*acc << w) | v;
+            *held += w;
+            while *held >= 8 {
+                packed.push((*acc >> (*held - 8)) as u8);
+                *held -= 8;
+                *acc &= (1 << *held) - 1;
+            }
+        };
+        for (x, y) in [(0u32, 0u32), (15, 0), (0, 15), (15, 15)] {
+            push(x, 4, &mut packed, &mut acc, &mut held);
+            push(y, 4, &mut packed, &mut acc, &mut held);
+            for _ in 0..3 {
+                push(15, 4, &mut packed, &mut acc, &mut held);
+            }
+        }
+        assert_eq!(held, 0, "the packing should land on a byte boundary");
+        assert_eq!(packed.len(), 10);
+        let out = bands_of(
+            &doc,
+            &sh,
+            &packed,
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 15.0, 15.0],
+        );
+        assert_eq!(out.len(), 2 * TRIANGLE_STEPS * TRIANGLE_STEPS);
+        let r = extent(&out);
+        assert!(
+            r[0].abs() < 1e-6
+                && r[1].abs() < 1e-6
+                && (r[2] - 15.0).abs() < 1e-6
+                && (r[3] - 15.0).abs() < 1e-6,
+            "unpadded rows should span the full square, got {r:?}"
+        );
+    }
+
+    /// Malformed triangle meshes terminate, and stay inside their budget.
+    ///
+    /// The cases that hang rather than fail: a zero `/BitsPerFlag`, which read
+    /// as "a value of no bits" consumes nothing per iteration, and a lattice
+    /// row wide enough that one row exhausts the stream.
+    #[test]
+    fn malformed_triangle_meshes_terminate_within_bounds() {
+        let doc = Document::empty();
+        let mut noise = vec![0u8; 40_000];
+        let mut x: u32 = 0x12345678;
+        for b in noise.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        for kind in [4, 5] {
+            for flag_bits in [0, 1, 8, 33] {
+                let mut sh = mesh_dict(kind, 255.0);
+                sh.insert("BitsPerFlag".into(), Object::Int(flag_bits));
+                sh.insert("VerticesPerRow".into(), Object::Int(3));
+                let out = bands_of(
+                    &doc,
+                    &sh,
+                    &noise,
+                    [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 255.0, 255.0],
+                );
+                assert!(
+                    out.len() <= MAX_PATCH_QUADS + 2 * TRIANGLE_STEPS * TRIANGLE_STEPS,
+                    "type {kind} with {flag_bits} flag bits produced {}",
+                    out.len()
+                );
+            }
+        }
+        // A row wider than the stream can fill must not loop forever.
+        let mut sh = mesh_dict(5, 255.0);
+        sh.remove("BitsPerFlag");
+        sh.insert("VerticesPerRow".into(), Object::Int(1_000_000));
+        assert!(
+            bands_of(
+                &doc,
+                &sh,
+                &noise,
+                [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 255.0, 255.0]
             )
             .is_empty()
         );

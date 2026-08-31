@@ -2180,6 +2180,77 @@ fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderO
     ops
 }
 
+/// What the soft-mask paths actually met, counted rather than assumed.
+///
+/// Soft masking is the one part of this engine where a change can be correct,
+/// ship, and move nothing -- because the branch never runs. That has already
+/// happened once here: masking images inside a transparency group was built,
+/// measured at zero across the corpus, probed, found to fire **zero** times in
+/// sixty documents, and reverted. The lesson kept was to ask how often a path
+/// is reached *before* writing the code that walks it, and this is what does
+/// the asking.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SoftMaskCensus {
+    /// A `gs` named an `/SMask` dictionary.
+    pub seen: usize,
+    /// Declined for not being `/Luminosity` -- an alpha mask, which nothing
+    /// here records coverage for.
+    pub not_luminosity: usize,
+    /// The mask's group ran and painted nothing at all. Genuinely empty.
+    pub group_empty: usize,
+    /// The mask's group painted, but with no fills -- so it evaluated to no
+    /// regions and the mask was dropped. **This is the fixable case:** the
+    /// mask is real and is being thrown away for being drawn the wrong way.
+    pub group_had_no_fills: usize,
+    /// Of those, how many painted with text, and how many with an image.
+    pub group_text_only: usize,
+    pub group_image_only: usize,
+    /// A mask was built and has regions.
+    pub built: usize,
+    /// Of those, built by sampling the images the mask's group drew rather
+    /// than from its fills.
+    pub built_from_images: usize,
+    /// A masked transparency group was composited.
+    pub groups_masked: usize,
+    /// Ops inside a masked group that passed through at full strength because
+    /// only fills are split. The second fixable case.
+    pub unmasked_text_ops: usize,
+    pub unmasked_image_ops: usize,
+    pub unmasked_stroke_ops: usize,
+    /// A masked group whose fills-times-regions exceeded the budget, so the
+    /// whole group went through unmasked.
+    pub over_budget: usize,
+}
+
+thread_local! {
+    static CENSUS: std::cell::Cell<SoftMaskCensus> =
+        const { std::cell::Cell::new(SoftMaskCensus {
+            seen: 0, not_luminosity: 0, group_empty: 0, group_had_no_fills: 0,
+            group_text_only: 0, group_image_only: 0, built: 0, built_from_images: 0,
+            groups_masked: 0,
+            unmasked_text_ops: 0, unmasked_image_ops: 0, unmasked_stroke_ops: 0,
+            over_budget: 0,
+        }) };
+}
+
+fn tally(f: impl FnOnce(&mut SoftMaskCensus)) {
+    CENSUS.with(|c| {
+        let mut v = c.get();
+        f(&mut v);
+        c.set(v);
+    });
+}
+
+/// Read the running total for this thread.
+pub fn soft_mask_census() -> SoftMaskCensus {
+    CENSUS.with(|c| c.get())
+}
+
+/// Zero the running total for this thread.
+pub fn reset_soft_mask_census() {
+    CENSUS.with(|c| c.set(SoftMaskCensus::default()));
+}
+
 /// A luminosity mask, evaluated: device-space regions and the coverage each
 /// gives. Shared rather than copied, because `q` saves it on every push.
 type SoftMask = std::rc::Rc<Vec<(Vec<[f64; 2]>, f64)>>;
@@ -2191,24 +2262,228 @@ type SoftMask = std::rc::Rc<Vec<(Vec<[f64; 2]>, f64)>>;
 /// tens of thousands.
 const MAX_MASKED_PIECES: usize = 8192;
 
+/// How finely an image-drawn mask is sampled: `N` across and `N` down.
+///
+/// A mask painted with a picture has coverage at every pixel, and the display
+/// list has no way to say that -- so it is sliced into cells of constant
+/// coverage, the same move this engine already makes for a gradient and for a
+/// mesh. Sixteen is chosen against the budget rather than against the eye:
+/// every fill under the mask is cut once per cell, and at 256 cells a group of
+/// thirty-two fills still fits inside `MAX_MASKED_PIECES`.
+const MASK_GRID: usize = 16;
+
+/// Below this spread across the sampled cells, a mask is treated as flat.
+///
+/// A mask image that is very nearly one tone is not a gradient; it is an
+/// opacity. Emitting 256 cells for it would cost every fill under it 255
+/// needless pieces to say what one region says.
+const MASK_FLAT: f64 = 0.02;
+
+/// The largest mask image worth decoding, in pixels.
+///
+/// The whole image is materialised to sample it, so this is a memory bound
+/// rather than a quality one. A mask is sampled at 16x16 in the end; nothing
+/// above a few megapixels can change the answer.
+const MAX_MASK_PIXELS: usize = 16_000_000;
+
+/// An image's coverage as 8-bit luminance, row-major, top row first.
+///
+/// Luminance *times alpha*: a luminosity mask composites its group over a black
+/// backdrop, so a pixel the group never painted is black and masks everything
+/// out. Reading only the colour would make a transparent pixel as opaque as a
+/// white one.
+fn image_coverage(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let (w, h) = (
+        doc.get(d, "Width").and_then(|o| o.as_int())? as usize,
+        doc.get(d, "Height").and_then(|o| o.as_int())? as usize,
+    );
+    if w == 0 || h == 0 || w.saturating_mul(h) > MAX_MASK_PIXELS {
+        return None;
+    }
+    let (format, iw, ih, bytes) = image_to_rgba(doc, d, raw)?;
+    let (iw, ih) = (iw as usize, ih as usize);
+    match format.as_str() {
+        "rgba" => {
+            if bytes.len() < iw * ih * 4 {
+                return None;
+            }
+            let coverage = bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| {
+                    let luma = crate::shading::luminosity([
+                        p[0] as f64 / 255.0,
+                        p[1] as f64 / 255.0,
+                        p[2] as f64 / 255.0,
+                        1.0,
+                    ]);
+                    (luma * p[3] as f64).round().clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            Some((iw, ih, coverage))
+        }
+        // `image_to_rgba` hands JPEG bytes on undecoded, because a browser
+        // decodes them natively and a display list only has to name them. A
+        // mask is not drawn, it is read, so here the pixels are needed.
+        "jpeg" => {
+            let image = crate::image::jpeg::decode(&bytes)?;
+            let (jw, jh) = (image.width as usize, image.height as usize);
+            if image.rgb.len() < jw * jh * 3 {
+                return None;
+            }
+            let coverage = image
+                .rgb
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|p| {
+                    crate::shading::luminosity([
+                        p[0] as f64 / 255.0,
+                        p[1] as f64 / 255.0,
+                        p[2] as f64 / 255.0,
+                        1.0,
+                    ])
+                    .mul_add(255.0, 0.5)
+                    .clamp(0.0, 255.0) as u8
+                })
+                .collect();
+            Some((jw, jh, coverage))
+        }
+        _ => None,
+    }
+}
+
+/// Turn the images a mask's group painted into regions of constant coverage.
+///
+/// This is the common case by a wide margin, and it was the one being thrown
+/// away. Counted over 270 documents: of 46 soft masks, 36 are declined here --
+/// every one of them because the mask is drawn with a picture rather than with
+/// fills. A grayscale image is simply how every drawing tool exports a graded
+/// mask, so "only fills are read" declined the majority of the masks that
+/// exist.
+///
+/// The grid is walked in the image's own unit square and mapped out to device
+/// space, rather than the other way round. That costs nothing and means a mask
+/// placed with a rotation or a shear is sampled correctly instead of needing
+/// the placement inverted.
+fn regions_from_images(
+    doc: &Document,
+    resources: &Dict,
+    ops: &[RenderOp],
+    depth: usize,
+) -> Vec<(Vec<[f64; 2]>, f64)> {
+    let mut xobjects: Dict = Default::default();
+    collect_image_xobjects(doc, resources, &mut xobjects, depth);
+    let mut out: Vec<(Vec<[f64; 2]>, f64)> = Vec::new();
+    for op in ops {
+        let RenderOp::Image {
+            x,
+            y,
+            w,
+            h,
+            name,
+            mat,
+            ..
+        } = op
+        else {
+            continue;
+        };
+        let Some(Object::Stream(d, raw)) = xobjects.get(name).map(|o| doc.resolve(o)) else {
+            continue;
+        };
+        let Some((src_w, src_h, coverage)) = image_coverage(doc, &d, &raw) else {
+            continue;
+        };
+
+        // The unit square's linear part, and the translation that puts its
+        // bounding box back where the op says it is. `mat` carries only
+        // `[a b c d]`; `x`/`y` are the box, so the offset follows from both.
+        let [a, b, c, dd] = mat.unwrap_or([*w, 0.0, 0.0, *h]);
+        let xs = [0.0, a, c, a + c];
+        let ys = [0.0, b, dd, b + dd];
+        let e = x - xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let f = y - ys.iter().cloned().fold(f64::INFINITY, f64::min);
+        let device = |u: f64, v: f64| [a * u + c * v + e, b * u + dd * v + f];
+
+        // Average over each cell's footprint rather than picking its centre
+        // pixel: a single sample from a dithered or noisy mask reads as
+        // speckle, and the cells are large enough for that to show.
+        let step = 1.0 / MASK_GRID as f64;
+        let mut cells = Vec::with_capacity(MASK_GRID * MASK_GRID);
+        for i in 0..MASK_GRID {
+            for j in 0..MASK_GRID {
+                let (u0, u1) = (i as f64 * step, (i + 1) as f64 * step);
+                let (v0, v1) = (j as f64 * step, (j + 1) as f64 * step);
+                let mut total = 0.0;
+                let mut taken = 0.0;
+                for su in 0..4 {
+                    for sv in 0..4 {
+                        let u = u0 + (su as f64 + 0.5) / 4.0 * step;
+                        let v = v0 + (sv as f64 + 0.5) / 4.0 * step;
+                        // Image space runs down from the top row; the unit
+                        // square runs up from the bottom edge.
+                        let col = ((u * src_w as f64) as usize).min(src_w - 1);
+                        let row = (((1.0 - v) * src_h as f64) as usize).min(src_h - 1);
+                        total += coverage[row * src_w + col] as f64 / 255.0;
+                        taken += 1.0;
+                    }
+                }
+                cells.push((u0, u1, v0, v1, total / taken));
+            }
+        }
+
+        let lo = cells.iter().map(|c| c.4).fold(f64::INFINITY, f64::min);
+        let hi = cells.iter().map(|c| c.4).fold(f64::NEG_INFINITY, f64::max);
+        if hi - lo <= MASK_FLAT {
+            out.push((
+                vec![
+                    device(0.0, 0.0),
+                    device(1.0, 0.0),
+                    device(1.0, 1.0),
+                    device(0.0, 1.0),
+                ],
+                (lo + hi) / 2.0,
+            ));
+            continue;
+        }
+        for (u0, u1, v0, v1, value) in cells {
+            out.push((
+                vec![
+                    device(u0, v0),
+                    device(u1, v0),
+                    device(u1, v1),
+                    device(u0, v1),
+                ],
+                value,
+            ));
+        }
+    }
+    out
+}
+
 /// Evaluate a luminosity mask into device-space regions and their coverage.
 ///
 /// The mask's group is a form, so it is run the way any form is run, and
-/// whatever it filled becomes the mask: brightness is coverage. Only fills are
-/// read. A mask drawn with text or an image cannot be turned into regions this
-/// way, and returning nothing for it means the content paints unmasked -- which
-/// is what happened before any of this existed.
+/// whatever it painted becomes the mask: brightness is coverage. Fills give
+/// their regions directly; a group that painted no fills is sampled from the
+/// images it drew instead, which is how the majority of real masks are written
+/// (see [`regions_from_images`]). A mask drawn only with text still cannot be
+/// turned into regions, and returning nothing for it means the content paints
+/// unmasked -- which is what happened before any of this existed.
 fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Option<SoftMask> {
     if depth >= MAX_FORM_DEPTH {
         return None;
     }
     // An alpha mask takes coverage from the group's alpha rather than its
     // colour, and nothing here records alpha per region.
+    tally(|c| c.seen += 1);
     if doc
         .get(mask, "S")
         .and_then(|o| o.as_name().map(String::from))
         != Some("Luminosity".into())
     {
+        tally(|c| c.not_luminosity += 1);
         return None;
     }
     let Object::Stream(dict, raw) = doc.get(mask, "G").map(|o| doc.resolve(&o))? else {
@@ -2229,21 +2504,50 @@ fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Op
         depth + 1,
         &FormState::default(),
     );
-    let regions: Vec<(Vec<[f64; 2]>, f64)> = ops
-        .into_iter()
+    let (text, images) = (
+        ops.iter()
+            .filter(|o| matches!(o, RenderOp::Text { .. }))
+            .count(),
+        ops.iter()
+            .filter(|o| matches!(o, RenderOp::Image { .. }))
+            .count(),
+    );
+    let mut regions: Vec<(Vec<[f64; 2]>, f64)> = ops
+        .iter()
         .filter_map(|op| match op {
             RenderOp::Fill {
                 subpaths, color, ..
             } => subpaths
-                .into_iter()
+                .iter()
                 .find(|p| p.len() >= 3)
-                .map(|p| (p, crate::shading::luminosity(color))),
+                .map(|p| (p.clone(), crate::shading::luminosity(*color))),
             _ => None,
         })
         .collect();
+    // Fills first: where a mask has them they are exact, and sampling an image
+    // is an approximation taken only because there is nothing better.
+    if regions.is_empty() && images > 0 {
+        regions = regions_from_images(doc, &resources, &ops, depth + 1);
+        if !regions.is_empty() {
+            tally(|c| c.built_from_images += 1);
+        }
+    }
     if regions.is_empty() {
+        tally(|c| match (text, images) {
+            (0, 0) => c.group_empty += 1,
+            (_, 0) => {
+                c.group_had_no_fills += 1;
+                c.group_text_only += 1;
+            }
+            (0, _) => {
+                c.group_had_no_fills += 1;
+                c.group_image_only += 1;
+            }
+            _ => c.group_had_no_fills += 1,
+        });
         return None;
     }
+    tally(|c| c.built += 1);
     Some(std::rc::Rc::new(regions))
 }
 
@@ -2262,7 +2566,23 @@ fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec
         .iter()
         .filter(|op| matches!(op, RenderOp::Fill { .. }))
         .count();
+    tally(|c| {
+        c.groups_masked += 1;
+        c.unmasked_text_ops += ops
+            .iter()
+            .filter(|o| matches!(o, RenderOp::Text { .. }))
+            .count();
+        c.unmasked_image_ops += ops
+            .iter()
+            .filter(|o| matches!(o, RenderOp::Image { .. }))
+            .count();
+        c.unmasked_stroke_ops += ops
+            .iter()
+            .filter(|o| matches!(o, RenderOp::Stroke { .. }))
+            .count();
+    });
     if fills.saturating_mul(mask.len()) > MAX_MASKED_PIECES {
+        tally(|c| c.over_budget += 1);
         return ops;
     }
     let mut out = Vec::with_capacity(ops.len());
@@ -7491,6 +7811,139 @@ startxref
         assert!(
             ops.iter().any(|op| matches!(op, RenderOp::Clip { .. })),
             "the pattern must be clipped to the path it filled: {ops:?}"
+        );
+    }
+
+    /// A page whose transparency group is masked by a grayscale image.
+    ///
+    /// `samples` becomes a `width`-by-1 DeviceGray image, which is the mask;
+    /// the group under it fills the page blue. Built as bytes rather than as a
+    /// formatted string because image samples are binary and most of the
+    /// interesting ones are not printable.
+    fn page_masked_by_image(samples: &[u8]) -> Vec<u8> {
+        const CONTENT: &str = "/GS0 gs /Fm0 Do";
+        const MASK: &str = "q 100 0 0 100 0 0 cm /Im0 Do Q";
+        const GROUP: &str = "0 0 1 rg 0 0 100 100 re f";
+        let mut pdf: Vec<u8> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.5\n");
+        pdf.extend_from_slice(b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+        pdf.extend_from_slice(b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R\
+/Resources<</ExtGState<</GS0<</SMask<</S/Luminosity/G 5 0 R>>>>>>/XObject<</Fm0 6 0 R>>>>>>endobj\n",
+        );
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                CONTENT.len(),
+                CONTENT
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Group<</S/Transparency>>\
+/Resources<</XObject<</Im0 7 0 R>>>>/Length {}>>stream\n{}\nendstream endobj\n",
+                MASK.len(),
+                MASK
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 100 100]/Group<</S/Transparency>>\
+/Length {}>>stream\n{}\nendstream endobj\n",
+                GROUP.len(),
+                GROUP
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            format!(
+                "7 0 obj<</Type/XObject/Subtype/Image/Width {}/Height 1/ColorSpace/DeviceGray\
+/BitsPerComponent 8/Length {}>>stream\n",
+                samples.len(),
+                samples.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(samples);
+        pdf.extend_from_slice(b"\nendstream endobj\nstartxref\n0\n%%EOF");
+        pdf
+    }
+
+    /// A luminosity mask drawn with an image is read, not thrown away.
+    ///
+    /// This is the shape almost every real soft mask has: a drawing tool
+    /// exports a graded mask as a grayscale picture, not as a stack of filled
+    /// paths. Counting them across 270 documents, 36 of 46 masks were being
+    /// declined for exactly this, and the content under each one painted at
+    /// full strength -- the safe direction, and the wrong one.
+    #[test]
+    fn a_mask_drawn_with_an_image_is_read() {
+        let pdf = page_masked_by_image(&[0, 85, 170, 255]);
+        let ops = extract_display_list(&pdf, 1).expect("a display list").ops;
+        let fills: Vec<[f64; 4]> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            fills.len() > 100,
+            "the mask should have cut the fill into cells, got {}",
+            fills.len()
+        );
+        assert!(
+            fills.iter().all(|c| c[2] > 0.9 && c[0] < 0.1),
+            "the group's own blue is what is masked, not some other colour"
+        );
+        let lo = fills.iter().map(|c| c[3]).fold(f64::INFINITY, f64::min);
+        let hi = fills.iter().map(|c| c[3]).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            lo < 0.4 && hi > 0.9,
+            "a graded mask should give graded alpha, got {lo} to {hi}"
+        );
+    }
+
+    /// A mask image of one flat tone becomes one region, not two hundred.
+    ///
+    /// An unvarying mask is an opacity, and saying so with a grid of identical
+    /// cells costs every fill under it a piece per cell to express a single
+    /// number.
+    #[test]
+    fn a_flat_mask_image_is_not_sliced() {
+        let pdf = page_masked_by_image(&[255, 255, 255, 255]);
+        let ops = extract_display_list(&pdf, 1).expect("a display list").ops;
+        let fills: Vec<[f64; 4]> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills.len(), 1, "one tone is one region: {fills:?}");
+        assert!(
+            fills[0][3] > 0.95,
+            "a white mask hides nothing: {:?}",
+            fills[0]
+        );
+    }
+
+    /// A black mask image removes the paint under it entirely.
+    ///
+    /// The direction matters: getting this backwards paints a group that
+    /// should be invisible, which is worse than the old behaviour rather than
+    /// better, and on a page with a full-bleed masked photograph it is the
+    /// difference between a picture and a black rectangle.
+    #[test]
+    fn a_black_mask_image_hides_what_it_covers() {
+        let pdf = page_masked_by_image(&[0, 0, 0, 0]);
+        let ops = extract_display_list(&pdf, 1).expect("a display list").ops;
+        assert!(
+            !ops.iter().any(|op| matches!(op, RenderOp::Fill { .. })),
+            "nothing should survive a fully black luminosity mask: {ops:?}"
         );
     }
 
