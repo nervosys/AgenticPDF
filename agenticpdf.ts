@@ -6897,6 +6897,31 @@ function _formatSrtTime(totalSeconds: number): string {
 
 
 /**
+ * Escape a string so it matches literally inside a regular expression.
+ *
+ * Anything taken from a document is attacker-controlled, and interpolating it
+ * into a pattern hands the attacker the regex engine: metacharacters change
+ * what is matched, an unbalanced bracket throws where nothing catches it, and
+ * a nested quantifier turns a linear scan into a catastrophic one over text
+ * that may be megabytes. Author metadata reaches a pattern this way (CWE-1333).
+ */
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The longest user-supplied regular expression `search()` will compile.
+ *
+ * A bound on the pattern is not a bound on its running time -- `(a+)+$` is
+ * nine characters -- so this is a first line only. The match loop carries a
+ * deadline as well (CWE-1333).
+ */
+const MAX_SEARCH_PATTERN_LENGTH = 1000;
+
+/** How long one `search()` may spend running a user-supplied pattern. */
+const SEARCH_TIME_BUDGET_MS = 2000;
+
+/**
  * Generate a secure random ID string using crypto APIs (CWE-338 mitigation).
  * Falls back to Math.random() only in environments without crypto support.
  */
@@ -13603,12 +13628,24 @@ class PDFSearcher {
     const queryLower = query.toLowerCase();
     let regex: RegExp | null = null;
     if (options?.regex) {
+      if (query.length > MAX_SEARCH_PATTERN_LENGTH) {
+        throw new Error(
+          `Regex pattern exceeds ${MAX_SEARCH_PATTERN_LENGTH} characters`
+        );
+      }
       try {
         regex = new RegExp(query, options.caseSensitive ? 'g' : 'gi');
       } catch {
         throw new Error(`Invalid regex pattern: ${query}`);
       }
     }
+
+    // A deadline rather than a pattern analysis. Whether a regex backtracks
+    // catastrophically is not something a length check can decide, and the
+    // engine cannot be interrupted once inside a single `exec`; what this
+    // bounds is the loop around it, which is where a pattern matching emptily
+    // or near-emptily spends a document's worth of time.
+    const searchDeadline = Date.now() + SEARCH_TIME_BUDGET_MS;
 
     for (const block of text) {
       const content = options?.caseSensitive ? block.text : block.text.toLowerCase();
@@ -13625,6 +13662,12 @@ class PDFSearcher {
             index: match.index,
             length: match[0].length
           });
+          // An empty match does not advance `lastIndex`, so without this a
+          // pattern such as `a*` never terminates.
+          if (match[0].length === 0) regex.lastIndex++;
+          if (Date.now() > searchDeadline) {
+            throw new Error('Regex search exceeded its time budget');
+          }
         }
       } else if (options?.wholeWord) {
         // Whole word search — escape regex special chars in query
@@ -21116,7 +21159,7 @@ class APDFMetadataGenerator {
         const nearText = nameIdx >= 0 ? fullText.slice(searchStart, searchEnd) : '';
 
         // ORCID — look near author name
-        const orcidPattern = new RegExp(firstName + '[\\s\\S]{0,200}(\\d{4}-\\d{4}-\\d{4}-\\d{3}[\\dX])', 'i');
+        const orcidPattern = new RegExp(escapeRegExp(firstName) + '[\\s\\S]{0,200}(\\d{4}-\\d{4}-\\d{4}-\\d{3}[\\dX])', 'i');
         const orcidMatch = fullText.match(orcidPattern);
         if (orcidMatch) author.orcid = orcidMatch[1];
 

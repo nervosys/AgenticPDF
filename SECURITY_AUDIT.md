@@ -1,7 +1,7 @@
 # AgenticPDF — Security Audit Report
 
-> **Audit Date:** 2026-08-26 (Revision 3)  
-> **Previous Audit:** 2026-04-01  
+> **Audit Date:** 2026-08-31 (Revision 4)  
+> **Previous Audit:** 2026-08-26 (Revision 3)  
 > **Version:** 1.0.0  
 > **Auditor:** Automated security analysis + manual code review  
 > **Classification:** UNCLASSIFIED // FOUO  
@@ -14,7 +14,16 @@
 
 AgenticPDF is a zero-dependency, single-file TypeScript PDF processing library with a companion Rust CLI/WASM module and Next.js documentation website. This revision updates the 2026-03-14 audit with new findings from expanded scope (CLI file operations, dev server, website CSP, regex safety, PRNG usage) and verifies all previously identified controls.
 
-**Revision 3 rating: LOW.** Two HIGH advisories exist in the dependency graph
+**Revision 4 rating: LOW.** Every finding this audit has ever raised is now
+closed (§1.3c). Three of the seven were fixed in this revision, and four turned
+out to have been fixed already and carried forward as open by a revision that
+restated them without checking — which is its own lesson about what a findings
+list is worth when it is not re-verified against the source. The remaining
+open items are all owner decisions rather than defects: a breaking Next.js
+major, an ESLint 9 migration, and whether a FIPS-capable build is a product
+requirement.
+
+**Revision 3 rating (retained for history): LOW.** Two HIGH advisories exist in the dependency graph
 and neither is reachable from document input; the crypto surface is larger than
 Revisions 1-2 claimed and is now inventoried honestly; the four decoders added
 by the render-correctness branch are bounded and adversarially tested. The one
@@ -187,6 +196,28 @@ read as end-of-stream.
 | **F-006** | CWE-1333 | **LOW**    | `agenticpdf.ts:13242`                        | ReDoS via user-controlled regex — `searchText()` with `options.regex=true` passes user input directly to `new RegExp()`. A try-catch handles syntax errors, but no complexity/length guard prevents catastrophic backtracking. |
 | **F-007** | CWE-1333 | **LOW**    | `agenticpdf.ts:20754`                        | Unescaped PDF content in regex — `firstName` from parsed author metadata interpolated into `new RegExp()` without escaping. Malicious author names with regex metacharacters could cause unexpected matching or ReDoS.         |
 
+### 1.3c Remediation Status of F-001 - F-007 *(R4)*
+
+Revision 3 published these seven findings without checking which of them were
+still true. Four had already been fixed in the tree; the remaining three were
+open and are now closed. The table below is the current state, verified in the
+source rather than inferred from the earlier text.
+
+| ID | Status | Where it now stands |
+| ----- | -------------- | ------------------------------------------------------------------------------------------------------------------ |
+| F-001 | ✅ **CLOSED** (was already fixed before R4) | `cli.ts:1354` resolves the output directory and appends `path.sep` before the `startsWith` check, so `/data/images-secret/` no longer passes for `/data/images`. |
+| F-002 | ✅ **CLOSED** (was already fixed before R4) | `validateOutputPath()` at `cli.ts:33` confines writes to the working directory and is applied at all ten `writeFileSync` sites - two more than R2 counted. |
+| F-003 | ✅ **FIXED in R4** | `server.cjs` now sends `Content-Security-Policy` alongside the `nosniff`, `X-Frame-Options` and `Referrer-Policy` headers it had gained earlier. |
+| F-004 | ✅ **FIXED in R4** | `website/src/app/layout.tsx` emits a `<meta http-equiv="Content-Security-Policy">`, verified present in `out/index.html` after a build. Two limits are stated in the file rather than glossed: `frame-ancestors` is ignored in meta form, and a static export cannot mint per-request nonces, so `script-src` must permit `'unsafe-inline'`. This is a floor, not a substitute for hosting-provider headers. |
+| F-005 | ✅ **CLOSED** (was already fixed before R4) | ID generation uses `crypto.getRandomValues()` in the browser and `randomBytes()` under Node; `Math.random()` survives only as a last-resort fallback where neither exists, and is documented as such at `agenticpdf.ts:6926`. |
+| F-006 | ✅ **FIXED in R4** | `search()` now rejects patterns over `MAX_SEARCH_PATTERN_LENGTH` (1000), enforces a `SEARCH_TIME_BUDGET_MS` (2000 ms) deadline inside the exec loop, and advances `lastIndex` on a zero-length match so `a*` cannot spin forever. A deadline is the honest guard here: pattern-shape heuristics of the kind R2 suggested reject valid regexes and miss novel catastrophic ones. |
+| F-007 | ✅ **FIXED in R4** | `escapeRegExp()` is applied to `firstName` before it is interpolated into the ORCID pattern. This was the most serious of the seven and the only one where the input is **attacker-controlled**: the name comes from document metadata, so a crafted PDF chose the regex. Verified behaviourally against the real function: `(a+)+$` escapes to a literal, matches the literal text, does not match a long run of `a`, and returns in 0 ms on the input that previously backtracked. |
+
+Two things this revision did **not** do, and will not claim: F-006's budget is
+wall-clock, so a pathological pattern still burns up to two seconds of one
+thread before it is stopped, and the meta CSP in F-004 is weaker than a header
+CSP for the two reasons named above.
+
 ### 1.4 Recommended Fixes
 
 **F-001 / F-002 — CLI Path Traversal (CWE-22)**:
@@ -352,7 +383,7 @@ When implementing PDF encryption support:
 | No custom hashing         | ❌ **CORRECTED (R3)** — SHA-256 and MD5 are implemented in-crate. See §3.1. SHA-256 is verified against FIPS 180-4 vectors; MD5 exists only to derive PDF decryption keys as ISO 32000 specifies.          |
 | No key derivation         | ❌ **CORRECTED (R3)** — the standard security handler's key derivation is implemented (`src/crypt/mod.rs`). It is not PBKDF2/scrypt/Argon2; it is the padded-MD5 construction the PDF format mandates.     |
 | Constant-time operations  | ⚠️ Not implemented, and documented as such at `src/adf/sha256.rs`: it hashes public content with no key, no nonce and no secret-dependent branch. The note explicitly warns against reusing it for HMAC or password hashing without revisiting that. |
-| Random number generation  | ⚠️ **UPDATED** — 5 call sites use `Math.random()` for session/annotation IDs (F-005). Non-cryptographic use, but should migrate to `crypto.getRandomValues()` for FIPS alignment and collision resistance. |
+| Random number generation  | ✅ **RESOLVED (R4)** — IDs are minted from `crypto.getRandomValues()` in the browser and `randomBytes()` under Node (`agenticpdf.ts:6926`). `Math.random()` remains only as a fallback for environments providing neither, and the code says so. F-005 closed. |
 | No certificate validation | ✅ Not applicable until signature support (Phase 19)                                                                                                                                                       |
 
 ---
@@ -521,8 +552,8 @@ DNS rebinding attacks (initial DNS lookup → public IP, subsequent → private 
 | Output format whitelist          | `cli.ts:148`       | ✅ Only allowed formats accepted                   |
 | Chunk size bounds                | `cli.ts:173-180`   | ✅ MIN=100, MAX=10000                              |
 | File extension validation        | `cli.ts:1284-1286` | ✅ MIME-based extension mapping                    |
-| Image output path validation     | `cli.ts:1290-1297` | ⚠️ Incomplete — missing `path.sep` (F-001)         |
-| Text/JSON output path validation | `cli.ts:531+`      | ⚠️ Missing — no validation on 8 call sites (F-002) |
+| Image output path validation     | `cli.ts:1354`      | ✅ **RESOLVED (R4)** — `path.sep`-suffixed check (F-001) |
+| Text/JSON output path validation | `cli.ts:33`        | ✅ **RESOLVED (R4)** — `validateOutputPath()` at all ten sites (F-002) |
 | No command injection             | Full file          | ✅ No `exec()`, `spawn()`, or `child_process`      |
 
 ---
@@ -560,19 +591,19 @@ DNS rebinding attacks (initial DNS lookup → public IP, subsequent → private 
 | Check             | Status            | Notes                                                                     |
 | ----------------- | ----------------- | ------------------------------------------------------------------------- |
 | Path traversal    | ✅ SAFE            | `path.resolve()` + `path.sep` suffix — correct implementation             |
-| Security headers  | ⚠️ MISSING (F-003) | No `X-Content-Type-Options`, `X-Frame-Options`, CSP, or `Referrer-Policy` |
+| Security headers  | ✅ **RESOLVED (R4)** (F-003) | `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and a `Content-Security-Policy` are all sent |
 | CORS              | ✅ SAFE            | No permissive CORS headers set                                            |
 | Open redirects    | ✅ SAFE            | No redirect logic present                                                 |
 | Error disclosure  | ✅ SAFE            | Generic error messages (403, 404, 500) — no stack traces or paths leaked  |
 | Directory listing | ✅ SAFE            | No directory listing capability                                           |
 
-**Note:** `server.cjs` is a development-only static file server, not intended for production. The missing headers finding (F-003) is LOW risk in practice.
+**Note:** `server.cjs` is a development-only static file server, not intended for production. The missing-headers finding (F-003) was LOW risk in practice and is now closed regardless (§1.3c).
 
 ### 8.2 Website (`website/`)
 
 | Check                     | Status                     | Notes                                                                                                                                                                     |
 | ------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CSP headers               | ⚠️ MISSING (F-004)          | No `Content-Security-Policy` in Next.js config or middleware                                                                                                              |
+| CSP headers               | ✅ **RESOLVED (R4)** (F-004) | A `<meta http-equiv="Content-Security-Policy">` is emitted from `website/src/app/layout.tsx` and present in the exported `out/index.html`. Meta form cannot carry `frame-ancestors` and, being a static export, cannot use nonces — hosting-provider headers remain the stronger option. |
 | `dangerouslySetInnerHTML` | ✅ SAFE (context-dependent) | Used in `ui.tsx:38` for Shiki syntax highlighting. Content is server-rendered from hardcoded code strings, NOT user input. **Risk is effectively NONE in current usage.** |
 | Dependencies              | ✅ SAFE                     | All packages current: Next.js 15.3, React 19.1, Shiki 4.0, Tailwind 4.1                                                                                                   |
 | Static export             | ✅ SAFE                     | `output: 'export'` — no server-side routes, no API endpoints, no dynamic content                                                                                          |
@@ -677,17 +708,31 @@ outputs stay in scratch space and are never committed.
 
 ### 11.1 Immediate (Priority: HIGH)
 
-1. **Fix CLI path traversal (F-001, F-002)** — Apply `path.sep`-suffixed `startsWith` check to image extraction. Add `validateOutputPath()` to all 8 `writeFileSync` calls.
-2. **Add security headers to dev server (F-003)** — Set `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`. Low urgency since dev-only.
-3. **Replace `Math.random()` with `crypto` (F-005)** — Migrate 5 call sites to `crypto.getRandomValues()` or `crypto.randomBytes()`.
+**All of R2's immediate and short-term items are now closed** - see §1.3c for
+what each one actually required and where it landed. Items 1-6 are kept with
+their outcomes rather than deleted, because a recommendation list that silently
+loses its entries cannot be audited.
+
+1. ~~Fix CLI path traversal (F-001, F-002)~~ - **done**, and it had been done
+   before R3 wrote it up as open.
+2. ~~Add security headers to dev server (F-003)~~ - **done**, including the CSP
+   that the R2 snippet omitted.
+3. ~~Replace `Math.random()` with `crypto` (F-005)~~ - **done**, with a
+   documented fallback for environments that have no crypto at all.
 
 ### 11.2 Short-Term (Priority: MEDIUM)
 
-4. **Add ReDoS guard to `searchText()` (F-006)** — Limit regex pattern length (200 chars) and reject patterns with known catastrophic backtracking patterns.
-5. **Escape PDF-sourced strings before regex interpolation (F-007)** — Apply `replace(/[.*+?^${}()|[\]\\]/g, '\\$&')` to `firstName` before `new RegExp()`.
-6. **Configure CSP for website (F-004)** — If deploying beyond static hosting, add CSP via Next.js middleware or hosting provider headers.
-7. **Add `npm audit` and `cargo audit` to CI/CD pipeline.**
-8. **Implement npm provenance** signing for published packages.
+4. ~~Add ReDoS guard to `search()` (F-006)~~ - **done**, by length cap and time
+   budget rather than by the pattern-shape heuristic R2 proposed.
+5. ~~Escape PDF-sourced strings before regex interpolation (F-007)~~ - **done**.
+6. ~~Configure CSP for website (F-004)~~ - **done** in meta form; hosting-provider
+   headers remain the stronger option and are still worth adding.
+7. ~~Add `npm audit` and `cargo audit` to CI/CD~~ - **done in R4**:
+   `.github/workflows/ci.yml` gained a website audit step at `--audit-level=high`
+   (the gap that let four HIGH advisories sit unseen, §1.3a), and the two
+   `--ignore` flags in `.github/workflows/rust.yml` now carry the dependency
+   chain and removal condition that make them triage rather than silencing.
+8. **Implement npm provenance** signing for published packages - still open.
 
 ### 11.3 Long-Term (Priority: LOW)
 
@@ -739,6 +784,7 @@ revision.
 ---
 
 *Revision History:*
+- 2026-08-31 (R4): F-001 through F-007 re-checked against the source instead of restated. Four were already closed; F-003, F-004, F-006 and F-007 fixed. Advisory scanning wired into CI for both npm projects, and the `cargo audit` ignores documented.
 - 2026-08-26 (R3): Advisory scanning run for the first time; FIPS section corrected; private-data exposure review added ahead of publishing 91 commits to a public repository.
 - *2026-04-01 (Rev 2): Expanded scope to CLI, dev server, website, SSRF, regex, PRNG. Added findings F-001 through F-007. Updated test counts, dependency audit, CMMC/NIST sections.*
 - *2026-03-14 (Rev 1): Initial audit — CVE, MITRE ATT&CK, NIST FIPS 140-3, CMMC 2.0 Level 2.*

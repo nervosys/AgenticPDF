@@ -44,6 +44,28 @@ jobs:
       # everything else rather than permanently red.
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+      # The two ignores are a triage decision, not a silencing. Recorded here
+      # because an unexplained `--ignore` is indistinguishable from one, and
+      # the next person to read this file deserves to know which it is.
+      #
+      # RUSTSEC-2026-0194 and -0195 are both quick-xml 0.30.0, both 7.5 HIGH,
+      # both denial-of-service. They arrive as:
+      #
+      #   quick-xml <- zbus_xml <- zbus-lockstep <- atspi-common <- atspi
+      #             <- accesskit_unix <- accesskit_winit <- egui-winit
+      #             <- eframe <- apdf-reader
+      #
+      # accesskit_unix is the Linux AT-SPI accessibility backend. It parses
+      # D-Bus introspection XML, never a document: this crate's own XML is a
+      # hand-written parser in src/xml.rs with no quick-xml dependency, so
+      # untrusted input cannot reach the vulnerable code. It is also absent
+      # from every shipped artefact but the Linux desktop build -- not in the
+      # wasm bundle, the Android or iOS libraries, or the CLI elsewhere.
+      #
+      # It cannot be fixed from this repository: the version is pinned
+      # transitively through eframe, and `cargo update` does not move it.
+      # Remove these ignores when an accesskit/eframe release carries
+      # quick-xml >= 0.41. See SECURITY_AUDIT.md section 1.3a.
       - name: Dependency audit
         run: >
           cargo audit

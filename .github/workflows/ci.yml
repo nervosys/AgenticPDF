@@ -42,6 +42,24 @@ jobs:
     - name: Audit production dependencies
       run: npm audit --omit=dev --audit-level=high
 
+    # The website is a second npm project with its own lockfile, and the gate
+    # above cannot see it. That gap was real: while the root reported
+    # production-clean, `website/` was carrying four HIGH advisories -- Next.js
+    # SSRF, a PostCSS path traversal, an unbounded nanoid loop and four
+    # inherited libvips CVEs in sharp. GitHub's Dependabot found them; this
+    # repository's own CI did not, because nothing here had ever run `npm
+    # audit` inside that directory.
+    #
+    # It gates at `high` and it is allowed to fail. The site is a static export
+    # and these are build-time exposures rather than visitor-facing ones, but a
+    # build-time exposure is still how a signed artefact gets poisoned.
+    - name: Audit website dependencies
+      if: matrix.node-version == '20.x'
+      working-directory: website
+      run: |
+        npm ci
+        npm audit --audit-level=high
+
     - name: Run linting
       run: npm run lint
       

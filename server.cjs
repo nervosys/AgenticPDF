@@ -50,7 +50,25 @@ const server = http.createServer((req, res) => {
                 'Content-Type': contentType,
                 'X-Content-Type-Options': 'nosniff',
                 'X-Frame-Options': 'SAMEORIGIN',
-                'Referrer-Policy': 'strict-origin-when-cross-origin'
+                'Referrer-Policy': 'strict-origin-when-cross-origin',
+                // The demos are self-contained: they load no third-party
+                // script, style or font, and they talk to nothing. Saying so
+                // in a policy costs nothing here and means a stray injected
+                // <script src> fails loudly during development rather than
+                // quietly in production. 'unsafe-inline' for style is what
+                // the demo pages' inline styles need; scripts do not get it.
+                'Content-Security-Policy': [
+                    "default-src 'self'",
+                    "script-src 'self'",
+                    "style-src 'self' 'unsafe-inline'",
+                    "img-src 'self' data: blob:",
+                    "font-src 'self' data:",
+                    "connect-src 'self'",
+                    "object-src 'none'",
+                    "base-uri 'none'",
+                    "frame-ancestors 'self'",
+                    "form-action 'self'"
+                ].join('; ')
             });
             res.end(content, 'utf-8');
         }
