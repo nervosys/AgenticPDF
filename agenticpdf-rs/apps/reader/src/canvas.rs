@@ -2508,6 +2508,198 @@ mod render_report {
         );
     }
 
+    /// How many pictures a page decodes, against how many it draws.
+    ///
+    /// `extract_page_textures` decodes every image reachable from a page's
+    /// resource dictionary. For nearly every document that is the same set the
+    /// page draws, and the distinction never mattered. For a catalogue that
+    /// hangs one shared resource dictionary off every page it is not the same
+    /// set at all -- it is the whole document, decoded again for each page --
+    /// and the difference between those two numbers is the difference between
+    /// a page that renders and one that dies asking for memory.
+    ///
+    /// `APDF_RENDER_PDF=<file> [APDF_RENDER_PAGE=n] cargo test --release
+    /// -- --ignored textures_decoded_against_drawn`
+    #[test]
+    #[ignore = "needs one document; run deliberately"]
+    fn textures_decoded_against_drawn() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            eprintln!("set APDF_RENDER_PDF to a document");
+            return;
+        };
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let bytes = std::fs::read(&path).expect("read the document");
+        let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
+        let drawn: std::collections::HashSet<&str> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Image { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let decoded = agenticpdf::engine::extract_page_textures(&bytes, page).unwrap_or_default();
+        let bytes_held: usize = decoded.iter().map(|t| t.rgba.len()).sum();
+        eprintln!(
+            "page {page}: draws {} distinct images, decodes {} of them, {:.1} MB, in {:.1}s",
+            drawn.len(),
+            decoded.len(),
+            bytes_held as f64 / (1 << 20) as f64,
+            started.elapsed().as_secs_f64()
+        );
+        let wasted: usize = decoded
+            .iter()
+            .filter(|t| !drawn.contains(t.name.as_str()))
+            .map(|t| t.rgba.len())
+            .sum();
+        eprintln!(
+            "  {} decoded but never drawn, {:.1} MB",
+            decoded
+                .iter()
+                .filter(|t| !drawn.contains(t.name.as_str()))
+                .count(),
+            wasted as f64 / (1 << 20) as f64
+        );
+    }
+
+    /// A `/Mask` that cannot be turned into samples is counted, not just lost.
+    ///
+    /// This is the guard on a bug that cost the corpus its worst page. An
+    /// image's stencil mask arrived still fax-coded, because `decode_stream`
+    /// passes CCITT through untouched by design; the compressed bytes were far
+    /// too short to be a page of samples, so the mask was abandoned and the
+    /// image painted its own opaque background over the artwork. Nothing said
+    /// so. `images_without_pixels` was satisfied -- the image had pixels -- and
+    /// the page simply had a grey rectangle where a figure belonged.
+    ///
+    /// The decoder gap is closed, and this asserts on the thing that let it
+    /// hide for so long: an abandoned mask now increments a counter, so the
+    /// census can be asked whether it is ever happening rather than assumed
+    /// not to be. Read it with the `soft_masks_reached` diagnostic.
+    #[test]
+    fn an_undecodable_stencil_mask_is_counted() {
+        // A 4x4 image with a /Mask whose stream is one byte -- far short of the
+        // two bytes a 4x4 one-bit stencil needs, and short in the same way a
+        // still-compressed mask is short.
+        let mut pdf: Vec<u8> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.5\n");
+        pdf.extend_from_slice(b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+        pdf.extend_from_slice(b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 40 40]/Contents 4 0 R\
+/Resources<</XObject<</Im0 5 0 R>>>>>>endobj\n",
+        );
+        const CONTENT: &str = "q 40 0 0 40 0 0 cm /Im0 Do Q";
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                CONTENT.len(),
+                CONTENT
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            b"5 0 obj<</Type/XObject/Subtype/Image/Width 4/Height 4/ColorSpace/DeviceGray\
+/BitsPerComponent 8/Mask 6 0 R/Length 16>>stream\n",
+        );
+        pdf.extend_from_slice(&[128u8; 16]);
+        pdf.extend_from_slice(b"\nendstream endobj\n");
+        pdf.extend_from_slice(
+            b"6 0 obj<</Type/XObject/Subtype/Image/Width 4/Height 4/ImageMask true\
+/BitsPerComponent 1/Length 1>>stream\n",
+        );
+        pdf.push(0);
+        pdf.extend_from_slice(b"\nendstream endobj\nstartxref\n0\n%%EOF");
+
+        agenticpdf::engine::reset_soft_mask_census();
+        let textures = agenticpdf::engine::extract_page_textures(&pdf, 1).unwrap_or_default();
+        let census = agenticpdf::engine::soft_mask_census();
+        assert_eq!(
+            census.image_mask_dropped, 1,
+            "an abandoned stencil should be counted, not silently dropped"
+        );
+        // And the image still paints, opaque, which is the safe direction --
+        // an image with a mask nobody could read is better shown than hidden.
+        let image = textures
+            .iter()
+            .find(|t| t.rgba.len() >= 4)
+            .expect("a texture");
+        assert!(
+            image.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
+            "with no usable mask the image stays opaque"
+        );
+    }
+
+    /// List every picture a page decodes to one flat colour.
+    ///
+    /// A texture that decodes to a single tone is drawn, counts as present,
+    /// and satisfies every diagnostic that asks whether an image has pixels --
+    /// while covering whatever is under it with a rectangle of paint. It is
+    /// the failure mode that hides from `images_without_pixels`, because the
+    /// image is not missing; it is wrong.
+    ///
+    /// `APDF_RENDER_PDF=<file> [APDF_RENDER_PAGE=n] cargo test --release
+    /// -- --ignored flat_textures`
+    #[test]
+    #[ignore = "needs one document; run deliberately"]
+    fn flat_textures() {
+        let Ok(path) = std::env::var("APDF_RENDER_PDF") else {
+            eprintln!("set APDF_RENDER_PDF to a document");
+            return;
+        };
+        let page: usize = std::env::var("APDF_RENDER_PAGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let bytes = std::fs::read(&path).expect("read the document");
+        let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
+        let placed: std::collections::HashMap<&str, (f64, f64)> = list
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Image { name, w, h, .. } => Some((name.as_str(), (*w, *h))),
+                _ => None,
+            })
+            .collect();
+        for t in agenticpdf::engine::extract_page_textures(&bytes, page).unwrap_or_default() {
+            let n = t.rgba.len() / 4;
+            if n == 0 {
+                eprintln!("{}: no pixels at all", t.name);
+                continue;
+            }
+            let (mut lo, mut hi) = ([255u8; 4], [0u8; 4]);
+            let mut sum = [0u64; 4];
+            for p in t.rgba.as_chunks::<4>().0 {
+                for k in 0..4 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                    sum[k] += p[k] as u64;
+                }
+            }
+            let mean: Vec<u64> = sum.iter().map(|s| s / n as u64).collect();
+            let spread = (0..3).map(|k| hi[k] - lo[k]).max().unwrap_or(0);
+            let drawn = placed
+                .get(t.name.as_str())
+                .map(|(w, h)| format!("{w:.0}x{h:.0} on the page"))
+                .unwrap_or_else(|| "not drawn".into());
+            if spread <= 2 {
+                eprintln!(
+                    "FLAT  {}: {}x{}, mean {mean:?}, spread {spread}, {drawn}",
+                    t.name, t.width, t.height
+                );
+            } else {
+                eprintln!(
+                    "      {}: {}x{}, mean {mean:?}, spread {spread}, {drawn}",
+                    t.name, t.width, t.height
+                );
+            }
+        }
+    }
+
     /// Ask a tree of documents how often the soft-mask paths are reached.
     ///
     /// Soft masking is where this project has already shipped a correct change
@@ -2580,6 +2772,18 @@ mod render_report {
         eprintln!(
             "    stroke ops riding through:     {}",
             c.unmasked_stroke_ops
+        );
+        eprintln!(
+            "  image /Mask or /SMask abandoned:  {}",
+            c.image_mask_dropped
+        );
+        eprintln!(
+            "    of those, CCITT-coded:          {}",
+            c.image_mask_dropped_ccitt
+        );
+        eprintln!(
+            "    of those, JBIG2-coded:          {}",
+            c.image_mask_dropped_jbig2
         );
     }
 

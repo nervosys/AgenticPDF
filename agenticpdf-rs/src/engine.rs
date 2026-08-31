@@ -2220,6 +2220,12 @@ pub struct SoftMaskCensus {
     /// A masked group whose fills-times-regions exceeded the budget, so the
     /// whole group went through unmasked.
     pub over_budget: usize,
+    /// An image's `/SMask` or `/Mask` that could not be turned into samples,
+    /// so the image painted fully opaque. Counted by the codec that beat it,
+    /// because that is the only thing that says whether a decoder is missing.
+    pub image_mask_dropped: usize,
+    pub image_mask_dropped_ccitt: usize,
+    pub image_mask_dropped_jbig2: usize,
 }
 
 thread_local! {
@@ -2229,7 +2235,8 @@ thread_local! {
             group_text_only: 0, group_image_only: 0, built: 0, built_from_images: 0,
             groups_masked: 0,
             unmasked_text_ops: 0, unmasked_image_ops: 0, unmasked_stroke_ops: 0,
-            over_budget: 0,
+            over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
+            image_mask_dropped_jbig2: 0,
         }) };
 }
 
@@ -4498,6 +4505,41 @@ pub fn extract_page_images(data: &[u8], page_number: usize) -> Result<Vec<PageIm
 
 /// Decode an image to RGBA bytes, or pass JPEG/JPX through for browser decode.
 /// Returns (format, width, height, bytes). Pure Rust (no image codec deps).
+/// Run a CCITT fax stream through the decoder, reading its parameters from the
+/// image dictionary. `height` stands in for `/Rows` when the parameters omit it.
+///
+/// A helper rather than inline code because two callers need it and only one of
+/// them had it. `decode_stream` deliberately passes CCITT bytes through
+/// untouched -- it exists to get text out of Flate streams and says so -- which
+/// is correct there and was silently wrong wherever an image's samples were
+/// read straight from it.
+fn defax(doc: &Document, d: &Dict, data: &[u8], height: usize) -> Option<Vec<u8>> {
+    let params = extract_ccitt(doc, d)?;
+    let byte_align = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
+        Some(Object::Dict(p)) => {
+            matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true)))
+        }
+        Some(Object::Array(a)) => a.iter().any(|o| match doc.resolve(o) {
+            Object::Dict(p) => matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true))),
+            _ => false,
+        }),
+        _ => false,
+    };
+    crate::image::ccitt::decode(
+        data,
+        &crate::image::ccitt::Params {
+            k: params.k,
+            columns: params.columns as usize,
+            rows: if params.rows == 0 {
+                height
+            } else {
+                params.rows as usize
+            },
+            byte_align,
+        },
+    )
+}
+
 fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u32, Vec<u8>)> {
     let w = doc.get(d, "Width").and_then(|o| o.as_int())? as usize;
     let h = doc.get(d, "Height").and_then(|o| o.as_int())? as usize;
@@ -4535,32 +4577,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
     // ordinary one-bit grey image, which the rest of this function already
     // knows how to paint.
     if filter.contains("CCITTFaxDecode") {
-        let params = extract_ccitt(doc, d)?;
-        let byte_align = match doc.get(d, "DecodeParms").or_else(|| doc.get(d, "DP")) {
-            Some(Object::Dict(p)) => {
-                matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true)))
-            }
-            Some(Object::Array(a)) => a.iter().any(|o| match doc.resolve(o) {
-                Object::Dict(p) => {
-                    matches!(doc.get(&p, "EncodedByteAlign"), Some(Object::Bool(true)))
-                }
-                _ => false,
-            }),
-            _ => false,
-        };
-        decoded = crate::image::ccitt::decode(
-            &decoded,
-            &crate::image::ccitt::Params {
-                k: params.k,
-                columns: params.columns as usize,
-                rows: if params.rows == 0 {
-                    h
-                } else {
-                    params.rows as usize
-                },
-                byte_align,
-            },
-        )?;
+        decoded = defax(doc, d, &decoded, h)?;
     }
     // A JBIG2 image arrives as its own little document of segments. Decoding
     // it here turns it into an ordinary one-bit grey image.
@@ -4695,6 +4712,11 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
         )
     } else {
         let Some(samples) = unpack_samples(&decoded, sw, sh, sbpc) else {
+            tally(|c| {
+                c.image_mask_dropped += 1;
+                c.image_mask_dropped_ccitt += sfilter.contains("CCITTFaxDecode") as usize;
+                c.image_mask_dropped_jbig2 += sfilter.contains("JBIG2Decode") as usize;
+            });
             return;
         };
         (samples, ((1u32 << sbpc as usize) - 1).max(1))
@@ -4869,8 +4891,21 @@ fn apply_stencil_mask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: us
     let Ok(decoded) = decode_stream(&md, &mraw) else {
         return;
     };
-    let decoded = if filter_names(&md).contains("JBIG2Decode") {
+    // A stencil mask is a one-bit image and is compressed like one. Only
+    // JBIG2 was decoded here, so a fax-coded mask -- which is what a typesetter
+    // emits for a line-art figure or an equation strip -- reached
+    // `unpack_samples` still compressed. It was far too short to be a page of
+    // samples, so the mask was abandoned and the image it belonged to painted
+    // its own opaque background over the artwork: a flat rectangle where the
+    // figure should be. That is the whole of one journal page's divergence.
+    let filters = filter_names(&md);
+    let decoded = if filters.contains("JBIG2Decode") {
         match decode_jbig2(doc, &md, &decoded, mw, mh) {
+            Some(bits) => bits,
+            None => return,
+        }
+    } else if filters.contains("CCITTFaxDecode") {
+        match defax(doc, &md, &decoded, mh) {
             Some(bits) => bits,
             None => return,
         }
@@ -4878,6 +4913,11 @@ fn apply_stencil_mask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: us
         decoded
     };
     let Some(samples) = unpack_samples(&decoded, mw, mh, 1) else {
+        tally(|c| {
+            c.image_mask_dropped += 1;
+            c.image_mask_dropped_ccitt += filters.contains("CCITTFaxDecode") as usize;
+            c.image_mask_dropped_jbig2 += filters.contains("JBIG2Decode") as usize;
+        });
         return;
     };
     // `/Decode [1 0]` swaps which sample value masks.
