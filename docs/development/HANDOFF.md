@@ -355,11 +355,47 @@ next, with 46 GB free. Currently excluded from the sweep.
 
 ## Needs a decision
 
-- **The branch name is wrong.** `fix/security-hardening` holds 65 commits, of
-  which exactly one is about security. It started there and grew. It should be
-  renamed or split before it merges.
-- **Nothing is pushed, and `master` has no branch protection**, so there is
-  nothing forcing review of 23,000 changed lines.
+*Resolved since this section was written:* the work **is** pushed. `master` now
+carries all of it, and `fix/security-hardening` is kept in sync as a mirror
+rather than a branch waiting to merge, so the naming complaint below is moot in
+practice. What is not resolved is that **`master` still has no branch
+protection**, so nothing forced a review of 23,000 changed lines and nothing
+will force one on the next batch either. That is the item to act on.
+
+Still genuinely open, and each is an owner's call rather than an engineer's:
+
+- **Annotation appearance streams.** See *Open*: rendering them is right for our
+  reader and reads as divergence in this harness, so the measurement cannot
+  decide it.
+- **A FIPS-capable build**, if it is a product requirement. `SECURITY_AUDIT.md`
+  section 3.1 lists the four steps; if it is *not* a requirement, saying so in
+  `SECURITY.md` stops the question being asked again.
+- **The 129 MB catalogue**, currently excluded from the sweep. Either it gets
+  diagnosed or the exclusion gets written into the harness with a reason, rather
+  than living in a shell variable.
+
+## Security, since this file was written
+
+The seven findings the audit had been carrying (F-001 through F-007) were
+re-checked against the source instead of restated. **Four were already fixed**
+and had been carried forward as open by a revision that never looked; three were
+real and are now closed. The one that mattered was F-007: a `firstName` split
+out of author metadata went straight into `new RegExp()`, so a crafted document
+chose the regex. It is escaped now.
+
+Both npm projects report **zero** advisories. That did not need either breaking
+upgrade the audit had assumed: root's six HIGH were one `minimatch` ReDoS
+counted again at each `@typescript-eslint` level above it, and the website's
+HIGH plus moderate were one `postcss` pin inside `next`. Two `overrides`
+entries, both inside the existing major, cleared all eight. **Read the advisory
+graph before quoting its count** — `effects` and `via` are the fields that turn
+eight findings back into two.
+
+The Rust side keeps two HIGH ignores, and they are triage rather than silencing:
+`quick-xml` 0.30.0 arrives only through `accesskit_unix`, the Linux AT-SPI
+backend, which parses D-Bus introspection XML and never a document. The chain is
+written out in `.github/workflows/rust.yml` along with the condition for
+removing the ignores.
 
 ## Traps this work already fell into
 
