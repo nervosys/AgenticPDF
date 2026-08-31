@@ -46,7 +46,7 @@ jobs:
         echo "Current dependencies saved to dependency-report.txt"
         
     - name: Upload dependency report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: dependency-security-report
         path: dependency-report.txt
