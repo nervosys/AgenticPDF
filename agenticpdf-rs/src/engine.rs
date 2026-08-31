@@ -2149,6 +2149,9 @@ struct GState<'a> {
     clip: [f64; 4],
     /// The luminosity mask a `gs` set, evaluated into regions.
     soft_mask: Option<SoftMask>,
+    /// A text object used `Tr` 4-7, so the clip in force is the outline of
+    /// its glyphs. Graphics state, restored by `Q` like any other clip.
+    text_clip: bool,
 }
 
 fn build_display_ops(doc: &Document, page: &Dict, view: [f64; 4]) -> Vec<RenderOp> {
@@ -2226,6 +2229,21 @@ pub struct SoftMaskCensus {
     pub image_mask_dropped: usize,
     pub image_mask_dropped_ccitt: usize,
     pub image_mask_dropped_jbig2: usize,
+    /// A soft mask was in force and the thing painted was not a transparency
+    /// group, so the mask was ignored. Counted by what was painted, because a
+    /// mask is only implemented for groups and this says what that costs.
+    pub mask_ignored_at_image: usize,
+    pub mask_ignored_at_form: usize,
+    /// Images painted under a blend mode that is not Normal. A fill under one
+    /// is already suppressed when it cannot change the page; an image is not,
+    /// because an image has no single colour to test.
+    pub images_under_multiply: usize,
+    pub images_under_other_blend: usize,
+    /// Images declined because a text clipping path was in force. Text
+    /// clipping (`Tr` 4-7) confines everything painted after `ET` to the
+    /// glyph outlines, and this engine has no glyph outlines to confine it
+    /// with -- so it declines rather than paints the whole rectangle.
+    pub images_under_text_clip: usize,
 }
 
 thread_local! {
@@ -2236,7 +2254,9 @@ thread_local! {
             groups_masked: 0,
             unmasked_text_ops: 0, unmasked_image_ops: 0, unmasked_stroke_ops: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
-            image_mask_dropped_jbig2: 0,
+            image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
+            mask_ignored_at_form: 0, images_under_multiply: 0,
+            images_under_other_blend: 0, images_under_text_clip: 0,
         }) };
 }
 
@@ -2566,12 +2586,13 @@ fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Op
 /// finished ops rather than being threaded into the interpreter -- which is the
 /// difference between working and doing nothing at all.
 ///
-/// Only fills are split. Text and images inside a masked group still paint at
-/// full strength.
+/// Fills and images are split. Text inside a masked group still paints at full
+/// strength, which the census reports as zero occurrences across the corpus --
+/// so there is nothing here to measure a change against and none was written.
 fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec<RenderOp> {
     let fills = ops
         .iter()
-        .filter(|op| matches!(op, RenderOp::Fill { .. }))
+        .filter(|op| matches!(op, RenderOp::Fill { .. } | RenderOp::Image { .. }))
         .count();
     tally(|c| {
         c.groups_masked += 1;
@@ -2594,6 +2615,42 @@ fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec
     }
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
+        // An image cannot be cut into pieces the way a fill can -- it is one
+        // texture placed by one matrix -- so it is drawn once per region
+        // inside a clip of that region, with the region's coverage folded into
+        // its alpha. Four ops a region rather than one, which is why the
+        // budget above counts images alongside fills.
+        if let RenderOp::Image { alpha, .. } = &op {
+            let alpha = *alpha;
+            for (region, coverage) in mask {
+                if *coverage <= 0.004 {
+                    continue;
+                }
+                let xs = region.iter().map(|p| p[0]);
+                let ys = region.iter().map(|p| p[1]);
+                let rect = [
+                    xs.clone().fold(f64::INFINITY, f64::min),
+                    ys.clone().fold(f64::INFINITY, f64::min),
+                    xs.fold(f64::NEG_INFINITY, f64::max),
+                    ys.fold(f64::NEG_INFINITY, f64::max),
+                ];
+                if !(rect[2] > rect[0] && rect[3] > rect[1]) {
+                    continue;
+                }
+                let mut piece = op.clone();
+                if let RenderOp::Image { alpha: a, .. } = &mut piece {
+                    *a = alpha * coverage;
+                }
+                out.push(RenderOp::Save);
+                out.push(RenderOp::Clip {
+                    rect,
+                    subpaths: vec![region.clone()],
+                });
+                out.push(piece);
+                out.push(RenderOp::Restore);
+            }
+            continue;
+        }
         let RenderOp::Fill {
             subpaths,
             color,
@@ -3035,6 +3092,10 @@ fn run_content(
     let mut clip = inherited.clip;
     // Set by `gs`, and applied where a transparency group is composited.
     let mut soft_mask: Option<SoftMask> = None;
+    // A clipping path made of glyph outlines, and whether the text object
+    // currently open is building one.
+    let mut text_clip = false;
+    let mut clipping_text = false;
     // Constant alpha and blend mode, both graphics state, both set by `gs`.
     let mut fill_alpha = inherited.fill_alpha;
     let mut stroke_alpha = inherited.stroke_alpha;
@@ -3080,6 +3141,7 @@ fn run_content(
                             line_width,
                             clip,
                             soft_mask: soft_mask.clone(),
+                            text_clip,
                         });
                         ops.push(RenderOp::Save);
                     }
@@ -3108,6 +3170,7 @@ fn run_content(
                             line_width = state.line_width;
                             clip = state.clip;
                             soft_mask = state.soft_mask;
+                            text_clip = state.text_clip;
                         }
                         ops.push(RenderOp::Restore);
                     }
@@ -3397,7 +3460,12 @@ fn run_content(
                                         );
                                         ops.extend(apply_mask_to_group(inner, mask));
                                     }
-                                    _ => run_form(doc, &form, resources, ctm, ops, depth, &state),
+                                    _ => {
+                                        if soft_mask.is_some() {
+                                            tally(|c| c.mask_ignored_at_form += 1);
+                                        }
+                                        run_form(doc, &form, resources, ctm, ops, depth, &state)
+                                    }
                                 }
                                 stack.clear();
                                 continue;
@@ -3412,6 +3480,36 @@ fn run_content(
                                 stack.clear();
                                 continue;
                             }
+                            // `Tr` 4-7 confine everything painted after `ET`
+                            // to the glyph outlines. This engine has no glyph
+                            // outlines -- text becomes a `Text` op and the
+                            // painter rasterises it -- so there is nothing to
+                            // confine an image with, and the honest options
+                            // are to decline the image or to paint the whole
+                            // rectangle it would have filled.
+                            //
+                            // It declines, and the reason is a page in the
+                            // corpus. A prepress spread sets a headline in
+                            // `7 Tr` and then draws thirteen full-half-page
+                            // separation plates through it, each nearly white
+                            // and every one opaque. Painted unclipped they
+                            // erased the artwork under them and left half the
+                            // page blank -- which is worse than the missing
+                            // headline, and was the standing mystery on this
+                            // page for four earlier hypotheses. A flat
+                            // rectangle of plausible colour hiding a real gap
+                            // is the thing this engine already refuses to draw
+                            // for a shading it cannot evaluate.
+                            if text_clip {
+                                tally(|c| c.images_under_text_clip += 1);
+                                stack.clear();
+                                continue;
+                            }
+                            match blend {
+                                Blend::Normal => {}
+                                Blend::Multiply => tally(|c| c.images_under_multiply += 1),
+                                _ => tally(|c| c.images_under_other_blend += 1),
+                            }
                             let c0 = transform_point(&ctm, 0.0, 0.0);
                             let c1 = transform_point(&ctm, 1.0, 0.0);
                             let c2 = transform_point(&ctm, 1.0, 1.0);
@@ -3422,7 +3520,7 @@ fn run_content(
                             let right = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                             let bottom = ys.iter().cloned().fold(f64::INFINITY, f64::min);
                             let top = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                            ops.push(RenderOp::Image {
+                            let image = RenderOp::Image {
                                 x: left,
                                 y: bottom,
                                 w: right - left,
@@ -3434,12 +3532,36 @@ fn run_content(
                                     false => None,
                                 },
                                 mat: Some([ctm[0], ctm[1], ctm[2], ctm[3]]),
-                            });
+                            };
+                            // A soft mask applies to everything painted under
+                            // it and not only to a transparency group, so a
+                            // mask set immediately before an image does
+                            // nothing here -- eleven times across the corpus,
+                            // which the census counts as `mask_ignored_at_image`.
+                            //
+                            // It was implemented, measured, and taken out
+                            // again. Drawing the image once per mask region
+                            // inside a clip of that region moved the corpus by
+                            // -0.007 over 681 pages: one page better by 0.014,
+                            // two worse by 0.005 and 0.003. That is a wash, and
+                            // this repository has a standing rule that a paint
+                            // change is not shippable for being correct in
+                            // principle. The counter stays so the question can
+                            // be re-asked against a corpus that exercises it.
+                            ops.push(image);
                         }
                     }
                     "BT" => {
                         tm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
                         tlm = tm;
+                        clipping_text = false;
+                    }
+                    // At `ET` a text object that used a clipping mode narrows
+                    // the clip to its glyphs, and it stays narrowed until the
+                    // enclosing `Q`.
+                    "ET" => {
+                        text_clip = text_clip || clipping_text;
+                        clipping_text = false;
                     }
                     "Tf" if stack.len() >= 2 => {
                         if let Token::Num(sz) = stack[stack.len() - 1] {
@@ -3461,6 +3583,7 @@ fn run_content(
                     "Tr" => {
                         if let Some(Token::Num(v)) = stack.last() {
                             ts.mode = *v as i64;
+                            clipping_text = clipping_text || (4..=7).contains(&ts.mode);
                         }
                     }
                     "Tc" => {

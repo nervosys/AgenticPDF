@@ -13,20 +13,28 @@ harnesses, the branch, the traps.
 
 | | |
 | --- | --- |
-| Corpus | 290 documents, 711 pages, 683 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **666 of 683 — 97.5 %** |
-| Over the threshold | 17 |
-| Not comparable | 28 (no reference, or a page we decline to render) |
-| Tests | 595 crate + 45 integration, 75 reader; clippy `-D warnings` clean, `cargo fmt --check` clean |
-| Branch | 81 commits ahead of `master`, unpushed |
+| Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
+| Matching (total variation ≤ 0.12) | **667 of 681 — 98.0 %** |
+| Over the threshold | 14 |
+| Not comparable | 29 (no reference, or a page we decline to render) |
+| Tests | 606 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Branch | `master`, pushed |
+
+**Check the reference index before trusting a page count.** Each reference
+directory holds a `source.txt` naming the document it was captured from, and
+`compare_corpus` silently skips any whose file has moved. Twenty-two had, and
+the sweep quietly reported 626 pages instead of 681 -- a fifth of the corpus
+gone with no error anywhere. Relocating them by basename recovered twenty-one;
+one document is genuinely gone. Re-run that check before reading any sweep as a
+regression.
 
 The corpus is `~/Documents` and `~/Desktop`, three pages a document, less
 the 129 MB catalogue. It is not the same set of files the first table was
 measured on -- the references were recaptured on 2026-08-26 -- so read the
 percentage, not the difference in page counts.
 
-Of the 17 failures, **none** has a mean absolute difference above 0.10. Four
-sit between 0.04 and 0.10. The remaining thirteen are below 0.04: sparse pages where the normalised score
+Of the 14 failures, **none** has a mean absolute difference above 0.10. Three
+sit between 0.04 and 0.10. The remaining eleven are below 0.04: sparse pages where the normalised score
 divides by very little ink, so a shadow edge or a thin band scores like a broken
 page. **That is not an argument for moving the threshold** — the 0.12 line was
 calibrated on 91 dense technical pages and is doing something different on a
@@ -127,6 +135,69 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**The two pages nobody could explain are explained.** Both were found the same
+way -- by dumping our render and the reference as coarse ASCII and looking at
+them side by side -- and neither was findable from a score. A page can be
+badly wrong and barely move the ink metric, and both of these did.
+
+*The journal page (0.328, the corpus's worst, now 0.066).* Its figures and
+equation strips are ordinary images carrying `/Mask <n> 0 R`, a separate
+one-bit stencil saying which of their pixels are painted. Every stencil is
+CCITT fax-coded, and the mask reader took its samples straight from
+`decode_stream` -- which passes CCITT through untouched, deliberately, because
+it exists to get text out of Flate streams and says so in a comment. The mask
+arrived still compressed, 279 bytes where a 669x29 stencil needs 2425,
+`unpack_samples` refused it, and the mask was dropped. With no mask the image
+painted its own opaque background and each figure became a flat grey rectangle.
+`images_without_pixels` was satisfied throughout: the image was not missing, it
+was wrong.
+
+*The prepress spread (0.208, now 0.025).* Half the page rendered white. Thirteen
+full-half-page separation plates, all near-white, all opaque, all placed at
+exactly the same spot over the artwork. The reason they are allowed to be opaque
+is that the page sets its headline in `7 Tr` -- add to clipping path, paint
+nothing -- and draws every plate through the resulting glyph-shaped clip. We do
+not implement text clipping, so every plate painted its full rectangle and
+erased what was under it. Four earlier hypotheses had been ruled out here (a
+soft mask on the group, a blend mode, optional content, an undecodable texture),
+and two more were ruled out this round: no blend mode is in force at any image
+on that page (counted, zero), and applying the soft masks that *are* there moves
+it not at all.
+
+**Soft masks drawn with a picture are read.** Counted before anything was
+written: of 46 soft masks across 270 documents, 36 were declined, every one
+because the mask is painted with a grayscale image rather than with fills --
+which is simply how every drawing tool exports a graded mask. They are now
+sampled into a 16x16 grid of constant-coverage cells, walked in the image's own
+unit square so a rotated placement needs no inversion, and collapsed to one
+region when the mask is a single flat tone. Masks built: 10 of 46 before, 45 of
+46 after. Corpus: 2 improved, 0 regressed.
+
+**Mesh shadings types 4 and 5.** Free-form and lattice triangle meshes are
+diced into flat sub-triangles the way patches are diced into quads, sharing one
+header reader with types 6 and 7. **The corpus contains neither**, so the flat
+sweep after this change is not evidence; the synthetic tests are. The one
+difference between the two readers that fails silently has its own test: a
+free-form mesh pads every vertex to a byte and a lattice mesh does not, and
+aligning both puts the mesh somewhere else entirely.
+
+**Full-page pictures reach the mobile shells.** An image past the 6 MB inline
+bound was sent as geometry with no pixels and no key, for the host to resolve
+itself. Only the browser ever did. So the one image on a page big enough to trip
+the bound -- the full-page background photograph -- was the one that never
+arrived on Android and iOS. It is now sampled one step further to fit the bound.
+No host-side change, so iOS is fixed too without a Mac.
+
+**The 129 MB catalogue does not reproduce.** All 300 pages build their display
+list and decode their images in about a tenth of a second each, no failures. It
+decodes only what it draws, so the "decodes the whole document per page"
+hypothesis is wrong. The likeliest explanation for the original intermittent
+abort is that the disk was full, so Windows could not grow its page file --
+free RAM was never the binding constraint, which is why "aborts with 46 GB free"
+read as a mystery. **Check free disk before believing an allocation failure on
+this machine.**
+
 
 **Partial alpha on images.** `RenderOp::Image` carries the constant alpha it was
 drawn under, defaulting to 1 so an older display list still reads as opaque
@@ -275,83 +346,95 @@ documents to 2 in one; 15 pages improved, one regressed by 0.003, net -0.628.
 
 ## Open
 
-Ordered by what it costs, cheapest first.
+Ordered by what it costs, cheapest first. Everything the previous revision of
+this section listed has been either fixed or measured and rejected; what
+follows is what is actually left.
 
-**Soft masks on text and images.** Fills inside a transparency group composite
-through the group's soft mask. Text and images inside one still paint at full
-strength, and a mask whose own group paints with text or an image produces no
-regions and is skipped. Both fail unmasked, which is the safe direction.
+**iOS.** Unverifiable here: it needs macOS. One thing that did change is that
+the full-page-picture fix below required no host-side change, so the iOS shell
+gets it without being rebuilt. The texture fix from the previous round is still
+unconfirmed on iOS and still three lines against the same shared function.
 
-**A half-page of artwork that nothing has explained.**
-`design-article-optimizing-bldc-motor-control` p3 (on the *Desktop*) is the
-worst page in the corpus that is not the mesh-shading ebook: 0.208, absolute
-difference 0.096, and its **entire left half renders white** where the
-reference shows a title, body text and a large product photograph.
+**The web recording's volume.** 672 KB per steady-state frame for a text page,
+74 % of it 5,325 per-glyph ops at 92 bytes each. A positional encoding with a
+key table would cut that roughly threefold. **Still blocked for the same reason,
+and it is a good one:** the iOS and Android replayers parse this schema field by
+field, and iOS cannot be built or run on this machine, so a re-encoding would
+break a host silently and nothing here could tell. This is not a task waiting
+for effort; it is waiting for a Mac.
 
-What is measured, not guessed: the page places thirteen full-half-page images.
-The first, `4128`, decodes to real artwork (mean RGB 214). The twelve after it
-decode **fully opaque** — not one transparent pixel between them — at mean RGB
-253–254, so each paints a white sheet over what came before. Their streams are
-9 KB for 7.7 M samples, so they really are near-uniform.
+**Text clipping is declined, not implemented.** `Tr` 4-7 confine everything
+painted after `ET` to the glyph outlines. This engine has no glyph outlines --
+text leaves as a `Text` op and the painter rasterises it -- so an image under a
+text clip is declined rather than painted over the whole rectangle it would
+otherwise fill. That is the right trade (see *Done*), but it does lose the
+duotone headline it was meant to draw. Implementing it properly means glyph
+outlines in the engine or a new op every renderer must learn, which is the cost
+this project already refused for gradients.
 
-Four causes were checked and are **not** it:
-- *A soft mask on the group.* Masking images inside a transparency group was
-  implemented and measured: the branch fired **zero** times across 60 documents,
-  and the change moved no page. Reverted as unverified code that can only remove
-  paint — the same call this repository made once before.
-- *A blend mode.* The whole file contains one `/BM /Multiply`.
-- *Optional content.* No `/OCProperties`, no `/OCGs`, no `/OC` on the XObjects.
-- *An undecodable texture.* Every one of the thirteen resolves; the diagnostic
-  reports 1 image without pixels in the entire Desktop tree, in another file.
+**Fills under a text clip are still painted.** Only images are declined. Nothing
+in the corpus exercises a fill under a text clip, so nothing was written for it;
+the same counter that found the image case would find this one.
 
-**One page nothing has explained.** `atmosphere-10-00549` p3 came down from
-0.469 to 0.328 with pattern fills and is still the third-worst page in the
-corpus. Its 32 image ops carry no stencil tint, so whatever it masks is not
-reached as a page-level image XObject; it is *not* inline images, which the
-document contains none of. `ADA617071` p1 came off this list — it was pattern
-fills, and it now scores 0.009. It lives on the **Desktop**, not in
-`~/Documents`.
+**Soft masks on text.** Text inside a masked group still paints at full
+strength. The census counts this at **zero** across 270 documents, so there is
+nothing to measure a change against and none was written.
 
-**The cover text is a substitution difference, not a defect.** It was written
-up here as one. `ADA617071` names `/ArialNarrow` and `/BookmanOldStyle,Italic`
-with **no `/FontFile`** and supplies narrow `/Widths` (228, 456, 547…). We
-substitute a condensed face and honour those widths; PDF.js has no Arial Narrow
-and substitutes regular Arial. Ours is the closer of the two to what the
-document asked for. Nothing to fix; chasing the reference here would make us
-*less* faithful.
+**Mesh types 4 and 5 are implemented and unmeasured.** No document in the corpus
+uses one, so the sweep after them is flat by construction. They are verified by
+synthetic tests against decoded geometry instead. Treat the corpus as silent on
+them, not as endorsing them. Everything the previous revision of
+this section listed has been fixed, or measured and rejected; what follows is
+what is actually left.
 
-**Large images on mobile.** The photographs are there now — `android.rs` and
-`apple.rs` were passing `&[]` where the browser passes `session.textures(...)`,
-and a missing texture draws a grey frame rather than nothing, so every picture
-on both shells was an empty box. Confirmed by running the Android app: a
-brochure cover that frames five photographs in hexagons shows all five, clipped
-correctly. **iOS is the same three lines against the same shared function and
-is unverified** — it needs macOS.
+**iOS.** Unverifiable here: it needs macOS. One thing did change in its favour
+-- the full-page-picture fix below needed no host-side change, so the iOS shell
+gets it without being rebuilt. The texture fix from the previous round is still
+unconfirmed there, and still three lines against the same shared function.
 
-What survives: an image past the inline bound is left to the host to resolve by
-index, and neither mobile host resolves one, so a *full-page* background
-photograph is still absent where the smaller ones now appear.
+**The web recording's volume.** 672 KB per steady-state frame for a text page,
+74 % of it 5,325 per-glyph ops at 92 bytes each. A positional encoding with a
+key table would cut that roughly threefold. **Still blocked, for the same good
+reason:** the iOS and Android replayers parse this schema field by field, and
+iOS cannot be built or run on this machine, so a re-encoding would break a host
+silently and nothing here could tell. This is not waiting for effort; it is
+waiting for a Mac.
 
-**Annotation appearance streams.** Collected for extraction, never rendered:
-every form field, stamp, signature and highlight is invisible in our output.
-**This needs a decision before it needs code.** PDF.js draws form widgets into an
-HTML layer rather than the canvas, so rendering them would read as divergence in
-this harness while being right for our own reader.
+**Text clipping is declined, not implemented.** `Tr` 4-7 confine everything
+painted after `ET` to the glyph outlines. This engine has no glyph outlines --
+text leaves as a `Text` op and the painter rasterises it -- so an image under a
+text clip is now declined rather than painted across the whole rectangle it
+would otherwise fill. That is the right trade and it fixed the standing mystery
+page, but it does lose the duotone headline it was meant to draw. Doing it
+properly means glyph outlines in the engine, or a new op every renderer has to
+learn, which is the cost this project already refused for gradients.
 
-**Mesh shadings of types 4 and 5.** Free-form and lattice triangle meshes are
-still declined; no document in the corpus uses one. Types 6 and 7 are drawn.
+**Fills under a text clip are still painted.** Only images are declined. Nothing
+in the corpus exercises a fill under a text clip, so nothing was written for it.
+The counter that found the image case would find this one.
 
-**Web recording volume.** Measured, not estimated: 672 KB per steady-state frame
-for a text page, 74 % of it 5,325 per-glyph ops at 92 bytes each. A positional
-encoding with a key table would cut that roughly threefold — but the iOS and
-Android replayers parse this schema field by field, and iOS cannot be built here,
-so a re-encoding would break a host silently. Mobile is worse than the web figure
-besides: its native side builds a fresh painter every frame, so every mask's
-pixels are re-sent every time.
+**Soft masks on text.** Text inside a masked group still paints at full
+strength. The census counts this at **zero** across 270 documents, so there is
+nothing to measure a change against and none was written.
 
-**A 129 MB catalogue.** Intermittently pathological: the same page builds its
-display list in seconds on one run and aborts on an allocation failure on the
-next, with 46 GB free. Currently excluded from the sweep.
+**Soft masks on a directly drawn image.** A mask applies to everything painted
+under it, not only to a transparency group, and a mask set immediately before an
+image currently does nothing -- eleven times across the corpus. It was
+implemented and taken out again: drawing the image once per mask region inside a
+clip of that region moved 681 pages by **-0.007**, one better by 0.014 and two
+worse by 0.005 and 0.003. A wash. The counter (`mask_ignored_at_image`) stays so
+the question can be re-asked against a corpus that exercises it properly.
+
+**Mesh types 4 and 5 are implemented and unmeasured.** No document in the corpus
+uses one, so the sweep after them is flat by construction rather than by
+evidence. They are verified by synthetic tests against decoded geometry instead.
+Treat the corpus as silent on them, not as endorsing them.
+
+**A prepress page and a receipt remain the worst two.** The Kubota catalogue p3
+at 0.236 (mae 0.079) and an order-details receipt p1 at 0.266 (mae 0.004) are
+now the top of the list. The receipt is the sparse-page artefact the threshold
+note below describes -- four thousandths of mean absolute difference is not a
+broken page. The catalogue has not been looked at.
 
 ## Needs a decision
 
@@ -401,6 +484,30 @@ removing the ignores.
 
 Each of these cost real time. They are written down so the next person does not
 pay for them twice.
+
+**Look at the pixels.** Both pages that had resisted explanation for rounds gave
+themselves up in minutes to a coarse ASCII dump of our render beside the
+reference. One showed flat (127,127,127) blocks where figures belonged; the
+other showed an empty left half. No aggregate, and no diagnostic this project
+owns, said either of those things -- `images_without_pixels` was satisfied in
+both cases, because nothing was missing, it was wrong.
+
+**A diagnostic that reports zero is only as good as the question it asks.** The
+whole class of "the mask was silently abandoned" was invisible because every
+counter asked whether an image had pixels. Abandoned masks are now counted, by
+the codec that beat them.
+
+**Attribute an improvement before reverting the change that caused it.** Two
+changes went in together and the pair improved seven pages. The second was then
+isolated and measured at a wash, so both were pulled -- and three of the seven
+improvements went with them, because they belonged to the first. Reverting a
+bundle is not reverting the thing you measured.
+
+**Count uses, not definitions.** "The whole file contains one `/BM /Multiply`"
+is a fact about the byte string, not about how often it is in force -- one
+ExtGState can be referenced on every draw. The right form of the question is a
+counter at the point of painting, which said zero and closed the hypothesis for
+good.
 
 - **A good `compare_corpus` score is not evidence that text is correct.** The
   metric measures where ink is, not which glyph put it there. One cover scored

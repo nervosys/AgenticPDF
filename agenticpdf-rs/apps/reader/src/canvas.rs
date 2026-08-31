@@ -2657,11 +2657,13 @@ mod render_report {
             .unwrap_or(1);
         let bytes = std::fs::read(&path).expect("read the document");
         let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
-        let placed: std::collections::HashMap<&str, (f64, f64)> = list
+        let placed: std::collections::HashMap<&str, (f64, f64, f64, f64)> = list
             .ops
             .iter()
             .filter_map(|op| match op {
-                RenderOp::Image { name, w, h, .. } => Some((name.as_str(), (*w, *h))),
+                RenderOp::Image {
+                    name, x, y, w, h, ..
+                } => Some((name.as_str(), (*x, *y, *w, *h))),
                 _ => None,
             })
             .collect();
@@ -2684,7 +2686,7 @@ mod render_report {
             let spread = (0..3).map(|k| hi[k] - lo[k]).max().unwrap_or(0);
             let drawn = placed
                 .get(t.name.as_str())
-                .map(|(w, h)| format!("{w:.0}x{h:.0} on the page"))
+                .map(|(x, y, w, h)| format!("{w:.0}x{h:.0} at ({x:.0},{y:.0})"))
                 .unwrap_or_else(|| "not drawn".into());
             if spread <= 2 {
                 eprintln!(
@@ -2784,6 +2786,26 @@ mod render_report {
         eprintln!(
             "    of those, JBIG2-coded:          {}",
             c.image_mask_dropped_jbig2
+        );
+        eprintln!(
+            "  mask in force but ignored, image: {}",
+            c.mask_ignored_at_image
+        );
+        eprintln!(
+            "  mask in force but ignored, form:  {}",
+            c.mask_ignored_at_form
+        );
+        eprintln!(
+            "  images under /BM Multiply:        {}",
+            c.images_under_multiply
+        );
+        eprintln!(
+            "  images under another blend:       {}",
+            c.images_under_other_blend
+        );
+        eprintln!(
+            "  images declined under a text clip:{}",
+            c.images_under_text_clip
         );
     }
 
