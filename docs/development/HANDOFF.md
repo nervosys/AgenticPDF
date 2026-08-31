@@ -618,6 +618,13 @@ isolated and measured at a wash, so both were pulled -- and three of the seven
 improvements went with them, because they belonged to the first. Reverting a
 bundle is not reverting the thing you measured.
 
+**A counter for graphics state has to be graphics state.** The dash census
+said 517 strokes were painted under a live pattern. The counter was a plain
+`bool` outside the `q`/`Q` stack, so it stayed true past the `Q` that popped the
+dash and counted every later stroke. The real number is **zero**. A diagnostic
+that does not read the same state the painter reads will answer a different
+question, confidently.
+
 **Count uses, not definitions.** "The whole file contains one `/BM /Multiply`"
 is a fact about the byte string, not about how often it is in force -- one
 ExtGState can be referenced on every draw. The right form of the question is a
