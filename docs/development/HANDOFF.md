@@ -189,6 +189,15 @@ the bound -- the full-page background photograph -- was the one that never
 arrived on Android and iOS. It is now sampled one step further to fit the bound.
 No host-side change, so iOS is fixed too without a Mac.
 
+**Verified on the Android emulator**, which is what the previous round's lesson
+demanded: a brochure cover whose full-page background photograph was absent now
+shows it, behind the five hexagon-framed photographs that the earlier texture
+fix restored. One observation worth keeping rather than burying: opening that
+16.7 MB catalogue raised an "isn't responding" dialog for about half a minute
+before the page appeared. The emulator renders through swiftshader, so this is
+not by itself evidence of a real-device problem -- but decoding a full-page
+photograph is not obviously off the UI thread, and nobody has checked.
+
 **The 129 MB catalogue does not reproduce.** All 300 pages build their display
 list and decode their images in about a tenth of a second each, no failures. It
 decodes only what it draws, so the "decodes the whole document per page"
@@ -372,6 +381,12 @@ duotone headline it was meant to draw. Implementing it properly means glyph
 outlines in the engine or a new op every renderer must learn, which is the cost
 this project already refused for gradients.
 
+**A possible ANR on a large document.** See *Done*: the Android shell showed an
+"isn't responding" dialog for roughly thirty seconds while opening a 16.7 MB
+catalogue, then rendered it correctly. Measured on a software-rendered emulator,
+so it may be nothing; the question nobody has asked is whether a full-page image
+decode runs on the UI thread.
+
 **Fills under a text clip are still painted.** Only images are declined. Nothing
 in the corpus exercises a fill under a text clip, so nothing was written for it;
 the same counter that found the image case would find this one.
@@ -388,8 +403,8 @@ this section listed has been fixed, or measured and rejected; what follows is
 what is actually left.
 
 **iOS.** Unverifiable here: it needs macOS. One thing did change in its favour
--- the full-page-picture fix below needed no host-side change, so the iOS shell
-gets it without being rebuilt. The texture fix from the previous round is still
+-- the full-page-picture fix needed no host-side change, so the iOS shell gets
+it without being rebuilt, and it is verified on Android. The texture fix from the previous round is still
 unconfirmed there, and still three lines against the same shared function.
 
 **The web recording's volume.** 672 KB per steady-state frame for a text page,
