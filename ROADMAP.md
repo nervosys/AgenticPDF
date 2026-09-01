@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 765 Rust, 950 TypeScript |
+| Tests | 771 Rust, 950 TypeScript |
 | Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -69,8 +69,21 @@ every construct the engine turns down.
 - [ ] **iOS has never been built or run.** The code paths exist; nothing has
       executed them. Needs macOS.
 - [ ] Non-PDF formats and the ADF container are covered by their test suites and
-      by the ten real-producer files, but not by a corpus at the scale the PDF
+      by sixteen real-producer files, but not by a corpus at the scale the PDF
       path enjoys.
+
+**What the real-producer files have been worth so far.** Writing one document
+out of Office in every format it supports and diffing the readers against each
+other found **twelve defects** that fixtures written in this repository could
+not: a parser panic on a multi-byte character, a spreadsheet number reported to
+seventeen digits, three separate style-inheritance gaps, two off-by-one walks
+through the legacy `.doc` list definitions, speaker notes attached to the wrong
+slide, dates reported as their serial number, and an error code reported as
+zero. None was visible without a second implementation to disagree with.
+
+The rule the technique rests on: **a document saved in several formats must read
+back the same.** Where two readers differ, at least one is wrong, and no ground
+truth is needed to know that.
 
 ### Render engine
 
