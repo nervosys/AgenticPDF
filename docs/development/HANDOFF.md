@@ -663,6 +663,33 @@ arrays produced nothing -- wrong, because `TJ` calls `emit_text_op` directly and
 never passes through `push_text_op`. Two counters on the same path, rather than
 one counter and an inference, gave the real split.
 
+**What the corpus still asks for that this engine declines: almost nothing.**
+Every fix in this file was found by looking at one page, which works until the
+obvious pages run out. `what_the_corpus_declines` prints the census totals over
+a directory of documents so the next piece of work is chosen from counts rather
+than from whichever page somebody last opened.
+
+Over **304 documents** (270 in `~/Documents`, 34 on the Desktop), three pages
+each, the entire list is:
+
+| Declined | Count |
+| --- | --- |
+| Soft masks that are not `/Luminosity` (alpha masks) | 6 |
+| Stroke ops inside a masked group, painted unmasked | 4 |
+| Masked groups abandoned over budget | 1 |
+
+For scale, that is against 121,310 text runs, 502 Type 3 glyphs, 316 dashed
+strokes and 197 shadings.
+
+**One number on that report was wrong before it was right, and the correction is
+the point.** It first read *12,516 runs skipped for blank text, carrying 12,847
+glyphs* -- which looks like the largest gap in the engine by an order of
+magnitude. It was counting `s.trim().is_empty()`, so every run that decodes to a
+**space** was in it. A run of spaces is blank on purpose. Counting `s.is_empty()`
+instead -- decoded to nothing at all, which is the case that loses ink -- the
+same corpus reports **zero**. A count is only as good as its predicate, and a
+big number is the easiest kind to believe.
+
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.

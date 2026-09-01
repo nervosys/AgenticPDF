@@ -3066,6 +3066,112 @@ mod render_report {
         }
     }
 
+    /// What the corpus asks for that this engine still declines.
+    ///
+    /// Every fix in this file was found by looking at one page. That works
+    /// until the obvious pages run out, and then the question is which of the
+    /// remaining gaps any real document actually exercises -- a feature the
+    /// corpus never asks for is not worth writing, and one it asks for a
+    /// thousand times is worth writing before anything else.
+    ///
+    /// Prints the census totals over a directory of documents, so the next
+    /// piece of work is chosen from counts rather than from the last page
+    /// somebody happened to open.
+    ///
+    /// `APDF_CORPUS_PDFS=<dir> [APDF_CORPUS_PAGES=3] cargo test --release
+    /// -p apdf-reader -- --ignored what_the_corpus_declines --nocapture`
+    #[test]
+    #[ignore = "walks a corpus; run deliberately"]
+    fn what_the_corpus_declines() {
+        let Ok(root) = std::env::var("APDF_CORPUS_PDFS") else {
+            eprintln!("set APDF_CORPUS_PDFS to a directory of documents");
+            return;
+        };
+        let pages: usize = std::env::var("APDF_CORPUS_PAGES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let documents = documents_under(&root);
+        agenticpdf::engine::reset_soft_mask_census();
+        let mut read = 0usize;
+        for path in &documents {
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
+            let Ok(mut session) = crate::session::Session::open(bytes) else {
+                continue;
+            };
+            read += 1;
+            for page in 1..=pages.min(session.page_count()) {
+                if page > 1 {
+                    session.next_page();
+                }
+                let _ = session.display_list();
+            }
+        }
+        let c = agenticpdf::engine::soft_mask_census();
+        eprintln!(
+            "{read} of {} documents, {pages} pages each",
+            documents.len()
+        );
+        // Grouped by what a count would mean if it were large: each line is a
+        // gap, and the number is how often the corpus walks into it.
+        let rows: [(&str, usize); 16] = [
+            (
+                "soft masks declined for not being /Luminosity",
+                c.not_luminosity,
+            ),
+            ("soft mask ignored at an image", c.mask_ignored_at_image),
+            ("soft mask ignored at a form", c.mask_ignored_at_form),
+            ("soft mask ignored at a fill", c.mask_ignored_at_fill),
+            ("soft mask ignored at a stroke", c.mask_ignored_at_stroke),
+            (
+                "text ops inside a masked group, painted unmasked",
+                c.unmasked_text_ops,
+            ),
+            (
+                "stroke ops inside a masked group, painted unmasked",
+                c.unmasked_stroke_ops,
+            ),
+            ("masked groups abandoned over budget", c.over_budget),
+            ("image masks dropped, undecodable", c.image_mask_dropped),
+            (
+                "dash patterns declined over budget",
+                c.dash_declined_over_budget,
+            ),
+            (
+                "dash patterns declined as unwalkable",
+                c.dash_declined_zero_entry,
+            ),
+            ("shadings named but not found", c.shadings_not_found),
+            ("Type 3 codes naming no glyph", c.type3_no_name),
+            ("Type 3 names with no procedure", c.type3_no_proc),
+            ("runs skipped for blank text", c.runs_dropped_blank_text),
+            ("glyphs lost with those runs", c.glyphs_dropped_blank_text),
+        ];
+        let mut rows: Vec<(&str, usize)> = rows.into_iter().filter(|r| r.1 > 0).collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        eprintln!("-- declined, most frequent first:");
+        for (what, n) in &rows {
+            eprintln!("  {n:>7}  {what}");
+        }
+        if rows.is_empty() {
+            eprintln!("  nothing: the corpus asks for nothing this engine declines");
+        }
+        eprintln!("-- for scale:");
+        eprintln!(
+            "  {:>7}  text runs seen, {} ops emitted",
+            c.text_runs_seen, c.text_ops_emitted
+        );
+        eprintln!("  {:>7}  soft masks seen, {} built", c.seen, c.built);
+        eprintln!(
+            "  {:>7}  dashed strokes, {} pieces",
+            c.strokes_under_a_dash, c.dash_pieces
+        );
+        eprintln!("  {:>7}  Type 3 glyphs drawn", c.type3_drawn);
+        eprintln!("  {:>7}  shadings painted", c.shadings_painted);
+    }
+
     /// Ask a tree of documents how often the soft-mask paths are reached.
     ///
     /// Soft masking is where this project has already shipped a correct change

@@ -2562,6 +2562,10 @@ pub struct SoftMaskCensus {
     pub text_runs_seen: usize,
     /// Every `Text` op actually emitted, from either show operator.
     pub text_ops_emitted: usize,
+    /// Runs skipped because the decoded text held **nothing at all**, though
+    /// the run had codes, and the glyphs lost with them. A run that decodes to
+    /// spaces is blank on purpose and is not counted here; a run that decodes
+    /// to nothing is ink the page asked for and did not get.
     pub runs_dropped_blank_text: usize,
     pub glyphs_dropped_blank_text: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
@@ -4514,7 +4518,7 @@ fn push_text_op(
     // The advance is returned either way: invisible text still moves the pen,
     // and anything drawn after it on the line depends on that.
     tally(|c| c.text_runs_seen += 1);
-    if ts.visible() && s.trim().is_empty() && !codes.is_empty() {
+    if ts.visible() && s.is_empty() && !codes.is_empty() {
         tally(|c| {
             c.runs_dropped_blank_text += 1;
             c.glyphs_dropped_blank_text += codes.len();
