@@ -183,12 +183,24 @@ fn read_row(reader: &mut Reader, start: &Element) -> Vec<String> {
     cells
 }
 
-/// Read a cell's displayed text.
+/// Read a cell's value.
 ///
-/// ODF stores both a typed value and the formatted text the user sees. The
-/// displayed text is what a reader wants — it carries the currency symbol, the
-/// thousands separator and the date format — so the paragraphs win, with the
-/// typed value as the fallback.
+/// ODF stores both a typed value and the formatted text the user sees, and
+/// which one a reader wants depends on what the cell holds.
+///
+/// For a **number** it is the value. The displayed form is a rendering of it —
+/// `1,234.50` for 1234.5, `8.5%` for 0.085 — and a thousands separator makes
+/// the text harder for a consumer to parse than the number it stands for. The
+/// two OOXML readers of the same workbook report the value, so preferring the
+/// text here also made one document give two answers depending on which format
+/// it had been saved as.
+///
+/// For **text** it is the paragraphs: there the displayed form *is* the value,
+/// and `string-value` is often absent entirely.
+///
+/// Dates and times keep their typed value for the same reason as numbers, and
+/// it is already ISO 8601 — which is what the OOXML readers now produce from a
+/// serial.
 fn read_cell(reader: &mut Reader, start: &Element) -> String {
     let typed = typed_value(start);
     let mut text = String::new();
@@ -216,7 +228,49 @@ fn read_cell(reader: &mut Reader, start: &Element) -> String {
         }
     }
 
-    if text.is_empty() { typed } else { text }
+    // A machine-readable value wins where the cell has one; otherwise the
+    // displayed text, which for a string cell is the whole of it.
+    //
+    // Except for an error. ODF has no error type: a cell holding `#DIV/0!` is
+    // written as a float of zero with the error only in the displayed text, so
+    // preferring the value turns a failed formula into a plausible number --
+    // which is worse than either answer alone.
+    let machine_readable = matches!(
+        start.attr_local("value-type").unwrap_or(""),
+        "float" | "percentage" | "currency" | "date" | "time" | "boolean"
+    ) && !is_error_code(&text);
+    match machine_readable && !typed.is_empty() {
+        true => typed,
+        false => match text.is_empty() {
+            true => typed,
+            false => text,
+        },
+    }
+}
+
+/// Whether displayed text is one of the spreadsheet error codes.
+///
+/// Matched against the closed set rather than by the leading `#`, because a
+/// column too narrow for its number displays as `######` and that is a
+/// rendering artefact, not an error: there the stored value is the answer.
+fn is_error_code(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "#DIV/0!"
+            | "#N/A"
+            | "#NAME?"
+            | "#NULL!"
+            | "#NUM!"
+            | "#REF!"
+            | "#VALUE!"
+            | "#GETTING_DATA"
+            | "#SPILL!"
+            | "#CALC!"
+            | "#FIELD!"
+            | "#BLOCKED!"
+            | "#CONNECT!"
+            | "#UNKNOWN!"
+    )
 }
 
 /// The cell's typed value, for cells with no displayed paragraph.
@@ -231,7 +285,19 @@ fn typed_value(element: &Element) -> String {
             Some("false") => "FALSE".to_string(),
             other => other.unwrap_or("").to_string(),
         },
-        "date" => element.attr_local("date-value").unwrap_or("").to_string(),
+        // ODF writes a date as a full timestamp even when the cell shows only
+        // the date. Midnight means the cell holds a date, so the time is
+        // dropped -- which is also what the OOXML readers produce from a
+        // serial with no fractional part.
+        "date" => {
+            let value = element.attr_local("date-value").unwrap_or("");
+            match value.split_once('T') {
+                Some((day, time)) if time.trim_matches(['0', ':', '.']).is_empty() => {
+                    day.to_string()
+                }
+                _ => value.replace('T', " "),
+            }
+        }
         "time" => element.attr_local("time-value").unwrap_or("").to_string(),
         "string" => element.attr_local("string-value").unwrap_or("").to_string(),
         _ => String::new(),

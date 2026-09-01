@@ -699,7 +699,9 @@ fn ods_reads_sheets_without_exploding_on_repeat_counts() {
 
     let markdown = document.to_markdown();
     assert!(markdown.contains("## Summary"), "{markdown}");
-    assert!(markdown.contains("| EMEA | 4,200,000 |"), "{markdown}");
+    // The stored value, not the displayed text -- see the unit test of the same
+    // name in `formats::odf::tests` for why that was reversed.
+    assert!(markdown.contains("| EMEA | 4200000 |"), "{markdown}");
     assert!(markdown.contains("## Detail"), "{markdown}");
 }
 

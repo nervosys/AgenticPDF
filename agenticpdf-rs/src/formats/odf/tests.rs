@@ -383,9 +383,15 @@ fn ods_reads_sheets_as_sections() {
     let markdown = to_markdown(&document);
     assert!(markdown.contains("## Summary"), "{markdown}");
     assert!(markdown.contains("| Region | Revenue |"), "{markdown}");
-    // The *displayed* text wins over the stored value: it carries the
-    // formatting the author chose.
-    assert!(markdown.contains("| EMEA | 4,200,000 |"), "{markdown}");
+    // The stored *value* wins over the displayed text, which reverses what
+    // this test asserted before.
+    //
+    // The old rule kept the author's formatting, which reads well and parses
+    // badly: `4,200,000` is not a number to a consumer, and the same workbook
+    // saved as .xlsx or .xls reported `4200000`, so one document gave two
+    // answers depending on which format it had been saved as. Consistency is
+    // not optional even where the preference is arguable.
+    assert!(markdown.contains("| EMEA | 4200000 |"), "{markdown}");
 }
 
 #[test]
@@ -687,5 +693,49 @@ fn odt_reads_a_quote_style_as_a_block_quote() {
     assert!(
         markdown.contains("ordinary body text") && !markdown.contains("> ordinary"),
         "body text is not a quote: {markdown}"
+    );
+}
+
+#[test]
+fn ods_keeps_an_error_code_rather_than_its_fallback_value() {
+    // ODF has no error type: a cell holding `#DIV/0!` is written as a float of
+    // zero with the error only in the displayed text. Preferring the value
+    // turns a failed formula into a plausible number, which is worse than
+    // either answer alone.
+    //
+    // `######` is not an error — it is a column too narrow for its number — so
+    // there the stored value is still the answer.
+    let zip = ods(r#"<table:table table:name="Errors">
+             <table:table-row>
+               <table:table-cell office:value-type="float" office:value="0"
+                 table:formula="of:=1/0"><text:p>#DIV/0!</text:p></table:table-cell>
+               <table:table-cell office:value-type="float" office:value="12345"
+                 ><text:p>######</text:p></table:table-cell>
+             </table:table-row>
+           </table:table>"#);
+    let document = parse(&zip, Format::Ods).unwrap();
+    let markdown = to_markdown(&document);
+    assert!(markdown.contains("#DIV/0!"), "{markdown}");
+    assert!(markdown.contains("12345"), "{markdown}");
+    assert!(!markdown.contains("######"), "{markdown}");
+}
+
+#[test]
+fn ods_reports_a_date_without_the_midnight_it_stores() {
+    // ODF writes a full timestamp even when the cell shows only a date, and
+    // the OOXML readers produce a bare date from a serial with no fraction.
+    let zip = ods(r#"<table:table table:name="Dates">
+             <table:table-row>
+               <table:table-cell office:value-type="date"
+                 office:date-value="2026-03-14T00:00:00"><text:p>2026-03-14</text:p></table:table-cell>
+               <table:table-cell office:value-type="date"
+                 office:date-value="2026-03-14T09:30:00"><text:p>x</text:p></table:table-cell>
+             </table:table-row>
+           </table:table>"#);
+    let markdown = to_markdown(&parse(&zip, Format::Ods).unwrap());
+    assert!(markdown.contains("| 2026-03-14 |"), "{markdown}");
+    assert!(
+        markdown.contains("2026-03-14 09:30:00"),
+        "a real time is kept: {markdown}"
     );
 }
