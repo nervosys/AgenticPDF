@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **671 of 681 — 98.5 %** |
-| Over the threshold | 10 |
+| Matching (total variation ≤ 0.12) | **672 of 681 — 98.7 %** |
+| Over the threshold | 9 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 614 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 616 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -135,6 +135,33 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**A transparency group's alpha outlives the `gs` inside it.** The last page in
+the corpus that was not a sparse-page artefact -- an ebook spread at 0.213 --
+now scores **0.028**.
+
+The page sets `ca 0.1`, draws a form that declares `/Group`, and the group's
+first act is `/GS0 gs` with `ca 1`. We inherited the alpha into the group, so
+that `gs` threw the fade away and a banner meant to be a 10 % wash painted at
+full strength. A group is painted at full strength into its own buffer and the
+*result* is composited with the alpha in force at the `Do` (PDF 11.6.6), so the
+alpha belongs to the group as a whole -- which is exactly what this engine
+already says about soft masks, in a comment, three lines away.
+
+Inside the group the alpha now starts at 1 and what the group painted is faded
+on the way out. A form *without* `/Group` is unchanged: it shares the page's
+state and its `gs` genuinely does set the alpha. Both halves have a test, and
+the contrast between them is the point.
+
+Corpus: **7 improved, 1 regressed, net -0.304**; 671 to 672 of 681. The
+regression is +0.005 on a page at 0.038.
+
+The arithmetic was checked before a line was written, which is why this took one
+attempt: pink `0.871 0.106 0.463` at `ca 0.1` over the page's own
+`0.961 0.957 0.941` predicts (243, 222, 228) and the reference reads
+(242, 221, 226); the purple band at `ca 0.2` predicts (221, 211, 231) against
+(220, 210, 230). Two colours, six channels, all within one count.
+
 
 **Dash patterns are drawn, and the corpus has nothing to say about it.** The `d`
 operator was not implemented at all, so every dashed rule was drawn solid. It is
@@ -549,33 +576,6 @@ zero strokes, zero images. Small, and no longer invisible.
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.
-
-**An ebook page with two bands in the wrong tint.** 0.213, mae 0.025 -- the
-worst page left that is not a sparse-page artefact. Two full-width rounded bands
-are painted in a saturated pink and purple where the reference paints a pale
-tint of the same hue; the small tab at the left edge of each band is saturated
-in both and matches exactly. So it is one fill, one wrong colour, twice.
-
-Ruled out, each with a measurement rather than an argument:
-- **Dashes.** Zero `d` operators on the page.
-- **A Separation tint.** The file contains no Separation or DeviceN at all.
-- **Missing gradients.** The page's single `sh` produces 26 bands and they are
-  not lost: they are the soft mask's own content, consumed correctly to build a
-  26-region mask. The `sh`-and-bands counter in `page_ops` is what showed this.
-- **A mask deleting the fills.** Zero fills enter the one masked group; zero
-  fills, strokes or images are painted anywhere on the page while a mask is in
-  force. All four counters read zero.
-- **A blend mode.** None is in force at any paint on the page.
-
-What has *not* been checked is the form XObjects. The band colours do not appear
-in the page's own content stream, so both bands are painted inside `Fm0`, `Fm1`
-or `Fm2` -- and that is where to start.
-
-**A warning to whoever does.** Three separate wrong-object mistakes were made
-chasing this page: a probe directory that a `cp` had landed elsewhere (so the
-census read zeros that looked like data), and twice reading a page's content by
-*file* order when the page tree orders them differently. Take the `/Pages`
-`/Kids` array and index it; do not trust the order objects appear in the file.
 
 **The worst pages left are sparse ones.** An order-details receipt p1 at 0.266
 (mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at

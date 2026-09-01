@@ -2471,6 +2471,8 @@ pub struct SoftMaskCensus {
     /// these paint at full strength.
     pub mask_ignored_at_fill: usize,
     pub mask_ignored_at_stroke: usize,
+    /// Transparency groups composited with a constant alpha below 1.
+    pub groups_faded: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
     /// is already suppressed when it cannot change the page; an image is not,
     /// because an image has no single colour to test.
@@ -2525,6 +2527,7 @@ thread_local! {
             masked_fills_in: 0, masked_fills_out: 0, bands_clipped_away: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
+            groups_faded: 0,
             mask_ignored_at_form: 0, mask_ignored_at_fill: 0,
             mask_ignored_at_stroke: 0, images_under_multiply: 0,
             images_under_other_blend: 0, images_under_text_clip: 0,
@@ -2847,6 +2850,33 @@ fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Op
     }
     tally(|c| c.built += 1);
     Some(std::rc::Rc::new(regions))
+}
+
+/// Composite a transparency group at the alpha that was in force at its `Do`.
+///
+/// A group is painted at full strength into its own buffer and the *result* is
+/// then composited, so the alpha belongs to the group as a whole and a `gs`
+/// inside it cannot cancel it -- the same rule this engine already follows for
+/// a soft mask, and for the same reason. Inheriting the alpha into the group
+/// instead looks equivalent and is not: one ebook spread sets `ca 0.1`, draws a
+/// group, and the group's first act is `/GS0 gs` with `ca 1`, which threw the
+/// fade away and painted a banner at full strength.
+///
+/// Multiplying each op's alpha is an approximation of compositing the group as
+/// a unit: where shapes inside the group overlap, this darkens the overlap and
+/// true group compositing would not. That is the same approximation the mask
+/// splitter above makes, and it is far closer than ignoring the alpha.
+fn fade_group(ops: &mut [RenderOp], fill_alpha: f64, stroke_alpha: f64) {
+    for op in ops {
+        match op {
+            RenderOp::Fill { color, .. } | RenderOp::Text { color, .. } => {
+                color[3] *= fill_alpha;
+            }
+            RenderOp::Stroke { color, .. } => color[3] *= stroke_alpha,
+            RenderOp::Image { alpha, .. } => *alpha *= fill_alpha,
+            RenderOp::Save | RenderOp::Restore | RenderOp::Clip { .. } => {}
+        }
+    }
 }
 
 /// Split what a transparency group painted across a mask's regions.
@@ -3829,13 +3859,56 @@ fn run_content(
                                     .get(&form.0, "Group")
                                     .map(|o| doc.resolve(&o))
                                     .and_then(|g| g.as_dict().cloned());
+                                // A transparency group is painted at full
+                                // strength and *then* composited with the alpha
+                                // in force at the `Do`, so inside it the alpha
+                                // starts at 1 (PDF 11.6.6) and a `gs` there sets
+                                // only what the group does to itself.
+                                let faded =
+                                    group.is_some() && (fill_alpha < 1.0 || stroke_alpha < 1.0);
+                                let inner_state = match faded {
+                                    true => FormState {
+                                        fill_alpha: 1.0,
+                                        stroke_alpha: 1.0,
+                                        ..state.clone()
+                                    },
+                                    false => state.clone(),
+                                };
                                 match (&soft_mask, group) {
                                     (Some(mask), Some(_)) => {
                                         let mut inner = Vec::new();
                                         run_form(
-                                            doc, &form, resources, ctm, &mut inner, depth, &state,
+                                            doc,
+                                            &form,
+                                            resources,
+                                            ctm,
+                                            &mut inner,
+                                            depth,
+                                            &inner_state,
                                         );
+                                        if faded {
+                                            tally(|c| c.groups_faded += 1);
+                                            fade_group(&mut inner, fill_alpha, stroke_alpha);
+                                        }
                                         ops.extend(apply_mask_to_group(inner, mask));
+                                    }
+                                    (_, Some(_)) if faded => {
+                                        if soft_mask.is_some() {
+                                            tally(|c| c.mask_ignored_at_form += 1);
+                                        }
+                                        tally(|c| c.groups_faded += 1);
+                                        let mut inner = Vec::new();
+                                        run_form(
+                                            doc,
+                                            &form,
+                                            resources,
+                                            ctm,
+                                            &mut inner,
+                                            depth,
+                                            &inner_state,
+                                        );
+                                        fade_group(&mut inner, fill_alpha, stroke_alpha);
+                                        ops.extend(inner);
                                     }
                                     _ => {
                                         if soft_mask.is_some() {
@@ -8676,6 +8749,96 @@ startxref
         let line = vec![vec![[0.0, 0.0], [600.0, 0.0]]];
         let out = dash_subpaths(&line, &[0.005, 0.005], 0.0);
         assert_eq!(out, line, "{} pieces", out.len());
+    }
+
+    /// A page that sets `ca 0.5`, draws a form, and lets the form reset `ca` to 1.
+    ///
+    /// `grouped` decides whether the form declares `/Group` -- which is the
+    /// whole difference between the two tests below.
+    fn page_fading_a_form(grouped: bool) -> Vec<u8> {
+        const PAGE: &str = "/GSa gs /Fm0 Do";
+        const FORM: &str = "/GSb gs 1 0 0 rg 0 0 50 50 re f";
+        let group = match grouped {
+            true => "/Group<</S/Transparency/Type/Group>>",
+            false => "",
+        };
+        format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R",
+                "/Resources<</ExtGState<</GSa 6 0 R/GSb 7 0 R>>/XObject<</Fm0 5 0 R>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "5 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 100 100]{}",
+                "/Resources<</ExtGState<</GSb 7 0 R>>>>/Length {}>>stream\n{}\nendstream endobj\n",
+                "6 0 obj<</Type/ExtGState/ca 0.5/CA 0.5>>endobj\n",
+                "7 0 obj<</Type/ExtGState/ca 1.0/CA 1.0>>endobj\n",
+                "startxref\n0\n%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            group,
+            FORM.len(),
+            FORM
+        )
+        .into_bytes()
+    }
+
+    /// The alpha at a transparency group's `Do` survives a `gs` inside it.
+    ///
+    /// A group is painted at full strength into its own buffer and the result
+    /// is composited with the alpha in force at the `Do` (PDF 11.6.6), so that
+    /// alpha belongs to the group as a whole -- exactly as a soft mask does,
+    /// and this engine already says so about soft masks.
+    ///
+    /// Inheriting the alpha into the group instead looks equivalent and is not.
+    /// An ebook spread sets `ca 0.1`, draws a group, and the group's first act
+    /// is `/GS0 gs` with `ca 1`; inherited, the fade was thrown away and a
+    /// banner painted at full strength. That page scored 0.213 and now scores
+    /// 0.028.
+    #[test]
+    fn a_groups_alpha_outlives_a_gs_inside_it() {
+        let ops = extract_display_list(&page_fading_a_form(true), 1)
+            .expect("a display list")
+            .ops;
+        let alphas: Vec<f64> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(color[3]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(alphas.len(), 1, "{ops:?}");
+        assert!(
+            (alphas[0] - 0.5).abs() < 1e-9,
+            "the group composites at 0.5 however its own `gs` reads: {alphas:?}"
+        );
+    }
+
+    /// A form that is *not* a transparency group has no such protection.
+    ///
+    /// Without `/Group` the form shares the page's graphics state, so a `gs`
+    /// inside it genuinely does set the alpha and the fill comes out opaque.
+    /// The contrast is the point: this is not "always keep the outer alpha",
+    /// it is "a group is composited as a unit".
+    #[test]
+    fn a_plain_forms_gs_does_set_the_alpha() {
+        let ops = extract_display_list(&page_fading_a_form(false), 1)
+            .expect("a display list")
+            .ops;
+        let alphas: Vec<f64> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } => Some(color[3]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(alphas.len(), 1, "{ops:?}");
+        assert!(
+            (alphas[0] - 1.0).abs() < 1e-9,
+            "a plain form's own `gs` wins: {alphas:?}"
+        );
     }
 
     /// A shading pattern is a dictionary, not a stream.
