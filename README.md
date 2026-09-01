@@ -1,11 +1,20 @@
 # AgenticPDF
 
 [![CI](https://github.com/nervosys/AgenticPDF/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/AgenticPDF/actions/workflows/ci.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-100%25-blue.svg)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/library-TypeScript-blue.svg)](https://www.typescriptlang.org/)
+[![Rust](https://img.shields.io/badge/engine-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](https://www.npmjs.com/package/agenticpdf)
 
-**Agentic-first PDF processing and rendering library for the 21st century**
+**Agentic-first document processing and rendering for the 21st century**
+
+Two implementations share this repository. The **npm package**
+(`agenticpdf.ts`) is a zero-dependency single TypeScript file for PDF in
+Node and the browser. The **Rust engine** (`agenticpdf-rs/`) is where new
+capability goes: it reads **seventeen document formats**, renders them, and
+ships a CLI and an MCP server built for agents. See
+[Rust CLI](#rust-cli--multi-format-document-engine) below, or
+[`ROADMAP.md`](ROADMAP.md) for how the two relate.
 
 ## Features
 
@@ -16,6 +25,8 @@
 - **Canvas Rendering** — Full PDF-to-canvas rendering with text, images, vector graphics, and form XObjects
 - **Complete Extraction** — Text, images, forms, annotations, and metadata
 - **Zero Dependencies** — Single TypeScript file (`agenticpdf.ts`), no runtime deps
+- **Seventeen Formats** *(Rust engine)* — PDF, Word, Excel and PowerPoint (modern and legacy), OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text and ADF, all reaching the same structured model
+- **Agent-Native CLI** *(Rust engine)* — `apdf` with JSON output throughout, a JSON-LD ontology for discovery, and an MCP server
 - **Memory Efficient** — Configurable limits, lazy loading, and automatic cleanup
 - **Universal** — Works in browsers and Node.js
 - **Theme Support** — Dark/light mode rendering for viewer UIs
@@ -513,7 +524,12 @@ apdf generate -i paper.pdf -o paper.apdf  # aPDF format
 
 A native Rust CLI (`apdf`) is available in `agenticpdf-rs/` for fast extraction
 without a Node.js runtime. It is not PDF-only: the same commands read Word,
-Excel, PowerPoint, EPUB, RTF, HTML, Markdown, CSV and plain text.
+Excel and PowerPoint in both their modern and their 97-2003 forms, the three
+OpenDocument formats, EPUB, RTF, HTML, Markdown, CSV, plain text and ADF.
+
+The format is detected from the contents, not the extension. Three commands —
+`images`, `forms` and `scanned` — read PDF-specific structures and say so; the
+rest take any of the seventeen.
 
 ```bash
 # Build the Rust CLI
