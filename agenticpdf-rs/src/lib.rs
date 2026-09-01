@@ -329,13 +329,18 @@ pub(crate) fn chunk_fragments(
     let mut current_text = String::new();
     let mut current_pages: Vec<usize> = Vec::new();
     let mut chunk_id = 0usize;
+    // Carried rather than recounted. Counting the words of `current_text` on
+    // every fragment walks the whole accumulated chunk each time, which is
+    // `fragments x max_chunk_size` character scans over a document instead of
+    // one pass: chunking a two-million-character document took 3.3 seconds
+    // against 24 milliseconds to extract the same text.
+    let mut current_words = 0usize;
 
     for (page_number, text) in fragments {
-        let word_count = current_text.split_whitespace().count();
+        let incoming = text.split_whitespace().count();
 
-        if word_count + text.split_whitespace().count() > max_chunk_size && !current_text.is_empty()
-        {
-            let token_count = current_text.split_whitespace().count();
+        if current_words + incoming > max_chunk_size && !current_text.is_empty() {
+            let token_count = current_words;
             chunks.push(SemanticChunk {
                 id: format!("chunk_{}", chunk_id),
                 content: current_text.clone(),
@@ -350,9 +355,13 @@ pub(crate) fn chunk_fragments(
             if overlap > 0 {
                 let words: Vec<&str> = current_text.split_whitespace().collect();
                 let keep = words.len().saturating_sub(overlap);
-                current_text = words[keep..].join(" ");
+                let carried = words.len() - keep;
+                let tail = words[keep..].join(" ");
+                current_text = tail;
+                current_words = carried;
             } else {
                 current_text.clear();
+                current_words = 0;
             }
             current_pages.clear();
         }
@@ -361,6 +370,7 @@ pub(crate) fn chunk_fragments(
             current_text.push(' ');
         }
         current_text.push_str(text);
+        current_words += incoming;
 
         if !current_pages.contains(page_number) {
             current_pages.push(*page_number);
@@ -368,7 +378,7 @@ pub(crate) fn chunk_fragments(
     }
 
     if !current_text.is_empty() {
-        let token_count = current_text.split_whitespace().count();
+        let token_count = current_words;
         chunks.push(SemanticChunk {
             id: format!("chunk_{}", chunk_id),
             content: current_text,
