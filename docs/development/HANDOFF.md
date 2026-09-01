@@ -7,7 +7,9 @@ measurement, what is open, and what needs a human decision.
 
 The living render-correctness report is the artifact *AgenticPDF Render Status*;
 it goes into the **findings** in detail. This file is about the **work** — the
-harnesses, the branch, the traps.
+harnesses, the branch, the traps. For *why the engine is built the way it is* —
+the display list, the painter's limits, and what those cost against PDF.js —
+see [`RENDERING_ARCHITECTURE.md`](RENDERING_ARCHITECTURE.md).
 
 ## Where it stands
 
