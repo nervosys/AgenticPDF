@@ -498,7 +498,7 @@ fn build_ontology_inner() -> serde_json::Value {
         "name": "apdf",
         "version": "1.0.0",
         "license": "AGPL-3.0-or-later",
-        "description": "High-performance Rust CLI for PDF text extraction, metadata parsing, semantic chunking, annotation reading, and outline extraction. Designed for agentic AI workflows with structured JSON output.",
+        "description": "Rust library and CLI that reads a document and returns its structure: text, headings, tables, figures, metadata, annotations and semantic chunks, as JSON. Reads PDF, Word, Excel and PowerPoint (modern and legacy), OpenDocument, EPUB, HTML, Markdown, CSV, RTF, plain text and ADF; the format is detected from the contents, not the extension. Designed for agentic AI workflows.",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "Windows, macOS, Linux",
         "programmingLanguage": "Rust",

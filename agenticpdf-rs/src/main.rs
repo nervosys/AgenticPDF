@@ -31,8 +31,8 @@ use std::process;
 #[command(
     name = "apdf",
     version = "1.0.0",
-    about = "High-performance PDF processing CLI for agentic AI workflows",
-    long_about = "AgenticPDF (apdf) — Extract text, metadata, annotations, outlines, images, and semantic chunks from PDF documents.\nOptimized for AI agent integration with structured JSON output.\n\nRun `apdf describe` to get a machine-readable JSON-LD ontology for autonomous LLM discovery."
+    about = "Parse and convert documents for agentic AI workflows",
+    long_about = "AgenticPDF (apdf) — read a document and get structure back: text, headings, tables, figures, metadata, annotations and semantic chunks, with JSON output throughout.\n\nReads PDF, Word, Excel and PowerPoint (modern and legacy), OpenDocument, EPUB, HTML, Markdown, CSV, RTF, plain text and ADF. Every command below takes any of them; run `apdf formats` for the list this build supports.\n\nRun `apdf describe` for a machine-readable JSON-LD ontology, or `apdf mcp` to serve the same operations over the Model Context Protocol."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,7 +42,7 @@ struct Cli {
 #[cfg(feature = "cli")]
 #[derive(Subcommand)]
 enum Commands {
-    /// Extract text content from a PDF
+    /// Extract text content from any supported document
     Text {
         /// Path to the PDF file
         file: String,
@@ -56,7 +56,7 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Show PDF metadata
+    /// Show document metadata
     Meta {
         /// Path to the PDF file
         file: String,
@@ -64,7 +64,7 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Extract annotations (links, highlights, notes, widgets) from a PDF
+    /// Extract annotations (links, highlights, notes, widgets)
     Annotations {
         /// Path to the PDF file
         file: String,
@@ -83,7 +83,7 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         format: String,
     },
-    /// List images in a PDF
+    /// List images in a PDF. PDF only: reads PDF-specific structures
     Images {
         /// Path to the PDF file
         file: String,
@@ -94,7 +94,7 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         format: String,
     },
-    /// Render the PDF as Markdown with reading order, headings, and lists
+    /// Render any supported document as Markdown with reading order, headings and lists
     Markdown {
         /// Path to the PDF file
         file: String,
@@ -141,7 +141,7 @@ enum Commands {
         #[arg(short, long, default_value = "json")]
         format: String,
     },
-    /// Extract the tagged-PDF logical structure tree (author-provided)
+    /// Extract the logical structure tree the author provided (tagged PDF, or a document's own outline)
     Structure {
         /// Path to the PDF file
         file: String,
@@ -149,7 +149,7 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Extract interactive AcroForm fields (names, types, values)
+    /// Extract interactive AcroForm fields (names, types, values). PDF only
     Forms {
         /// Path to the PDF file
         file: String,
@@ -177,7 +177,7 @@ enum Commands {
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Detect likely-scanned (image-dominated, low-text) pages needing OCR
+    /// Detect likely-scanned (image-dominated, low-text) pages needing OCR. PDF only
     Scanned {
         /// Path to the PDF file
         file: String,
@@ -232,7 +232,7 @@ enum Commands {
         #[arg(long)]
         output: Option<String>,
     },
-    /// Extract everything from a PDF: metadata, text, annotations, outline, and chunks
+    /// Extract everything: metadata, text, annotations, outline and chunks
     All {
         /// Path to the PDF file
         file: String,
@@ -246,7 +246,6 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Convert any supported document to Markdown, HTML or JSON
     /// Search a document. ADF answers from the index inside the file; other
     /// formats are scanned.
     Search {
@@ -278,6 +277,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Convert any supported document to Markdown, HTML, JSON or plain text.
+    ///
+    /// The one command to reach for when the goal is "give me this file in a
+    /// form I can read": it takes any format the build supports and does not
+    /// need to be told which one, since the contents decide.
     Convert {
         /// Path to the document
         file: String,
@@ -1066,8 +1070,6 @@ fn cmd_all(
     Ok(())
 }
 
-/// Convert any supported document to another representation.
-#[cfg(feature = "cli")]
 /// Search a document, using its embedded index where it has one.
 ///
 /// The implementation lives in `agent_ops` so that the CLI, the MCP server and
