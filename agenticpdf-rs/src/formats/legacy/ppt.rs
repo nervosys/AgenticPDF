@@ -41,6 +41,8 @@ const RT_USER_EDIT_ATOM: u16 = 0x0FF5;
 const RT_PERSIST_DIRECTORY_ATOM: u16 = 0x1772;
 const RT_SLIDE_LIST_WITH_TEXT: u16 = 0x0FF0;
 const RT_SLIDE_PERSIST_ATOM: u16 = 0x03F3;
+/// Opens a notes record, and names the slide the notes belong to.
+const RT_NOTES_ATOM: u16 = 0x03F1;
 const RT_TEXT_HEADER_ATOM: u16 = 0x0F9F;
 const RT_TEXT_CHARS_ATOM: u16 = 0x0FA0;
 const RT_TEXT_BYTES_ATOM: u16 = 0x0FA8;
@@ -262,10 +264,47 @@ fn read_persist_fragment(body: &[u8], persist: &mut HashMap<u32, usize>) {
 
 /// The persist ids listed in a slide or notes list, in order.
 fn persist_ids(list: &[u8]) -> Vec<u32> {
+    persist_entries(list)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// `(persist id, slide id)` for each entry in a slide list.
+///
+/// A `SlidePersistAtom` opens with the persist id that locates the record and
+/// carries the slide's own id twelve bytes in. A body too short to hold the
+/// slide id still yields its persist id: losing the slide entirely would be a
+/// far worse answer than not knowing its id, and zero reads as "not known".
+fn persist_entries(list: &[u8]) -> Vec<(u32, u32)> {
     children(list)
         .filter(|record| record.kind == RT_SLIDE_PERSIST_ATOM)
-        .filter_map(|record| u32_at(record.body, 0))
+        .filter_map(|record| {
+            Some((
+                u32_at(record.body, 0)?,
+                u32_at(record.body, 12).unwrap_or(0),
+            ))
+        })
         .collect()
+}
+
+/// The slide a notes record names, from the `NotesAtom` that opens it.
+///
+/// This is the authoritative link, and the only one. The notes list's own
+/// `SlidePersistAtom` also holds a slide id, and it is *not* the owning slide:
+/// on a two-slide deck whose note belongs to the second slide it read 256 while
+/// the slides were 256 and 257, and the `NotesAtom` read 257. Pairing on the
+/// former puts the note on the wrong slide, and pairing by position puts it
+/// there too as soon as one slide has no notes.
+fn notes_owner(stream: &[u8], layout: &Layout, persist: u32) -> Option<u32> {
+    let offset = *layout.persist.get(&persist)?;
+    let (record, _) = record_at(stream, offset)?;
+    if record.kind != RT_NOTES {
+        return None;
+    }
+    children(record.body)
+        .find(|child| child.kind == RT_NOTES_ATOM)
+        .and_then(|atom| u32_at(atom.body, 0))
 }
 
 // ============================================================================
@@ -274,11 +313,20 @@ fn persist_ids(list: &[u8]) -> Vec<u32> {
 
 /// Read slides through the resolved persist directory.
 fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
-    // Notes are listed alongside slides; pair them by position.
+    // Pair each notes record to the slide its `NotesAtom` names.
+    //
+    // Position is right only while every slide has notes. A two-slide deck with
+    // a note on the second slide has one notes entry, and by position it landed
+    // on the first -- where the same deck saved as .pptx and .odp put it on the
+    // second, which is where PowerPoint shows it.
     let notes_ids = layout.notes_list.map(persist_ids).unwrap_or_default();
+    let notes_by_slide: HashMap<u32, u32> = notes_ids
+        .iter()
+        .filter_map(|persist| Some((notes_owner(stream, layout, *persist)?, *persist)))
+        .collect();
 
     let mut sections = Vec::new();
-    for (index, id) in persist_ids(layout.slide_list).into_iter().enumerate() {
+    for (index, (id, slide_id)) in persist_entries(layout.slide_list).into_iter().enumerate() {
         let Some(&offset) = layout.persist.get(&id) else {
             continue;
         };
@@ -290,8 +338,17 @@ fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
         }
 
         let shapes = collect_shapes(record.body);
-        let notes = notes_ids
-            .get(index)
+        // Fall back to position only where no notes record named a slide at
+        // all, so a producer that omits the atom keeps the old behaviour rather
+        // than losing its notes.
+        // Position is the fallback for a file that names no owners at all, and
+        // for a slide whose own id is unknown; neither can be paired by id.
+        let notes_id = match notes_by_slide.is_empty() || slide_id == 0 {
+            false => notes_by_slide.get(&slide_id).copied(),
+            true => notes_ids.get(index).copied(),
+        };
+        let notes = notes_id
+            .as_ref()
             .and_then(|id| layout.persist.get(id))
             .and_then(|&offset| record_at(stream, offset))
             .filter(|(record, _)| record.kind == RT_NOTES)
@@ -503,6 +560,69 @@ mod tests {
     fn text_chars(text: &str) -> Vec<u8> {
         let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
         record(0, RT_TEXT_CHARS_ATOM, &bytes)
+    }
+
+    /// A `SlidePersistAtom` body: persist id, then the slide id twelve bytes in.
+    fn persist_atom(persist: u32, slide: u32) -> Vec<u8> {
+        let mut body = persist.to_le_bytes().to_vec();
+        body.extend_from_slice(&[0u8; 8]); // flags, cTexts
+        body.extend_from_slice(&slide.to_le_bytes());
+        body.extend_from_slice(&[0u8; 4]); // reserved
+        record(0, RT_SLIDE_PERSIST_ATOM, &body)
+    }
+
+    /// A notes record naming the slide it belongs to, carrying one line.
+    fn notes_record(owner: u32, text: &str) -> Vec<u8> {
+        let mut body = record(0, RT_NOTES_ATOM, &owner.to_le_bytes());
+        body.extend(record(0, RT_TEXT_HEADER_ATOM, &[2])); // 2: the notes body
+        body.extend(text_chars(text));
+        container(RT_NOTES, &body)
+    }
+
+    /// Notes go to the slide their `NotesAtom` names, not to the slide in the
+    /// same position in the notes list.
+    ///
+    /// The two lists run in parallel only while every slide has notes. Here the
+    /// second slide has the only note, so pairing by position puts it on the
+    /// first — which is what a deck saved from PowerPoint did, while the same
+    /// deck as .pptx and .odp put it on the second.
+    #[test]
+    fn notes_go_to_the_slide_their_atom_names() {
+        let mut stream: Vec<u8> = Vec::new();
+        let mut persist: HashMap<u32, usize> = HashMap::new();
+
+        for (id, title) in [(16u32, "First"), (17, "Second")] {
+            persist.insert(id, stream.len());
+            let mut body = record(0, RT_TEXT_HEADER_ATOM, &[0]); // 0: the title
+            body.extend(text_chars(title));
+            stream.extend(container(RT_SLIDE, &body));
+        }
+        persist.insert(18, stream.len());
+        // Names slide id 257, which is the *second* slide.
+        stream.extend(notes_record(257, "belongs to the second"));
+
+        let mut slide_list = persist_atom(16, 256);
+        slide_list.extend(persist_atom(17, 257));
+        let notes_list = persist_atom(18, 256);
+
+        let layout = Layout {
+            persist,
+            slide_list: &slide_list,
+            notes_list: Some(&notes_list),
+        };
+        let sections = read_in_presentation_order(&stream, &layout);
+
+        assert_eq!(sections.len(), 2, "{sections:?}");
+        assert!(
+            sections[0].notes.is_empty(),
+            "the first slide has no notes: {:?}",
+            sections[0].notes
+        );
+        assert!(
+            !sections[1].notes.is_empty(),
+            "the second slide has the note: {:?}",
+            sections[1].notes
+        );
     }
 
     #[test]
