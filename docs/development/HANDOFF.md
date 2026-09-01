@@ -144,7 +144,9 @@ for gradient bands and clipped shading: every renderer draws it, none of them
 learns anything.
 
 Corpus: **11 pages improved, 0 regressed, net -0.052.** Small, and every one of
-the eleven is a thin rule getting lighter, which is what a dash is.
+the eleven is a thin rule getting lighter, which is what a dash is. Counted
+against a binary that actually contains the change: 219 patterns set across 270
+documents, **237** strokes painted while one is in force, 15,567 pieces emitted.
 
 **That number is a correction.** The commit that introduced this claimed the
 corpus effect was "exactly zero across all 681 pages". It was not; the sweep
@@ -159,10 +161,12 @@ Two counting mistakes sit behind that, and both are worth keeping:
   was a plain `bool` outside the `q`/`Q` stack, so it stayed true past the `Q`
   that popped the dash. **A counter for a piece of graphics state has to be
   graphics state.**
-- The corrected counter then said *zero*, which the sweep contradicts. That
-  reading is not to be trusted either -- most likely it was taken against the
-  same stale binary. **When a counter and a sweep disagree, the sweep is the
-  measurement**; a counter is a hypothesis about where to look.
+- The corrected counter then said *zero*, which the sweep contradicted. That
+  reading was taken against the same stale binary; re-run against a current one
+  it says 237. **When a counter and a sweep disagree, the sweep is the
+  measurement** -- a counter is a hypothesis about where to look, and here the
+  sweep was right twice while the counter was wrong twice in opposite
+  directions.
 
 
 **A spot colour is the ink, not the coverage.** A Separation names one colorant
