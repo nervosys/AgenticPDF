@@ -2659,17 +2659,32 @@ type SoftMask = std::rc::Rc<Vec<(Vec<[f64; 2]>, f64)>>;
 /// A mask multiplies every fill under it by the number of regions it has, so a
 /// group holding a page of artwork could otherwise turn a few hundred ops into
 /// tens of thousands.
-const MAX_MASKED_PIECES: usize = 8192;
+/// Raised with `MASK_GRID`: at 32x32 a cell count of 1024 means a group of
+/// thirty-two fills needs 32,768 pieces to keep its mask, and a mask abandoned
+/// for the budget paints at full strength -- the failure this whole path
+/// exists to avoid. One masked group in 304 documents reaches this ceiling.
+const MAX_MASKED_PIECES: usize = 32768;
 
 /// How finely an image-drawn mask is sampled: `N` across and `N` down.
 ///
 /// A mask painted with a picture has coverage at every pixel, and the display
 /// list has no way to say that -- so it is sliced into cells of constant
 /// coverage, the same move this engine already makes for a gradient and for a
-/// mesh. Sixteen is chosen against the budget rather than against the eye:
-/// every fill under the mask is cut once per cell, and at 256 cells a group of
-/// thirty-two fills still fits inside `MAX_MASKED_PIECES`.
-const MASK_GRID: usize = 16;
+/// mesh.
+///
+/// This was sixteen, chosen against the budget rather than against the eye.
+/// Against the eye it is a drop shadow that will not fall off: a cell holds one
+/// coverage, so the outermost cells of a fading shadow average to something
+/// where the reference has almost nothing, and the shadow spreads instead of
+/// ending. Two Microsoft receipts drew a full-width panel about twice as deep
+/// as it should be and carried 15 % too much ink for the page.
+///
+/// Thirty-two quarters the cell and was measured over the whole corpus: those
+/// two pages went 0.170 -> 0.109 and 0.160 -> 0.111, nothing else moved at all,
+/// and the corpus went from 679 of 681 within tolerance to all 681. Sixty-four
+/// is not obviously wrong but has nothing left to fix here, and every step up
+/// multiplies the pieces every fill under a mask is cut into.
+const MASK_GRID: usize = 32;
 
 /// Below this spread across the sampled cells, a mask is treated as flat.
 ///

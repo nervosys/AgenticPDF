@@ -14,8 +14,8 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **679 of 681 — 99.7 %** |
-| Over the threshold | 2 |
+| Matching (total variation ≤ 0.12) | **681 of 681 — 100 %** |
+| Over the threshold | 0 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
 | Tests | 625 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
@@ -689,6 +689,33 @@ magnitude. It was counting `s.trim().is_empty()`, so every run that decodes to a
 instead -- decoded to nothing at all, which is the case that loses ink -- the
 same corpus reports **zero**. A count is only as good as its predicate, and a
 big number is the easiest kind to believe.
+
+**The last two pages were a soft mask that would not fall off.** Two Microsoft
+receipts sat at 0.170 and 0.160 with ink 1.15 and a mean absolute error of
+0.003, and had been written off here as a sparse-page artefact. They were not.
+
+What settled it was refusing the summary numbers. Cross-correlating the ink
+profiles gave a **best-aligning offset of zero on both axes** -- the geometry
+was exactly right, so nothing was misplaced and the whole error was weight.
+Banding the surplus ink showed it was not spread over the text at all: one row
+of the page, across every column, at **2.56x** the reference. At pixel
+resolution that row is a full-width panel that the reference ends after 14 rows
+and we carried on for 30.
+
+The panel is one of the soft-masked fills. `MASK_GRID` sliced an image-drawn
+mask into 16x16 cells of constant coverage, and a cell holds one value, so the
+outer cells of a fading shadow average to something where the reference has
+almost nothing. Thirty-two quarters the cell: **0.170 -> 0.109**, **0.160 ->
+0.111**, nothing else in the corpus moved, and every page is now within
+tolerance.
+
+**Also measured and dropped: snapping glyph masks to the pixel grid.** The
+first theory was that a fractional destination makes a nearest-neighbour
+painter duplicate a glyph's edge column -- which it demonstrably does, `floor(x)
+.. ceil(x+w)` is one column too wide, and it would explain 1.20x the non-white
+pixels. Snapping the destination changed the page's total ink by **zero, to the
+byte**. The mechanism is real and was not what was costing this page. Reverted;
+do not re-attempt without new evidence.
 
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the
