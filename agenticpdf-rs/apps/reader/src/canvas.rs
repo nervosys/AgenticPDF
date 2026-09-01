@@ -3549,7 +3549,7 @@ mod page_image {
             entries.len()
         );
 
-        let mut rows: Vec<(f64, f64, String)> = Vec::new();
+        let mut rows: Vec<(f64, f64, f64, String)> = Vec::new();
         let (mut compared, mut matched, mut skipped) = (0usize, 0usize, 0usize);
         for dir in entries {
             let Ok(source) = std::fs::read_to_string(dir.join("source.txt")) else {
@@ -3617,7 +3617,15 @@ mod page_image {
                 if tv <= 0.12 {
                     matched += 1;
                 }
-                rows.push((tv, mae, format!("{name} p{page}")));
+                // How much ink we lay down against the reference. The two
+                // sums are already here to normalise the score with; printing
+                // their ratio costs nothing and answers a question no
+                // difference can, because a line that moved and a line that
+                // got thinner look identical to a difference and only one of
+                // them changes the ink. A page at 0.65 is losing a third of
+                // its marks somewhere.
+                let ink = sa / sb;
+                rows.push((tv, mae, ink, format!("{name} p{page}")));
             }
         }
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -3630,8 +3638,8 @@ mod page_image {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
-        for (tv, mae, what) in rows.iter().take(listed) {
-            eprintln!("{tv:.3}  mae {mae:.4}  {what}");
+        for (tv, mae, ink, what) in rows.iter().take(listed) {
+            eprintln!("{tv:.3}  mae {mae:.4}  ink {ink:.2}  {what}");
         }
         eprintln!("compared {compared}, within 0.12: {matched}, not comparable {skipped}");
     }

@@ -136,6 +136,25 @@ iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
 
+**Two ways of guessing which failures are real, both disproved by measurement.**
+
+*Concentration.* The idea: a real defect puts a big difference in a few cells; a
+threshold artefact spreads a small one everywhere. Measured across the eight
+remaining failures, the worst ten cells carried 4-18 % of each page's total
+difference -- diffuse, by that reading, so all artefacts. Then the same measure
+was run on the ebook page **as it was before the group-alpha fix**, a defect
+known to be real and large, and it scored 5 %: squarely inside the "artefact"
+band. The heuristic cannot tell them apart and was thrown away. Running a
+control on a known-positive is what saved this from becoming another confident
+paragraph in this file.
+
+*A systematic weight bias.* The idea: we draw embedded text lighter than PDF.js.
+It fit the first page looked at. Measured over a 19-page sample of the corpus,
+the median ink ratio is **0.99** and the spread is 0.82 to 1.01. There is no
+general bias, so the pages at 0.62 are outliers with a specific cause rather
+than instances of a rule.
+
+
 **A predictor hiding behind a reference.** `decode_stream` reads
 `/DecodeParms` by matching `Object::Dict`, and an indirect reference does not
 match. The parameters were dropped in silence and the stream handed on *still
@@ -598,12 +617,28 @@ zero strokes, zero images. Small, and no longer invisible.
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.
 
-**The worst pages left are sparse ones** -- *probably*. The claim now has one
-data point behind it and one against: the highest-ink page on the list turned
-out to be a genuine decode bug, and the rest have **not** been looked at. Every
-remaining failure has a mean absolute difference under 0.014, which is the
-argument for the artefact reading, but that is exactly what was said about the
-returns label. Look before believing it. An order-details receipt p1 at 0.266
+**The eight pages left have now been looked at, and "sparse artefact" is not
+what they are.** Two distinct leads, neither chased:
+
+- **The Echo pair loses a third of its ink.** Four of the eight failures are two
+  documents from one product family, and their ink ratios are **0.62 to 0.68** --
+  they lay down two thirds of the marks the reference does. The page is 881 text
+  runs, four fills, no images, no strokes, and the fonts are **embedded**. So it
+  is not substitution and it is not a picture: a third of the text weight is
+  going somewhere. This is the biggest single unexplained thing left.
+- **One page is 16 % *darker*** (`Bumblebee_X` p3, ink 1.16), which is the
+  opposite direction and so a different cause.
+
+The rest sit at ink 0.87 to 1.00 with differences spread thinly, which is
+consistent with the artefact reading -- but that is now a description of two or
+three pages, not a blanket explanation for eight.
+
+**Every sweep row now carries `ink`,** the ratio of our marks to the
+reference's. The two sums were already computed to normalise the score; printing
+their ratio costs nothing and answers a question no difference can, because a
+line that moved and a line that got thinner look identical to a difference and
+only one of them changes the ink. The Echo anomaly would have been visible in
+every sweep this project has ever run. An order-details receipt p1 at 0.266
 (mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at
 0.239 (mae 0.012). Every one of them has a *mean absolute difference under
 0.04*: the normalised score is dividing by very little ink, which is the
