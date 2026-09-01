@@ -41,3 +41,38 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
     // Note the absence of a catch-all: every `Format` now has a parser, and the
     // compiler enforces that a new one cannot be added without wiring it up.
 }
+
+/// Render a spreadsheet number the way the cell displays it.
+///
+/// The three spreadsheet formats store the same value three ways, and each
+/// reader used to render it its own way. A workbook written by Excel holds
+/// `0.28` as `<v>0.28000000000000003</v>` — seventeen significant digits, which
+/// is how a producer guarantees the double round-trips — while the binary `.xls`
+/// holds the double itself and ODF writes `office:value="0.28"`. Echoing the
+/// stored text made one file out of three report a margin of
+/// `0.28000000000000003`, which is the same number and not the same answer.
+///
+/// Formatting the parsed double gives the shortest form that round-trips, which
+/// is what the cell shows and what a reader of the text expects.
+pub(crate) fn format_number(value: f64) -> String {
+    if !value.is_finite() {
+        return String::new();
+    }
+    if value.fract() == 0.0 && value.abs() < 1e15 {
+        return format!("{}", value as i64);
+    }
+    let mut text = format!("{value}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    text
+}
+
+/// The same, from stored text. Text that is not a number is returned unchanged,
+/// which is what keeps an error code like `#DIV/0!` intact.
+pub(crate) fn format_number_text(text: &str) -> String {
+    match text.parse::<f64>() {
+        Ok(value) => format_number(value),
+        Err(_) => text.to_string(),
+    }
+}

@@ -238,20 +238,7 @@ fn typed_value(element: &Element) -> String {
     }
 }
 
-/// Render a stored float without the trailing zeros ODF writes.
-fn trim_float(value: &str) -> String {
-    let Ok(number) = value.parse::<f64>() else {
-        return value.to_string();
-    };
-    if number.fract() == 0.0 && number.abs() < 1e15 {
-        return format!("{}", number as i64);
-    }
-    let mut text = format!("{number}");
-    if text.contains('.') {
-        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
-    }
-    text
-}
+use crate::formats::format_number_text as trim_float;
 
 fn repeat_count(element: &Element, attribute: &str) -> usize {
     element

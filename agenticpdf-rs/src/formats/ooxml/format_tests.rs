@@ -411,6 +411,58 @@ fn xlsx_handles_cell_types() {
 }
 
 #[test]
+fn xlsx_shows_a_number_the_way_the_cell_does() {
+    // Excel writes seventeen significant digits so the double round-trips:
+    // `0.28` is stored as `0.28000000000000003`, and the two parse to the same
+    // f64. Echoing the stored text reported a margin of 0.28000000000000003 —
+    // the same number, and not the same answer — while the `.xls` and `.ods`
+    // readers of the very same workbook both said 0.28.
+    //
+    // Found by writing one workbook out of Excel in all three formats and
+    // reading the three back. The hand-written fixtures here could not have
+    // shown it: they contain the digits somebody expected to see.
+    let zip = xlsx(
+        &[(
+            "Numbers",
+            r#"<row r="1">
+                 <c r="A1"><v>0.28000000000000003</v></c>
+                 <c r="B1"><v>0.08</v></c>
+                 <c r="C1"><v>12.000000000000002</v></c>
+                 <c r="D1"><v>1e3</v></c>
+                 <c r="E1" t="e"><v>#DIV/0!</v></c>
+                 <c r="F1" t="str"><f>TEXT(1,"000")</f><v>007</v></c>
+               </row>"#,
+        )],
+        &[],
+    );
+    let document = open(&zip, Format::Xlsx);
+    let Block::Table(table) = &document.sections[0].blocks[0] else {
+        panic!("expected a table")
+    };
+    let values: Vec<String> = table.rows[0].cells.iter().map(cell_text).collect();
+    assert_eq!(
+        values,
+        // `0.28000000000000003` and `0.28` are the *same* f64, so the shortest
+        // round-trip form of it is `0.28`. `12.000000000000002` is a different
+        // f64 from `12`, so it keeps every digit: this re-renders a number, it
+        // does not round one, and a value that really is not twelve must not be
+        // reported as twelve.
+        //
+        // An error code is not a number and is left alone; a formula's *string*
+        // result keeps its leading zeros, which is why numbers are reformatted
+        // only where `t` says the cell holds one.
+        vec![
+            "0.28",
+            "0.08",
+            "12.000000000000002",
+            "1000",
+            "#DIV/0!",
+            "007"
+        ]
+    );
+}
+
+#[test]
 fn xlsx_makes_one_section_per_sheet_named_after_its_tab() {
     let zip = xlsx(
         &[

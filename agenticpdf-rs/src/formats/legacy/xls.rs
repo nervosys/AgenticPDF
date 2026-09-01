@@ -518,20 +518,7 @@ fn decode_rk(raw: u32) -> f64 {
     if scaled { value / 100.0 } else { value }
 }
 
-/// Render a number without the trailing zeros a float formatter adds.
-fn format_number(value: f64) -> String {
-    if !value.is_finite() {
-        return String::new();
-    }
-    if value.fract() == 0.0 && value.abs() < 1e15 {
-        return format!("{}", value as i64);
-    }
-    let mut text = format!("{value}");
-    if text.contains('.') {
-        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
-    }
-    text
-}
+use crate::formats::format_number;
 
 /// The displayed form of a BIFF error code.
 fn error_text(code: u8) -> &'static str {

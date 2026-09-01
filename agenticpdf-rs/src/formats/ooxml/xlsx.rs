@@ -258,8 +258,15 @@ fn read_cell_value(reader: &mut Reader, start: &Element, shared: &SharedStrings)
             "0" => "FALSE".to_string(),
             other => other.to_string(),
         },
+        // A number, which is also the default when `t` is absent. Excel
+        // writes seventeen significant digits so the double round-trips, so
+        // the stored text is not the text the cell shows.
+        "n" => match inline.trim().is_empty() {
+            false => crate::formats::format_number_text(inline.trim()),
+            true => crate::formats::format_number_text(value.trim()),
+        },
         // "str" is a formula's string result; "e" is an error code such as
-        // #DIV/0!. Both are already text.
+        // #DIV/0!. Both are already text, and neither is a number to reformat.
         _ => {
             if !inline.trim().is_empty() {
                 inline.trim().to_string()
