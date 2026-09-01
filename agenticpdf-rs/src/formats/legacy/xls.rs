@@ -39,6 +39,10 @@ const BOOLERR: u16 = 0x0205;
 const FORMULA: u16 = 0x0006;
 const STRING: u16 = 0x0207;
 const RSTRING: u16 = 0x00D6;
+/// Cell formatting: its number-format index says whether a number is a date.
+const XF: u16 = 0x00E0;
+/// A custom number-format string, for indices at 164 and above.
+const FORMAT: u16 = 0x041E;
 const FILEPASS: u16 = 0x002F;
 
 /// Caps on the grid a single sheet may produce.
@@ -56,6 +60,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     let records = Records::new(&stream);
     let mut sheets: Vec<SheetRef> = Vec::new();
     let mut strings: Vec<String> = Vec::new();
+    let mut formats = Formats::default();
 
     // First pass: the workbook globals, which hold the sheet directory and the
     // shared strings both needed before any cell can be read.
@@ -68,6 +73,24 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
                 }
             }
             SST => strings = parse_sst(record.data, &record.continuations),
+            // The format table: an `XF` names a number format by index, and a
+            // `FORMAT` gives the code for the custom ones. Both are read here
+            // because the globals precede every sheet and apply to all of them.
+            XF => {
+                if let Some(id) = u16_at(record.data, 2) {
+                    formats.xf.push(id);
+                }
+            }
+            FORMAT => {
+                if let Some(id) = u16_at(record.data, 0)
+                    && let Some(len) = u16_at(record.data, 2)
+                    && let Some(&flags) = record.data.get(4)
+                    && let Some((code, _)) =
+                        read_string_body(&record.data[5..], len as usize, flags)
+                {
+                    formats.codes.insert(id, code);
+                }
+            }
             // The globals end at the first EOF; sheet substreams follow.
             EOF_RECORD => break,
             _ => {}
@@ -80,7 +103,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         if sheet.hidden {
             continue;
         }
-        let grid = read_sheet(&stream, sheet.offset, &strings);
+        let grid = read_sheet(&stream, sheet.offset, &strings, &formats);
         let blocks = if grid.is_empty() {
             Vec::new()
         } else {
@@ -311,7 +334,36 @@ fn parse_sst(first: &[u8], continuations: &[&[u8]]) -> Vec<String> {
 // ============================================================================
 
 /// Read one sheet substream into a dense grid.
-fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<String>> {
+/// Which cell formats show a date, indexed as the cell records index them.
+///
+/// A cell record carries its format index two bytes after the column; that
+/// selects an `XF`, which names a number format, which decides whether the
+/// stored number is a quantity or a moment. Without the chain a date reports
+/// its serial -- `46095` for 2026-03-14 -- exactly as the OOXML reader did
+/// before it learned to read `styles.xml`.
+#[derive(Debug, Default)]
+struct Formats {
+    /// XF index -> number format id, in record order.
+    xf: Vec<u16>,
+    /// Custom format id -> its code.
+    codes: std::collections::HashMap<u16, String>,
+}
+
+impl Formats {
+    fn shows_a_date(&self, xf_index: u16) -> bool {
+        let Some(&id) = self.xf.get(xf_index as usize) else {
+            return false;
+        };
+        crate::formats::is_date_format(id as u32, self.codes.get(&id).map(String::as_str))
+    }
+}
+
+fn read_sheet(
+    stream: &[u8],
+    offset: usize,
+    strings: &[String],
+    formats: &Formats,
+) -> Vec<Vec<String>> {
     let mut grid: Vec<Vec<String>> = Vec::new();
     if offset >= stream.len() {
         return grid;
@@ -352,11 +404,12 @@ fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<Strin
                     u16_at(record.data, 2),
                     u32_at(record.data, 6),
                 ) {
+                    let xf = u16_at(record.data, 4).unwrap_or(0);
                     place(
                         &mut grid,
                         row as usize,
                         column as usize,
-                        format_number(decode_rk(raw)),
+                        render_number(decode_rk(raw), xf, formats),
                     );
                 }
             }
@@ -370,11 +423,14 @@ fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<Strin
                 let mut column = first as usize;
                 while at + 6 <= record.data.len().saturating_sub(2) {
                     if let Some(raw) = u32_at(record.data, at + 2) {
+                        // Each entry in the run is its own format index
+                        // and value: two bytes then four.
+                        let xf = u16_at(record.data, at).unwrap_or(0);
                         place(
                             &mut grid,
                             row as usize,
                             column,
-                            format_number(decode_rk(raw)),
+                            render_number(decode_rk(raw), xf, formats),
                         );
                     }
                     at += 6;
@@ -386,11 +442,12 @@ fn read_sheet(stream: &[u8], offset: usize, strings: &[String]) -> Vec<Vec<Strin
                     && let Some(bytes) = record.data.get(6..14)
                 {
                     let value = f64::from_le_bytes(bytes.try_into().unwrap_or([0; 8]));
+                    let xf = u16_at(record.data, 4).unwrap_or(0);
                     place(
                         &mut grid,
                         row as usize,
                         column as usize,
-                        format_number(value),
+                        render_number(value, xf, formats),
                     );
                 }
             }
@@ -519,6 +576,15 @@ fn decode_rk(raw: u32) -> f64 {
 }
 
 use crate::formats::format_number;
+
+/// A number as its cell shows it: a date where the format says so, otherwise
+/// the number itself.
+fn render_number(value: f64, xf: u16, formats: &Formats) -> String {
+    match formats.shows_a_date(xf) {
+        true => crate::formats::format_date_serial(value).unwrap_or_else(|| format_number(value)),
+        false => format_number(value),
+    }
+}
 
 /// The displayed form of a BIFF error code.
 fn error_text(code: u8) -> &'static str {

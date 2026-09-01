@@ -17,6 +17,8 @@
 //! a spreadsheet full of integers.
 
 use crate::PdfError;
+use std::collections::HashMap;
+
 use crate::container::zip::ZipArchive;
 use crate::doc::{Block, Cell, Row, Section, SemanticDoc, Table};
 use crate::formats::ooxml::{Package, attr_i64, resolve_path};
@@ -32,6 +34,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
     let workbook = archive.read(&package.main_part)?;
     let base = package.base();
     let shared = SharedStrings::read(archive, &base);
+    let styles = CellStyles::read(archive, &base);
 
     let mut document = SemanticDoc::default();
     for sheet in read_sheet_list(&workbook) {
@@ -45,7 +48,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
             continue;
         };
 
-        let grid = read_sheet(&bytes, &shared);
+        let grid = read_sheet(&bytes, &shared, &styles);
         if grid.is_empty() {
             // An empty sheet still exists; recording it keeps sheet indices
             // aligned with the workbook a user is looking at.
@@ -125,7 +128,7 @@ fn read_sheet_list(xml: &[u8]) -> Vec<SheetRef> {
 }
 
 /// Read a worksheet into a dense, rectangular grid of strings.
-fn read_sheet(xml: &[u8], shared: &SharedStrings) -> Vec<Vec<String>> {
+fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Vec<String>> {
     let mut grid: Vec<Vec<String>> = Vec::new();
     let mut reader = Reader::new(xml);
     let mut cells_read = 0usize;
@@ -152,7 +155,7 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings) -> Vec<Vec<String>> {
                 if column >= MAX_COLUMNS {
                     continue;
                 }
-                let value = read_cell_value(&mut reader, &element, shared);
+                let value = read_cell_value(&mut reader, &element, shared, styles);
                 if value.is_empty() {
                     continue;
                 }
@@ -215,8 +218,14 @@ fn parse_reference(reference: &str) -> Option<(usize, usize)> {
 }
 
 /// Read one `<c>`'s value, resolving its type.
-fn read_cell_value(reader: &mut Reader, start: &Element, shared: &SharedStrings) -> String {
+fn read_cell_value(
+    reader: &mut Reader,
+    start: &Element,
+    shared: &SharedStrings,
+    styles: &CellStyles,
+) -> String {
     let cell_type = start.attr_local("t").unwrap_or("n").to_string();
+    let style_index = attr_i64(start, "s").and_then(|v| usize::try_from(v).ok());
     let mut value = String::new();
     let mut inline = String::new();
 
@@ -261,10 +270,21 @@ fn read_cell_value(reader: &mut Reader, start: &Element, shared: &SharedStrings)
         // A number, which is also the default when `t` is absent. Excel
         // writes seventeen significant digits so the double round-trips, so
         // the stored text is not the text the cell shows.
-        "n" => match inline.trim().is_empty() {
-            false => crate::formats::format_number_text(inline.trim()),
-            true => crate::formats::format_number_text(value.trim()),
-        },
+        "n" => {
+            let text = match inline.trim().is_empty() {
+                false => inline.trim(),
+                true => value.trim(),
+            };
+            // A date is a number with a format that says otherwise.
+            match styles.shows_a_date(style_index) {
+                true => text
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(crate::formats::format_date_serial)
+                    .unwrap_or_else(|| crate::formats::format_number_text(text)),
+                false => crate::formats::format_number_text(text),
+            }
+        }
         // "str" is a formula's string result; "e" is an error code such as
         // #DIV/0!. Both are already text, and neither is a number to reformat.
         _ => {
@@ -274,6 +294,67 @@ fn read_cell_value(reader: &mut Reader, start: &Element, shared: &SharedStrings)
                 value.trim().to_string()
             }
         }
+    }
+}
+
+/// Which cell styles show a date.
+///
+/// A `<c>` carries `s="N"`, an index into `<cellXfs>`; that entry names a
+/// number format; and the format decides whether the stored number is a
+/// quantity or a moment. Without reading the chain a date cell reports its
+/// serial -- `46095` for 2026-03-14 -- which is the truth of the file and not
+/// the answer to the question.
+#[derive(Debug, Default)]
+struct CellStyles {
+    /// Style index -> number format id, in `<cellXfs>` order.
+    formats: Vec<u32>,
+    /// Custom format id -> its code, for anything at 164 or above.
+    codes: HashMap<u32, String>,
+}
+
+impl CellStyles {
+    fn read(archive: &ZipArchive, base: &str) -> CellStyles {
+        let mut styles = CellStyles::default();
+        let Some(bytes) = archive.read_optional(&resolve_path(base, "styles.xml")) else {
+            return styles;
+        };
+        let mut reader = Reader::new(&bytes);
+        // `<cellStyleXfs>` holds named-style definitions and `<cellXfs>` the
+        // per-cell ones; only the latter is what `s` indexes.
+        let mut in_cell_xfs = false;
+        while let Some(event) = reader.read_event() {
+            match event {
+                // A self-closing element arrives as a Start followed by an
+                // End, so matching Start alone reaches `<xf .../>` too.
+                Event::Start(element) => match element.local.as_str() {
+                    "cellXfs" => in_cell_xfs = true,
+                    "xf" if in_cell_xfs => {
+                        styles
+                            .formats
+                            .push(attr_i64(&element, "numFmtId").unwrap_or(0).max(0) as u32);
+                    }
+                    "numFmt" => {
+                        if let (Some(id), Some(code)) = (
+                            attr_i64(&element, "numFmtId"),
+                            element.attr_local("formatCode"),
+                        ) {
+                            styles.codes.insert(id.max(0) as u32, code.to_string());
+                        }
+                    }
+                    _ => {}
+                },
+                Event::End(name) if name.ends_with("cellXfs") => in_cell_xfs = false,
+                _ => {}
+            }
+        }
+        styles
+    }
+
+    fn shows_a_date(&self, style_index: Option<usize>) -> bool {
+        let Some(id) = style_index.and_then(|at| self.formats.get(at).copied()) else {
+            return false;
+        };
+        crate::formats::is_date_format(id, self.codes.get(&id).map(String::as_str))
     }
 }
 
