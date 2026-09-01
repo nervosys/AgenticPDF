@@ -160,6 +160,14 @@ impl DocxReader<'_> {
                         let id = element.attr_local("val").unwrap_or_default();
                         properties.heading = self.styles.heading_level(id);
                         properties.quote = self.styles.is_quote(id);
+                        // Only where the paragraph has not said so itself. In a
+                        // well-formed `<w:pPr>` the style comes first, so this
+                        // is the inherited value and an inline `<w:numPr>`
+                        // below overwrites it -- including with `numId` zero,
+                        // which is how a paragraph opts out of its style's list.
+                        if properties.numbering.is_none() {
+                            properties.numbering = self.styles.numbering(id);
+                        }
                     }
                     "outlineLvl" => {
                         // An explicit outline level beats the style name.
@@ -200,6 +208,14 @@ impl DocxReader<'_> {
                 },
                 _ => {}
             }
+        }
+
+        // `<w:numId w:val="0"/>` is how a paragraph opts out of the list its
+        // style would otherwise give it. It reads as a numbering reference like
+        // any other, so without this a paragraph that explicitly left the list
+        // is rendered as a list item.
+        if properties.numbering.as_ref().is_some_and(|n| n.id == 0) {
+            properties.numbering = None;
         }
     }
 
@@ -647,6 +663,13 @@ struct Styles {
     headings: HashMap<String, u8>,
     quotes: Vec<String>,
     code: Vec<String>,
+    /// Style id → the numbering the *style* declares, for producers that put it
+    /// there rather than on the paragraph. Word does: a "List Bullet"
+    /// paragraph carries `<w:pStyle w:val="ListBullet"/>` and nothing else,
+    /// and the `<w:numPr>` lives in the style definition.
+    numbering: HashMap<String, NumberingRef>,
+    /// Style id → the style it is based on, so inherited numbering is found.
+    based_on: HashMap<String, String>,
 }
 
 impl Styles {
@@ -667,6 +690,28 @@ impl Styles {
             }
             match element.local.as_str() {
                 "style" => current = element.attr_local("styleId").map(str::to_string),
+                "basedOn" => {
+                    if let (Some(id), Some(parent)) = (&current, element.attr_local("val")) {
+                        styles.based_on.insert(id.clone(), parent.to_string());
+                    }
+                }
+                // Inside a `<w:style>` these appear only under `<w:pPr><w:numPr>`,
+                // so their presence is enough to attribute them to the style.
+                "numId" => {
+                    if let Some(id) = &current
+                        && let Some(value) = attr_i64(&element, "val")
+                    {
+                        styles.numbering.entry(id.clone()).or_default().id = value;
+                    }
+                }
+                "ilvl" => {
+                    if let Some(id) = &current
+                        && let Some(value) = attr_i64(&element, "val")
+                    {
+                        styles.numbering.entry(id.clone()).or_default().level =
+                            value.clamp(0, 8) as u8;
+                    }
+                }
                 // The human-readable name is more reliable than the id, which
                 // is localised by some producers ("berschrift1" in German Word).
                 "name" => {
@@ -717,6 +762,31 @@ impl Styles {
         let compact = id.to_ascii_lowercase();
         let rest = compact.strip_prefix("heading")?;
         rest.parse::<u8>().ok().filter(|l| (1..=9).contains(l))
+    }
+
+    /// The numbering a style carries, following `basedOn` where it does not
+    /// carry one itself.
+    ///
+    /// A `numId` of zero is not "no numbering here" but "remove the numbering
+    /// this style would otherwise inherit", which is why it stops the walk
+    /// rather than continuing up the chain.
+    fn numbering(&self, id: &str) -> Option<NumberingRef> {
+        let mut at = id;
+        // A cap rather than a visited set: a cycle is malformed input, and
+        // eight levels is deeper than any real style chain.
+        for _ in 0..8 {
+            if let Some(reference) = self.numbering.get(at) {
+                return match reference.id {
+                    0 => None,
+                    _ => Some(*reference),
+                };
+            }
+            match self.based_on.get(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        None
     }
 
     fn is_quote(&self, id: &str) -> bool {

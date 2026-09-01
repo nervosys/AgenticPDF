@@ -156,6 +156,67 @@ fn docx_reads_numbering_definitions_to_tell_lists_apart() {
 }
 
 #[test]
+fn docx_takes_a_list_from_the_paragraph_style_when_the_paragraph_is_silent() {
+    // How Word actually writes a bulleted list: the paragraph says only
+    // `<w:pStyle w:val="ListBullet"/>`, and the `<w:numPr>` lives in the style
+    // definition. Reading numbering from the paragraph alone loses the list
+    // entirely — the same document saved as .doc, .odt and .rtf kept its
+    // bullets, and only the .docx came out as plain paragraphs.
+    //
+    // `basedOn` is exercised too: the style here inherits its numbering rather
+    // than declaring it, which is the other shape producers use.
+    let styles = r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+         <w:style w:type="paragraph" w:styleId="BaseList">
+           <w:name w:val="Base List"/>
+           <w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>
+         </w:style>
+         <w:style w:type="paragraph" w:styleId="ListBullet">
+           <w:name w:val="List Bullet"/><w:basedOn w:val="BaseList"/>
+         </w:style>
+         <w:style w:type="paragraph" w:styleId="PlainAfterAll">
+           <w:name w:val="Plain After All"/><w:basedOn w:val="ListBullet"/>
+         </w:style>
+       </w:styles>"#;
+    let numbering = r#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+         <w:abstractNum w:abstractNumId="7">
+           <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl>
+         </w:abstractNum>
+         <w:num w:numId="1"><w:abstractNumId w:val="7"/></w:num>
+       </w:numbering>"#;
+    let body = r#"<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr>
+           <w:r><w:t>from the style</w:t></w:r></w:p>
+         <w:p><w:pPr><w:pStyle w:val="ListBullet"/>
+           <w:numPr><w:numId w:val="0"/></w:numPr></w:pPr>
+           <w:r><w:t>opted out</w:t></w:r></w:p>
+         <w:p><w:r><w:t>never in a list</w:t></w:r></w:p>"#;
+
+    let zip = docx_with_parts(
+        body,
+        &[
+            ("word/styles.xml", styles.as_bytes(), false),
+            ("word/numbering.xml", numbering.as_bytes(), false),
+        ],
+    );
+    let document = open(&zip, Format::Docx);
+    let markdown = to_markdown(&document);
+
+    assert!(
+        markdown.contains("- from the style"),
+        "a paragraph whose style declares the numbering is a list item: {markdown}"
+    );
+    // `numId` zero is not "no numbering here", it is "drop what the style
+    // gives me", so this paragraph must come out plain.
+    assert!(
+        !markdown.contains("- opted out"),
+        "numId 0 opts the paragraph out of its style's list: {markdown}"
+    );
+    assert!(
+        !markdown.contains("- never in a list"),
+        "a paragraph naming no style is not a list item: {markdown}"
+    );
+}
+
+#[test]
 fn docx_nests_list_items_by_their_level() {
     let zip = docx(
         r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>parent</w:t></w:r></w:p>
