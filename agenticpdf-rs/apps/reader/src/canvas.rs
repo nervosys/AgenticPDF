@@ -2703,8 +2703,19 @@ mod render_report {
             .and_then(|v| v.parse().ok())
             .unwrap_or(12);
         let bytes = std::fs::read(&path).expect("read the document");
+        agenticpdf::engine::reset_soft_mask_census();
         let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
+        let census = agenticpdf::engine::soft_mask_census();
         eprintln!("page {page}: {:.0} x {:.0}", list.width, list.height);
+        eprintln!(
+            "  {} sh operators, {} bands produced; {} soft masks, {} groups masked",
+            census.shadings_painted, census.shading_bands, census.seen, census.groups_masked
+        );
+        eprintln!(
+            "  {} fills entered a mask, {} pieces came out",
+            census.masked_fills_in, census.masked_fills_out
+        );
+        eprintln!("  {} bands clipped away", census.bands_clipped_away);
 
         let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
         let mut fills: Vec<(f64, [f64; 4], [f64; 4], usize)> = Vec::new();
@@ -2751,6 +2762,37 @@ mod render_report {
             })
             .sum();
         eprintln!("  stroke subpaths in total: {stroke_subpaths}");
+        // The widest strokes, which is where a rule that is too heavy shows.
+        let mut strokes: Vec<(f64, f64, [f64; 4], [f64; 4])> = Vec::new();
+        for op in &list.ops {
+            if let RenderOp::Stroke {
+                subpaths,
+                color,
+                width,
+            } = op
+            {
+                let mut r = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+                for sp in subpaths {
+                    for p in sp {
+                        r[0] = r[0].min(p[0]);
+                        r[1] = r[1].min(p[1]);
+                        r[2] = r[2].max(p[0]);
+                        r[3] = r[3].max(p[1]);
+                    }
+                }
+                if r[0].is_finite() {
+                    strokes.push(((r[2] - r[0]).max(r[3] - r[1]), *width, *color, r));
+                }
+            }
+        }
+        strokes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("  longest strokes:");
+        for (len, width, color, r) in strokes.iter().take(top) {
+            eprintln!(
+                "    {len:7.1} long, {width:.2} wide, rgba({:.2},{:.2},{:.2},{:.2})  [{:.0},{:.0} to {:.0},{:.0}]",
+                color[0], color[1], color[2], color[3], r[0], r[1], r[2], r[3]
+            );
+        }
         eprintln!("  clip paths that are not axis-aligned rectangles:");
         for op in &list.ops {
             if let RenderOp::Clip { rect, subpaths } = op {
@@ -2991,6 +3033,12 @@ mod render_report {
             c.dash_declined_over_budget
         );
         eprintln!("    pieces actually emitted:        {}", c.dash_pieces);
+        eprintln!("  sh operators reached:             {}", c.shadings_painted);
+        eprintln!(
+            "    named a shading nobody has:     {}",
+            c.shadings_not_found
+        );
+        eprintln!("    bands they produced:            {}", c.shading_bands);
     }
 
     /// Report every image in a tree of documents that is drawn faded.

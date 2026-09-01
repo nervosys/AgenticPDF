@@ -2486,6 +2486,19 @@ pub struct SoftMaskCensus {
     pub dash_declined_zero_entry: usize,
     pub dash_declined_over_budget: usize,
     pub dash_pieces: usize,
+    /// `sh` operators reached, and the bands they produced. A shading that
+    /// paints nothing leaves whatever was under it, which on a page that fills
+    /// a panel and then grades it is the flat colour rather than the gradient.
+    pub shadings_painted: usize,
+    pub shading_bands: usize,
+    pub shadings_not_found: usize,
+    /// Fills entering a masked group, and pieces leaving it. A mask whose
+    /// regions do not overlap what the group painted deletes it outright, and
+    /// nothing else in this engine reports that.
+    pub masked_fills_in: usize,
+    pub masked_fills_out: usize,
+    /// Shading bands emptied by the clip polygon before they were emitted.
+    pub bands_clipped_away: usize,
     /// Images declined because a text clipping path was in force. Text
     /// clipping (`Tr` 4-7) confines everything painted after `ET` to the
     /// glyph outlines, and this engine has no glyph outlines to confine it
@@ -2502,6 +2515,8 @@ thread_local! {
             unmasked_text_ops: 0, unmasked_image_ops: 0, unmasked_stroke_ops: 0,
             dash_patterns_set: 0, strokes_under_a_dash: 0,
             dash_declined_zero_entry: 0, dash_declined_over_budget: 0, dash_pieces: 0,
+            shadings_painted: 0, shading_bands: 0, shadings_not_found: 0,
+            masked_fills_in: 0, masked_fills_out: 0, bands_clipped_away: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
             mask_ignored_at_form: 0, images_under_multiply: 0,
@@ -2862,6 +2877,7 @@ fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec
         tally(|c| c.over_budget += 1);
         return ops;
     }
+    tally(|c| c.masked_fills_in += fills);
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
         // An image cannot be cut into pieces the way a fill can -- it is one
@@ -2925,6 +2941,7 @@ fn apply_mask_to_group(ops: Vec<RenderOp>, mask: &[(Vec<[f64; 2]>, f64)]) -> Vec
             }
             let mut tinted = color;
             tinted[3] *= coverage;
+            tally(|c| c.masked_fills_out += 1);
             out.push(RenderOp::Fill {
                 subpaths: pieces,
                 color: tinted,
@@ -3483,12 +3500,20 @@ fn run_content(
                     // current clip. It has no path and no fill colour of its
                     // own: the gradient *is* the paint.
                     "sh" => {
+                        if let Some(Token::Name(name)) = stack.last() {
+                            tally(|c| c.shadings_painted += 1);
+                            if shading_in(doc, resources, name).is_none() {
+                                tally(|c| c.shadings_not_found += 1);
+                            }
+                        }
                         if let Some(Token::Name(name)) = stack.last()
                             && let Some((sh, raw)) = shading_in(doc, resources, name)
                         {
                             let region = [clip[0].max(0.0), clip[1].max(0.0), clip[2], clip[3]];
                             if region[2] > region[0] && region[3] > region[1] {
-                                for band in crate::shading::bands_of(doc, &sh, &raw, ctm, region) {
+                                let made = crate::shading::bands_of(doc, &sh, &raw, ctm, region);
+                                tally(|c| c.shading_bands += made.len());
+                                for band in made {
                                     // The bands are cut to the clip's *shape*
                                     // here rather than left to a renderer,
                                     // which is the same argument that made them
@@ -3502,6 +3527,7 @@ fn run_content(
                                         None => band.points,
                                     };
                                     if points.len() < 3 {
+                                        tally(|c| c.bands_clipped_away += 1);
                                         continue;
                                     }
                                     ops.push(RenderOp::Fill {

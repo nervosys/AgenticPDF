@@ -143,19 +143,26 @@ pattern's lit runs before they are emitted -- which is the choice already made
 for gradient bands and clipped shading: every renderer draws it, none of them
 learns anything.
 
-**Corpus effect: exactly zero, across all 681 pages**, and the reason is worth
-more than the change. 219 `d` operators set a pattern across 270 documents and
-**not one stroke is painted while one is in force**: every `d` is undone by the
-`Q` that follows it, or is followed only by fills. So the five tests are what
-justify this -- phase, corners, degenerate patterns, and the piece budget --
-exactly as with mesh types 4 and 5.
+Corpus: **11 pages improved, 0 regressed, net -0.052.** Small, and every one of
+the eleven is a thin rule getting lighter, which is what a dash is.
 
-The first census said 517. That number was wrong, and the way it was wrong is
-the lesson: the counter was a plain `bool` that was not part of the graphics
-state, so it stayed true past the `Q` that popped the dash and counted every
-later stroke as dashed. **A counter for a piece of graphics state has to be
-graphics state**, or it reports the wrong number with complete confidence -- the
-same shape of mistake as counting inline images with a grep.
+**That number is a correction.** The commit that introduced this claimed the
+corpus effect was "exactly zero across all 681 pages". It was not; the sweep
+behind that claim ran against a **stale binary** -- its build had failed with
+`LNK1104` because a previous sweep still held the executable open, and the
+script carried on and swept the old one anyway. Re-measured against a binary
+that actually contains the change, eleven pages move.
+
+Two counting mistakes sit behind that, and both are worth keeping:
+
+- The first census said 517 strokes were painted under a live dash. The counter
+  was a plain `bool` outside the `q`/`Q` stack, so it stayed true past the `Q`
+  that popped the dash. **A counter for a piece of graphics state has to be
+  graphics state.**
+- The corrected counter then said *zero*, which the sweep contradicts. That
+  reading is not to be trusted either -- most likely it was taken against the
+  same stale binary. **When a counter and a sweep disagree, the sweep is the
+  measurement**; a counter is a hypothesis about where to look.
 
 
 **A spot colour is the ink, not the coverage.** A Separation names one colorant
@@ -528,10 +535,6 @@ uses one, so the sweep after them is flat by construction rather than by
 evidence. They are verified by synthetic tests against decoded geometry instead.
 Treat the corpus as silent on them, not as endorsing them.
 
-**Dashes are implemented and unmeasured.** No stroke in the corpus is painted
-under a live dash pattern, so the sweep is flat by construction rather than by
-evidence -- read it as silence, not endorsement.
-
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.
@@ -617,6 +620,25 @@ changes went in together and the pair improved seven pages. The second was then
 isolated and measured at a wash, so both were pulled -- and three of the seven
 improvements went with them, because they belonged to the first. Reverting a
 bundle is not reverting the thing you measured.
+
+**Never sweep without checking the binary was rebuilt.** Twice this session a
+measurement was taken against a stale executable: once because
+`cargo test --no-run` failed with `LNK1104` -- a previous sweep still held the
+`.exe` open -- and the script swept the old binary anyway, and once because a
+build was still running when the sweep started. Both produced a confident
+"nothing changed". A sweep script should fail loudly when its build does, and
+until it does, check the binary's timestamp before believing a flat result.
+
+**When a counter and a sweep disagree, believe the sweep.** A counter is a
+hypothesis about where to look; the sweep is the measurement. The dash counter
+said zero strokes were painted under a live pattern and the corpus said eleven
+pages moved.
+
+**A census over a directory that does not exist reports zeros**, and zeros look
+exactly like a real answer. Two probes this session were run against a
+`mkdir`/`cp` that had landed somewhere else, and both "no soft masks, no
+shadings" readings were fiction. The diagnostic prints how many documents it
+found; do not grep that line away.
 
 **A counter for graphics state has to be graphics state.** The dash census
 said 517 strokes were painted under a live pattern. The counter was a plain
