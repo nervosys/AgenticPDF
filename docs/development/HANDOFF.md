@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **672 of 681 — 98.7 %** |
-| Over the threshold | 9 |
+| Matching (total variation ≤ 0.12) | **673 of 681 — 98.8 %** |
+| Over the threshold | 8 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 616 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 617 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -135,6 +135,27 @@ or every `/sdcard/...` argument is rewritten into a Windows path.
 iOS still cannot be built here: it needs macOS.
 
 ## Done since this file was written
+
+**A predictor hiding behind a reference.** `decode_stream` reads
+`/DecodeParms` by matching `Object::Dict`, and an indirect reference does not
+match. The parameters were dropped in silence and the stream handed on *still
+filtered*, with its per-row PNG filter byte in place -- so every row after the
+first was read one byte late and the image sheared into noise. **Nothing
+failed**: the length check passed, the image had pixels, and every diagnostic
+this project owns reported it present and correct.
+
+A returns label does exactly this on an 812-wide indexed image; its barcode was
+a diagonal smear. 0.241 to **0.052**, 1 improved, 0 regressed. Every path that
+holds a `Document` now decodes through `decode_stream_in`, which follows the
+reference first; the plain form remains for the parser, which has no document
+yet.
+
+**This one is worth reading as a lesson about this handoff, not about PDF.**
+That page was on the "sparse pages, threshold artefact, not a defect" list --
+a claim this file has repeated for several revisions and nobody had ever
+checked. The first one looked at was a real bug. The claim was not evidence, it
+was a guess that had been written down often enough to look like one.
+
 
 **A transparency group's alpha outlives the `gs` inside it.** The last page in
 the corpus that was not a sparse-page artefact -- an ebook spread at 0.213 --
@@ -577,7 +598,12 @@ zero strokes, zero images. Small, and no longer invisible.
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.
 
-**The worst pages left are sparse ones.** An order-details receipt p1 at 0.266
+**The worst pages left are sparse ones** -- *probably*. The claim now has one
+data point behind it and one against: the highest-ink page on the list turned
+out to be a genuine decode bug, and the rest have **not** been looked at. Every
+remaining failure has a mean absolute difference under 0.014, which is the
+argument for the artefact reading, but that is exactly what was said about the
+returns label. Look before believing it. An order-details receipt p1 at 0.266
 (mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at
 0.239 (mae 0.012). Every one of them has a *mean absolute difference under
 0.04*: the normalised score is dividing by very little ink, which is the

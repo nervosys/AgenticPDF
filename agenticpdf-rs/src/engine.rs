@@ -1020,6 +1020,46 @@ impl<'a> Document<'a> {
 // Stream decoding (Flate + predictors; ASCIIHex/ASCII85 passthrough-ish)
 // ============================================================================
 
+/// Decode a stream whose `/DecodeParms` may be an indirect reference.
+///
+/// [`decode_stream`] takes only a dictionary and so cannot follow one, and it
+/// reads `/DecodeParms` by matching `Object::Dict`. A reference does not match,
+/// the parameters are silently dropped, and a PNG-predicted stream is handed on
+/// *still filtered* -- with its per-row filter byte still in place, so every
+/// row after the first is read one byte late. A returns label in the corpus
+/// does exactly this: `/DecodeParms 8 0 R` on an indexed 812-wide image, whose
+/// barcode came out as a diagonal smear of noise while the length check passed
+/// and every diagnostic reported an image with pixels.
+///
+/// Anything holding a `Document` should call this rather than
+/// [`decode_stream`]; the plain form is for the parser, which has no document
+/// yet.
+pub fn decode_stream_in(doc: &Document, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
+    let resolve = |key: &str| -> Option<Object> {
+        let value = doc.resolve(dict.get(key)?);
+        Some(match value {
+            Object::Array(a) => Object::Array(a.iter().map(|o| doc.resolve(o)).collect()),
+            other => other,
+        })
+    };
+    let parms = resolve("DecodeParms").or_else(|| resolve("DP"));
+    match parms {
+        // Only pay for a copy when there was something to follow.
+        Some(parms)
+            if !matches!(
+                dict.get("DecodeParms").or_else(|| dict.get("DP")),
+                Some(Object::Dict(_))
+            ) =>
+        {
+            let mut resolved = dict.clone();
+            resolved.insert("DecodeParms".into(), parms);
+            resolved.remove("DP");
+            decode_stream(&resolved, raw)
+        }
+        _ => decode_stream(dict, raw),
+    }
+}
+
 pub fn decode_stream(dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, PdfError> {
     let filters: Vec<String> = match dict.get("Filter") {
         Some(Object::Name(n)) => vec![n.clone()],
@@ -2790,7 +2830,7 @@ fn build_soft_mask(doc: &Document, mask: &Dict, ctm: Matrix, depth: usize) -> Op
     let Object::Stream(dict, raw) = doc.get(mask, "G").map(|o| doc.resolve(&o))? else {
         return None;
     };
-    let content = decode_stream(&dict, &raw).ok()?;
+    let content = decode_stream_in(doc, &dict, &raw).ok()?;
     let resources = doc
         .get(&dict, "Resources")
         .and_then(|o| doc.resolve(&o).as_dict().cloned())
@@ -3025,7 +3065,7 @@ fn form_xobject(doc: &Document, resources: &Dict, name: &str) -> Option<(Dict, V
     {
         return None;
     }
-    let content = decode_stream(d, raw).ok()?;
+    let content = decode_stream_in(doc, d, raw).ok()?;
     Some((d.clone(), content))
 }
 
@@ -3142,7 +3182,7 @@ fn paint_pattern(
     if kind != Some(1) {
         return;
     }
-    let Ok(content) = decode_stream(dict, raw) else {
+    let Ok(content) = decode_stream_in(doc, dict, raw) else {
         return;
     };
 
@@ -4580,7 +4620,7 @@ pub fn extract_image_blobs(data: &[u8]) -> Result<Vec<ImageBlob>, PdfError> {
                 {
                     continue;
                 }
-                let bytes = decode_stream(d, raw).unwrap_or_default();
+                let bytes = decode_stream_in(&doc, d, raw).unwrap_or_default();
                 out.push(ImageBlob {
                     page_number: idx + 1,
                     width: doc.get(d, "Width").and_then(|o| o.as_int()).unwrap_or(0) as u32,
@@ -4798,7 +4838,7 @@ fn collect_inline_images(
     {
         for entry in patterns.values() {
             if let Object::Stream(d, raw) = doc.resolve(entry)
-                && let Ok(tile) = decode_stream(&d, &raw)
+                && let Ok(tile) = decode_stream_in(doc, &d, &raw)
             {
                 let inner = doc
                     .get(&d, "Resources")
@@ -5123,7 +5163,7 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
     if filter.contains("JPXDecode") {
         // JPEG 2000 is the one codec no browser but Safari decodes, so the
         // bytes have to become pixels here or the page renders blank.
-        let bytes = decode_stream(d, raw).ok()?;
+        let bytes = decode_stream_in(doc, d, raw).ok()?;
         let image = crate::image::jpx::decode(&bytes)?;
         if image.width as usize != w || image.height as usize != h {
             return None;
@@ -5142,10 +5182,10 @@ fn image_to_rgba(doc: &Document, d: &Dict, raw: &[u8]) -> Option<(String, u32, u
     }
     if filter.contains("DCTDecode") {
         // Hand the JPEG bytes to the browser, which decodes them natively.
-        let bytes = decode_stream(d, raw).ok()?;
+        let bytes = decode_stream_in(doc, d, raw).ok()?;
         return Some(("jpeg".into(), w as u32, h as u32, bytes));
     }
-    let mut decoded = decode_stream(d, raw).ok()?;
+    let mut decoded = decode_stream_in(doc, d, raw).ok()?;
     // A fax image arrives run-length coded. Decoding it here turns it into an
     // ordinary one-bit grey image, which the rest of this function already
     // knows how to paint.
@@ -5243,7 +5283,7 @@ fn apply_smask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: usize) {
     if sw == 0 || sh == 0 {
         return;
     }
-    let decoded = match decode_stream(&sd, &sraw) {
+    let decoded = match decode_stream_in(doc, &sd, &sraw) {
         Ok(b) => b,
         Err(_) => return,
     };
@@ -5461,7 +5501,7 @@ fn apply_stencil_mask(doc: &Document, d: &Dict, rgba: &mut [u8], w: usize, h: us
     if mw == 0 || mh == 0 {
         return;
     }
-    let Ok(decoded) = decode_stream(&md, &mraw) else {
+    let Ok(decoded) = decode_stream_in(doc, &md, &mraw) else {
         return;
     };
     // A stencil mask is a one-bit image and is compressed like one. Only
@@ -8838,6 +8878,70 @@ startxref
         assert!(
             (alphas[0] - 1.0).abs() < 1e-9,
             "a plain form's own `gs` wins: {alphas:?}"
+        );
+    }
+
+    /// A predicted image whose `/DecodeParms` is an indirect reference.
+    ///
+    /// `decode_stream` reads the parameters by matching `Object::Dict`, and a
+    /// reference does not match. The predictor was then skipped in silence and
+    /// the stream handed on *still filtered*, with its per-row filter byte
+    /// still in place -- so every row after the first is read one byte late and
+    /// the picture shears. Nothing failed: the length check passed, the image
+    /// had pixels, and every diagnostic reported it present.
+    ///
+    /// A returns label in the corpus does exactly this on an 812-wide indexed
+    /// image, and its barcode came out a diagonal smear. That page scored 0.241
+    /// and now scores 0.052.
+    #[test]
+    fn a_predictor_behind_a_reference_is_still_applied() {
+        // Two rows of four grey samples. The second row is stored as its
+        // difference from the first, so reading it unfiltered gives 1 1 1 1
+        // and reading it correctly gives 11 21 31 41.
+        let raw: Vec<u8> = vec![0, 10, 20, 30, 40, 2, 1, 1, 1, 1];
+        let deflated = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
+
+        let mut pdf: Vec<u8> = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.5\n");
+        pdf.extend_from_slice(b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n");
+        pdf.extend_from_slice(b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n");
+        pdf.extend_from_slice(
+            b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 40 40]/Contents 4 0 R\
+/Resources<</XObject<</Im0 5 0 R>>>>>>endobj\n",
+        );
+        const CONTENT: &str = "q 40 0 0 40 0 0 cm /Im0 Do Q";
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                CONTENT.len(),
+                CONTENT
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(
+            format!(
+                "5 0 obj<</Type/XObject/Subtype/Image/Width 4/Height 2/ColorSpace/DeviceGray\
+/BitsPerComponent 8/Filter/FlateDecode/DecodeParms 6 0 R/Length {}>>stream\n",
+                deflated.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&deflated);
+        pdf.extend_from_slice(b"\nendstream endobj\n");
+        // The parameters, one indirection away -- which is the whole point.
+        pdf.extend_from_slice(
+            b"6 0 obj<</Predictor 12/Colors 1/BitsPerComponent 8/Columns 4>>endobj\n",
+        );
+        pdf.extend_from_slice(b"startxref\n0\n%%EOF");
+
+        let textures = extract_page_textures(&pdf, 1).expect("textures");
+        let image = textures.first().expect("one image");
+        assert_eq!((image.width, image.height), (4, 2));
+        let grey: Vec<u8> = image.rgba.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
+        assert_eq!(
+            grey,
+            vec![10, 20, 30, 40, 11, 21, 31, 41],
+            "the second row is a difference from the first; unpredicted it reads 1 1 1 1"
         );
     }
 

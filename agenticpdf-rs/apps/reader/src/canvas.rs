@@ -2866,13 +2866,23 @@ mod render_report {
             .unwrap_or(1);
         let bytes = std::fs::read(&path).expect("read the document");
         let list = agenticpdf::engine::extract_display_list(&bytes, page).expect("a display list");
-        let placed: std::collections::HashMap<&str, (f64, f64, f64, f64)> = list
+        #[allow(clippy::type_complexity)]
+        let placed: std::collections::HashMap<
+            &str,
+            (f64, f64, f64, f64, Option<[f64; 4]>),
+        > = list
             .ops
             .iter()
             .filter_map(|op| match op {
                 RenderOp::Image {
-                    name, x, y, w, h, ..
-                } => Some((name.as_str(), (*x, *y, *w, *h))),
+                    name,
+                    x,
+                    y,
+                    w,
+                    h,
+                    mat,
+                    ..
+                } => Some((name.as_str(), (*x, *y, *w, *h, *mat))),
                 _ => None,
             })
             .collect();
@@ -2895,8 +2905,46 @@ mod render_report {
             let spread = (0..3).map(|k| hi[k] - lo[k]).max().unwrap_or(0);
             let drawn = placed
                 .get(t.name.as_str())
-                .map(|(x, y, w, h)| format!("{w:.0}x{h:.0} at ({x:.0},{y:.0})"))
+                .map(|(x, y, w, h, mat)| format!("{w:.0}x{h:.0} at ({x:.0},{y:.0}) mat {mat:?}"))
                 .unwrap_or_else(|| "not drawn".into());
+            // `APDF_TEXTURE_MAP=<name>` prints the decoded pixels as a
+            // density map. "What did we actually decode" is not answerable
+            // from a mean and a spread: a barcode decoded into noise and one
+            // decoded correctly have the same statistics.
+            if std::env::var("APDF_TEXTURE_MAP").as_deref() == Ok(t.name.as_str()) {
+                let (gw, gh) = (44usize, 26usize);
+                eprintln!("  decoded map of {}:", t.name);
+                for gy in 0..gh {
+                    let mut line = String::new();
+                    for gx in 0..gw {
+                        let mut total = 0u32;
+                        let mut count = 0u32;
+                        for j in 0..3 {
+                            for i in 0..3 {
+                                let x = ((gx as f64 + (i as f64 + 0.5) / 3.0) * t.width as f64
+                                    / gw as f64) as usize;
+                                let y = ((gy as f64 + (j as f64 + 0.5) / 3.0) * t.height as f64
+                                    / gh as f64) as usize;
+                                let at = (y.min(t.height as usize - 1) * t.width as usize
+                                    + x.min(t.width as usize - 1))
+                                    * 4;
+                                total += t.rgba[at] as u32
+                                    + t.rgba[at + 1] as u32
+                                    + t.rgba[at + 2] as u32;
+                                count += 3;
+                            }
+                        }
+                        let v = total / count.max(1);
+                        line.push(
+                            " .:-=+*#%@"
+                                .chars()
+                                .nth(((255 - v) / 26).min(9) as usize)
+                                .unwrap(),
+                        );
+                    }
+                    eprintln!("    {line}");
+                }
+            }
             if spread <= 2 {
                 eprintln!(
                     "FLAT  {}: {}x{}, mean {mean:?}, spread {spread}, {drawn}",
