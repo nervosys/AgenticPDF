@@ -628,13 +628,23 @@ fn parse_level(table: &[u8], at: usize) -> Option<(bool, u64, usize)> {
     // two variable-length grpprls whose sizes are at offsets 25 and 26.
     let start = u32_at(table, at)? as u64;
     let format = *table.get(at + 4)?;
-    let cb_grpprl_chpx = *table.get(at + 25)? as usize;
-    let cb_grpprl_papx = *table.get(at + 26)? as usize;
+    // The two grpprl sizes sit at 24 and 25, after `dxaIndentSav` and the four
+    // unused bytes. Reading them at 25 and 26 drifts the walk by one byte per
+    // level, and the drift accumulates across every list in the file: the third
+    // list in one document read its number format out of the middle of another
+    // structure and came out as bullets where it should have been "1." and "2.".
+    let cb_grpprl_chpx = *table.get(at + 24)? as usize;
+    let cb_grpprl_papx = *table.get(at + 25)? as usize;
 
     // Then a length-prefixed number text.
     let after_grpprls = at + 28 + cb_grpprl_papx + cb_grpprl_chpx;
+    // The number text is a length-prefixed *Unicode* string: the count is in
+    // characters and each takes two bytes. Advancing by the count alone drifts
+    // one byte per character, and the drift carries into every list after it --
+    // a one-character bullet was enough to make the next list's start-at read
+    // 496 instead of 1.
     let text_len = u16_at(table, after_grpprls)? as usize;
-    let next = after_grpprls + 2 + text_len;
+    let next = after_grpprls + 2 + text_len * 2;
 
     // Format 23 is a bullet; everything else numbers.
     Some((format != 23, start, next))
