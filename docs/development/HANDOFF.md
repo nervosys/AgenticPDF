@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **673 of 681 — 98.8 %** |
-| Over the threshold | 8 |
+| Matching (total variation ≤ 0.12) | **676 of 681 — 99.3 %** |
+| Over the threshold | 5 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 617 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 619 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -620,27 +620,47 @@ corpus made it matter; the Separation case did, twenty-two times.
 **The eight pages left have now been looked at, and "sparse artefact" is not
 what they are.** Two distinct leads, neither chased:
 
-- **The Echo pair loses a third of its ink, and the reason is Type 3 fonts.**
-  Four of the eight failures are two documents from one product family, ink
-  ratios **0.62 to 0.68**. Their text is set in **Type 3** fonts, which supply
-  their glyphs as content streams in `/CharProcs` rather than as outlines in a
-  font file -- and this engine runs none of those procedures. Only the advance
-  widths are honoured (`build_one_font` reads the `/FontMatrix` for exactly that
-  reason), so the glyphs land in the right places drawn by a substituted face,
-  and the page comes out light. Nothing about it looks wrong: the runs have a
-  face, the spacing is right, and the only symptom is the missing ink.
+- **The Echo pair lost a third of its ink to Type 3 fonts. Fixed.** Four of the
+  eight failures were two documents from one product family, ink ratios **0.62
+  to 0.68**. Their text is set in **Type 3** fonts, which supply their glyphs as
+  content streams in `/CharProcs` rather than as outlines in a font file, and
+  this engine ran none of those procedures: only the advance widths were
+  honoured, so the glyphs landed in the right places drawn by a substituted face
+  and the page came out light. Nothing about it looked wrong -- the runs had a
+  face, the spacing was right, and the only symptom was the missing ink.
 
-  Counted: the Echo pair alone shows **1,756 runs and 1,780 glyphs** in Type 3
-  over three pages each. Across all 270 documents in `~/Documents` it is 76 runs
-  and 423 glyphs. So Type 3 is *rare but concentrated* -- almost nothing uses it,
-  and a document that does uses it for everything.
+  `draw_type3_run` now executes them, which is the form-XObject path with
+  `/FontMatrix` in place of the form's `/Matrix`. Four pages moved: **0.179 ->
+  0.037, 0.173 -> 0.041, 0.197 -> 0.074, 0.194 -> 0.073**.
 
-  **This is the next piece of work, and it is well-scoped.** The engine already
-  runs content streams and executes form XObjects; a Type 3 glyph is the same
-  thing with the font matrix in place of the form matrix. `page_ops` reports
-  Type 3 runs and glyphs, so the effect will be measurable before and after.
+  **The trap this cost an hour to.** `run_form` takes *decoded* content --
+  `form_xobject` decodes before calling it -- and the first version handed it
+  the raw stream. A compressed stream is not an error, merely operators nobody
+  recognises, so every Flate glyph drew nothing while the handful of
+  uncompressed ones drew fine. The page painted **44 fills for 817 glyphs** and
+  looked exactly like a placement bug: right count of procedures run, right
+  pen positions, almost no ink. What found it was counting the glyphs that
+  *resolved* (817, none skipped) against the fills that *emitted* (44) -- the
+  gap between the two is the whole diagnosis, and neither number alone says
+  anything. `a_filtered_type3_glyph_procedure_is_decoded_first` guards it.
 - **One page is 16 % *darker*** (`Bumblebee_X` p3, ink 1.16), which is the
   opposite direction and so a different cause.
+- **Drawing Type 3 glyphs pushed one page out of tolerance, and the cause is
+  the check harness, not the engine.** An MIT paper's Type 3 font supplies each
+  glyph as a **1-bit `/ImageMask` stencil** -- 396 images on page 1, one per
+  glyph. Drawing them properly took that page from **0.108 to 0.170**, ink
+  **0.85**: we now draw the right thing and it comes out thin.
+
+  The sweep rasterises through `dewey`'s `ImagePainter`, whose `draw_image` is
+  **nearest-neighbour by its own comment** ("a predictable sample beats a
+  smoothed one"). Point-sampling a stencil down to glyph size drops most of
+  each stroke. Our own `fit_to_draw`/`sample_rgba` already box-filters for the
+  JSON painter; `paint_page` does not, so every painter that point-samples sees
+  the full-resolution stencil.
+
+  **Next piece of work, and well-scoped:** area-average an image in the shared
+  paint path when it is drawn smaller than it is stored. It touches every image
+  on every page, so it needs its own sweep -- do not bundle it.
 
 The rest sit at ink 0.87 to 1.00 with differences spread thinly, which is
 consistent with the artefact reading -- but that is now a description of two or

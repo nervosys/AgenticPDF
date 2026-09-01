@@ -2519,6 +2519,11 @@ pub struct SoftMaskCensus {
     /// thirds of the reference's ink.
     pub type3_runs: usize,
     pub type3_glyphs: usize,
+    /// Why a Type 3 glyph was not drawn: its code named nothing, or the name
+    /// had no procedure. Both fall back to the substituted face.
+    pub type3_no_name: usize,
+    pub type3_no_proc: usize,
+    pub type3_drawn: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
     /// is already suppressed when it cannot change the page; an image is not,
     /// because an image has no single colour to test.
@@ -2574,6 +2579,7 @@ thread_local! {
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
             groups_faded: 0, type3_runs: 0, type3_glyphs: 0,
+            type3_no_name: 0, type3_no_proc: 0, type3_drawn: 0,
             mask_ignored_at_form: 0, mask_ignored_at_fill: 0,
             mask_ignored_at_stroke: 0, images_under_multiply: 0,
             images_under_other_blend: 0, images_under_text_clip: 0,
@@ -4129,6 +4135,9 @@ fn run_content(
                         }
                         if let Some(Token::Str(bytes)) = stack.last() {
                             let adv = push_text_op(
+                                doc,
+                                resources,
+                                depth,
                                 bytes,
                                 cur_font,
                                 &cur_font_name,
@@ -4403,6 +4412,9 @@ impl TextState {
 /// so the caller can move the text matrix forward by the run width.
 #[allow(clippy::too_many_arguments)]
 fn push_text_op(
+    doc: &Document,
+    resources: &Dict,
+    depth: usize,
     bytes: &[u8],
     font: Option<&Font>,
     font_name: &str,
@@ -4450,23 +4462,123 @@ fn push_text_op(
         // markers -- without disturbing the line it sits on.
         let placed = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, ts.rise], tm);
         let face = font.map(|f| f.object).unwrap_or(0);
-        // A Type 3 font supplies its glyphs as content streams in
-        // `/CharProcs`, and this engine runs none of them: only the advance
-        // widths are honoured, and a substituted face stands in for artwork the
-        // document provided. Counted here because the substitution is silent --
-        // the run has a face, the glyphs land in the right places, and the only
-        // sign is that the page carries less ink than it should.
-        if font.map(|f| f.type3).unwrap_or(false) {
-            tally(|c| {
-                c.type3_runs += 1;
-                c.type3_glyphs += codes.len().max(s.chars().count());
-            });
+        // A Type 3 font supplies its glyphs as content streams. Run them where
+        // we can; anything left over falls through to the substituted face
+        // below, which is what every Type 3 glyph used to get.
+        let drawn = match font {
+            Some(f) if f.type3 => draw_type3_run(
+                doc, resources, depth, f, &codes, &advs, font_size, ts, &placed, ctm, color, ops,
+            ),
+            _ => 0,
+        };
+        if drawn == 0 {
+            if font.map(|f| f.type3).unwrap_or(false) {
+                tally(|c| {
+                    c.type3_runs += 1;
+                    c.type3_glyphs += codes.len().max(s.chars().count());
+                });
+            }
+            emit_text_op(
+                &s, font_name, face, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
+            );
         }
-        emit_text_op(
-            &s, font_name, face, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
-        );
     }
     advance
+}
+
+/// Draw a run set in a Type 3 font by executing its glyph procedures.
+///
+/// A Type 3 glyph *is* a content stream: the font's `/CharProcs` maps a glyph
+/// name to one, and `/Encoding /Differences` maps a character code to that
+/// name. Drawing one is running it with the text matrix in force and the
+/// font's own `/FontMatrix` mapping glyph space into text space -- the same
+/// operation as executing a form XObject, with the font matrix in place of the
+/// form matrix, which is why this is nine lines of setup around `run_form`.
+///
+/// Returns how many glyphs were actually drawn. Zero means the caller should
+/// fall back to a substituted face: a font with no `/CharProcs`, a code with no
+/// name, or a name with no procedure is not something to guess at.
+///
+/// The advance still comes from `/Widths`, as it does for every other font.
+/// A glyph procedure opens with `d0` or `d1` declaring its own width, and those
+/// are ignored here for the reason the specification gives -- `/Widths` is
+/// authoritative and the operators are a hint to a rasteriser.
+#[allow(clippy::too_many_arguments)]
+fn draw_type3_run(
+    doc: &Document,
+    resources: &Dict,
+    depth: usize,
+    font: &Font,
+    codes: &[u32],
+    advs: &[f64],
+    font_size: f64,
+    ts: &TextState,
+    tm: &Matrix,
+    ctm: &Matrix,
+    color: [f64; 4],
+    ops: &mut Vec<RenderOp>,
+) -> usize {
+    let Some(procs) = &font.char_procs else {
+        return 0;
+    };
+    if depth >= MAX_FORM_DEPTH {
+        return 0;
+    }
+    // The glyph's own resources, or the page's where it has none.
+    let glyph_resources = font
+        .t3_resources
+        .clone()
+        .unwrap_or_else(|| resources.clone());
+    let mut pen = 0.0f64;
+    let mut drawn = 0usize;
+    for (index, code) in codes.iter().enumerate() {
+        let advance = advs.get(index).copied().unwrap_or(0.0);
+        let Some(name) = font.glyph_names.get(code) else {
+            tally(|c| c.type3_no_name += 1);
+            pen += advance * font_size;
+            continue;
+        };
+        let Some(Object::Stream(gd, graw)) = procs.get(name).map(|o| doc.resolve(o)) else {
+            tally(|c| c.type3_no_proc += 1);
+            pen += advance * font_size;
+            continue;
+        };
+        // The procedure is a stream like any other, so it has to be decoded
+        // before it is run. Handing `run_form` the raw bytes silently draws
+        // nothing for every compressed glyph -- which is nearly all of them --
+        // while the handful of uncompressed ones paint, so the page comes out
+        // sparse rather than blank and the fault looks like bad placement.
+        let Ok(gcontent) = decode_stream_in(doc, &gd, &graw) else {
+            tally(|c| c.type3_no_proc += 1);
+            pen += advance * font_size;
+            continue;
+        };
+        // Glyph space -> text space -> device. `Tz` scales horizontally and the
+        // pen walks in text space, so both ride in the same matrix the
+        // substituted path would have used.
+        let sized = [font_size * ts.h_scale, 0.0, 0.0, font_size, pen, 0.0];
+        let placed = mat_mul(&font.font_matrix, &mat_mul(&sized, tm));
+        let base = mat_mul(&placed, ctm);
+        run_form(
+            doc,
+            &(gd, gcontent),
+            &glyph_resources,
+            base,
+            ops,
+            depth + 1,
+            &FormState {
+                // A glyph procedure that does not set a colour paints in the
+                // colour the text was in, which is the whole point of `d0`.
+                fill: color,
+                stroke: color,
+                ..FormState::default()
+            },
+        );
+        drawn += 1;
+        tally(|c| c.type3_drawn += 1);
+        pen += advance * font_size;
+    }
+    drawn
 }
 
 /// `advs_em` holds per-character advances in em fractions (× font size × CTM
@@ -5918,9 +6030,21 @@ fn walk_outline(
 
 struct Font {
     /// A Type 3 font, whose glyphs are content streams in `/CharProcs` rather
-    /// than outlines in a font file. Only the advance widths are honoured; the
-    /// procedures are never run, so the text is drawn with a substituted face.
+    /// than outlines in a font file.
     type3: bool,
+    /// A Type 3 font's glyph procedures, by glyph name, and the code-to-name
+    /// map its `/Encoding /Differences` gives. Both are needed to draw one:
+    /// the code names a glyph and the glyph names a content stream.
+    char_procs: Option<Dict>,
+    glyph_names: HashMap<u32, String>,
+    /// A Type 3 font's `/FontMatrix`, which maps glyph space to text space.
+    /// Every other font type has a fixed 1/1000 matrix; a Type 3 chooses its
+    /// own, and one in the corpus uses 1/2048.
+    font_matrix: [f64; 6],
+    /// The resources a Type 3 glyph procedure draws with. Absent means the
+    /// procedure uses the page's, which is what the specification says to fall
+    /// back to and what several producers rely on.
+    t3_resources: Option<Dict>,
     /// Composite (Type0) fonts use multi-byte codes.
     two_byte: bool,
     /// code -> Unicode string (from ToUnicode CMap).
@@ -6223,6 +6347,48 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
         simple = Some(table);
     }
 
+    // A Type 3 font's glyph procedures, and the names its codes map to. The
+    // `/Differences` loop above turned those names into *characters* for text
+    // extraction; drawing needs the names themselves.
+    let mut glyph_names: HashMap<u32, String> = HashMap::new();
+    let mut char_procs = None;
+    let mut font_matrix = [0.001, 0.0, 0.0, 0.001, 0.0, 0.0];
+    let mut t3_resources = None;
+    if type3 {
+        char_procs = doc
+            .get(font, "CharProcs")
+            .and_then(|o| doc.resolve(&o).as_dict().cloned());
+        t3_resources = doc
+            .get(font, "Resources")
+            .and_then(|o| doc.resolve(&o).as_dict().cloned());
+        if let Some(m) = doc.get(font, "FontMatrix").and_then(|o| {
+            o.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|v| doc.resolve(v).as_f64())
+                    .collect::<Vec<_>>()
+            })
+        }) && m.len() == 6
+        {
+            font_matrix = [m[0], m[1], m[2], m[3], m[4], m[5]];
+        }
+        if let Some(Object::Dict(ed)) = doc.get(font, "Encoding")
+            && let Some(diffs) = doc.get(&ed, "Differences")
+            && let Some(arr) = diffs.as_array()
+        {
+            let mut code = 0u32;
+            for item in arr {
+                match doc.resolve(item) {
+                    Object::Int(n) => code = n.max(0) as u32,
+                    Object::Name(gname) => {
+                        glyph_names.insert(code, gname);
+                        code += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     // Composite-font codespace ranges from an embedded /Encoding CMap stream,
     // so codes of mixed byte widths tokenize correctly. Named encodings
     // (Identity-H/V and predefined CMaps) leave this empty → 2-byte default.
@@ -6255,6 +6421,10 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     Font {
         object: 0,
         type3,
+        char_procs,
+        glyph_names,
+        font_matrix,
+        t3_resources,
         two_byte,
         to_unicode,
         simple,
@@ -8815,6 +8985,115 @@ startxref
         assert_eq!(out, line, "{} pieces", out.len());
     }
 
+    /// The horizontal span of each red fill, in the order the page painted them.
+    ///
+    /// The glyph is a square, so where it lands and how wide it is are the two
+    /// things worth asserting: the first says the pen is right, the second says
+    /// the font matrix is.
+    fn red_glyph_spans(ops: &[RenderOp]) -> Vec<(f64, f64)> {
+        ops.iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill {
+                    subpaths, color, ..
+                } if color[0] > 0.5 => {
+                    let xs: Vec<f64> = subpaths.iter().flatten().map(|p| p[0]).collect();
+                    match xs.is_empty() {
+                        true => None,
+                        false => Some((
+                            xs.iter().cloned().fold(f64::INFINITY, f64::min),
+                            xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+                        )),
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A page setting two glyphs of a Type 3 font, one procedure stored plainly
+    /// and one behind a filter.
+    ///
+    /// Both draw the same red square in a glyph space of 100 units. With a
+    /// `/FontMatrix` of 1/100 and a font size of 10, that square is ten points
+    /// across, and a `/Widths` entry of 100 advances the pen by the same ten.
+    fn page_setting_type3_glyphs() -> Vec<u8> {
+        const PAGE: &str = "BT /F1 10 Tf 20 30 Td (ab) Tj ET";
+        const PLAIN: &str = "1 0 0 rg 0 0 100 100 re f";
+        // The same procedure in ASCIIHex, so one glyph exercises the decode.
+        const HEXED: &str = "31203020302072672030203020313030203130302072652066>";
+        format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                "/Resources<</Font<</F1 5 0 R>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "5 0 obj<</Type/Font/Subtype/Type3/FontMatrix[0.01 0 0 0.01 0 0]",
+                "/FontBBox[0 0 100 100]/FirstChar 97/LastChar 98/Widths[100 100]",
+                "/CharProcs<</ga 6 0 R/gb 7 0 R>>",
+                "/Encoding<</Type/Encoding/Differences[97/ga/gb]>>>>endobj\n",
+                "6 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "7 0 obj<</Length {}/Filter/ASCIIHexDecode>>stream\n{}\nendstream endobj\n",
+                "startxref\n0\n%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            PLAIN.len(),
+            PLAIN,
+            HEXED.len(),
+            HEXED
+        )
+        .into_bytes()
+    }
+
+    /// A Type 3 glyph is drawn by running its procedure, in the right place.
+    ///
+    /// The font supplies its glyphs as content streams and nothing else, so a
+    /// substituted face draws artwork the document never asked for -- a page of
+    /// mathematics set in a Type 3 font came out as a page of the wrong
+    /// letters. Running the procedure through the same path a form XObject
+    /// takes, with `/FontMatrix` in place of the form's `/Matrix`, is what the
+    /// specification describes and what this asserts.
+    #[test]
+    fn a_type3_glyph_is_drawn_by_running_its_procedure() {
+        let ops = extract_display_list(&page_setting_type3_glyphs(), 1)
+            .expect("a display list")
+            .ops;
+        let squares = red_glyph_spans(&ops);
+        assert_eq!(squares.len(), 2, "one square per glyph: {ops:?}");
+        // Ten points across, at the pen, and the second a full advance along.
+        assert!((squares[0].0 - 20.0).abs() < 0.01, "{squares:?}");
+        assert!(
+            (squares[0].1 - squares[0].0 - 10.0).abs() < 0.01,
+            "{squares:?}"
+        );
+        assert!((squares[1].0 - 30.0).abs() < 0.01, "{squares:?}");
+    }
+
+    /// A filtered glyph procedure is decoded before it is run.
+    ///
+    /// `run_form` takes decoded content, and handing it the raw stream draws
+    /// nothing at all -- silently, because a compressed stream is not an error,
+    /// merely operators nobody recognises. Nearly every real Type 3 procedure
+    /// is compressed, so the fault showed as a page that painted a few dozen
+    /// glyphs out of eight hundred and looked like a placement bug.
+    ///
+    /// The second square above comes from an `ASCIIHexDecode` procedure, so the
+    /// count of two in that test is already the guard; this states it on its
+    /// own so the reason survives an edit to the other.
+    #[test]
+    fn a_filtered_type3_glyph_procedure_is_decoded_first() {
+        let ops = extract_display_list(&page_setting_type3_glyphs(), 1)
+            .expect("a display list")
+            .ops;
+        let filtered = red_glyph_spans(&ops).iter().any(|(left, _)| *left > 25.0);
+        assert!(
+            filtered,
+            "the second, filtered glyph painted nothing: {ops:?}"
+        );
+    }
+
     /// A page that sets `ca 0.5`, draws a form, and lets the form reset `ca` to 1.
     ///
     /// `grouped` decides whether the form declares `/Group` -- which is the
@@ -9294,6 +9573,10 @@ endstream\nendobj\n\
             object: 0,
             two_byte: true,
             type3: false,
+            char_procs: None,
+            glyph_names: HashMap::new(),
+            font_matrix: [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            t3_resources: None,
             to_unicode: tu,
             simple: None,
             codespace: vec![(0x00, 0x80, 1), (0x8140, 0x9ffc, 2)],
@@ -9316,6 +9599,10 @@ endstream\nendobj\n\
             object: 0,
             two_byte: true,
             type3: false,
+            char_procs: None,
+            glyph_names: HashMap::new(),
+            font_matrix: [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            t3_resources: None,
             to_unicode: tu,
             simple: None,
             codespace: vec![], // Identity-H
@@ -9337,6 +9624,10 @@ endstream\nendobj\n\
             object: 0,
             two_byte: true,
             type3: false,
+            char_procs: None,
+            glyph_names: HashMap::new(),
+            font_matrix: [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            t3_resources: None,
             to_unicode: HashMap::new(),
             simple: None,
             codespace: vec![],
@@ -9360,6 +9651,10 @@ endstream\nendobj\n\
             object: 0,
             two_byte: true,
             type3: false,
+            char_procs: None,
+            glyph_names: HashMap::new(),
+            font_matrix: [0.001, 0.0, 0.0, 0.001, 0.0, 0.0],
+            t3_resources: None,
             to_unicode: HashMap::new(),
             simple: None,
             codespace: vec![],

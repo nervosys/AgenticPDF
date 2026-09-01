@@ -2722,6 +2722,10 @@ mod render_report {
             census.mask_ignored_at_image
         );
         eprintln!("  {} bands clipped away", census.bands_clipped_away);
+        eprintln!(
+            "  Type 3: {} glyphs drawn, {} no name, {} no procedure, {} left to a stand-in",
+            census.type3_drawn, census.type3_no_name, census.type3_no_proc, census.type3_glyphs
+        );
 
         let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
         let mut fills: Vec<(f64, [f64; 4], [f64; 4], usize)> = Vec::new();
@@ -3121,6 +3125,10 @@ mod render_report {
         eprintln!(
             "  Type 3 text drawn with a stand-in: {} runs, {} glyphs",
             c.type3_runs, c.type3_glyphs
+        );
+        eprintln!(
+            "  Type 3 glyphs drawn {} / no name {} / no procedure {}",
+            c.type3_drawn, c.type3_no_name, c.type3_no_proc
         );
         eprintln!(
             "  dash patterns set:                {}",
