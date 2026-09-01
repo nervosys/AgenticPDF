@@ -145,8 +145,10 @@ learns anything.
 
 Corpus: **11 pages improved, 0 regressed, net -0.052.** Small, and every one of
 the eleven is a thin rule getting lighter, which is what a dash is. Counted
-against a binary that actually contains the change: 219 patterns set across 270
-documents, **237** strokes painted while one is in force, 15,567 pieces emitted.
+against a binary that actually contains the change, over both corpus trees:
+**298** patterns set across 304 documents, **316** strokes painted while one is
+in force, 16,483 pieces emitted. (`~/Documents` 219/237/15,567, `~/Desktop`
+79/79/916 -- quote both, or the count is of half a corpus.)
 
 **That number is a correction.** The commit that introduced this claimed the
 corpus effect was "exactly zero across all 681 pages". It was not; the sweep
