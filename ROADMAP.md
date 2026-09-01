@@ -21,7 +21,8 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 754 Rust, 950 TypeScript |
+| Tests | 765 Rust, 950 TypeScript |
+| Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
 
@@ -90,12 +91,25 @@ every construct the engine turns down.
 
 ### Agentic surface
 
+The CLI and its JSON-LD ontology are now pinned to each other by
+`tests/agent_surface.rs`: the ontology must list exactly the commands the binary
+has and exactly the formats the build reads, and a command claiming to take any
+document must actually take one. An agent has no way to tell a stale description
+from an accurate one, so the description is tested rather than maintained.
+
+
 - [ ] Table reconstruction beyond bordered tables.
 - [ ] Figure and caption linking.
 - [ ] Optional OCR behind a feature flag, keeping the default build pure Rust
       with no heavy ML dependency.
 - [ ] Prompt-injection filtering of hidden and off-page text — the scan exists;
       the policy around it does not.
+- [ ] A tighter bound for untrusted input. The pipeline is bounded — a ZIP
+      member is capped at 128 MB, the archive at 512 MB declared, and the
+      typesetter at 20,000 pages — but those ceilings together still let a small
+      hostile upload buy tens of seconds of CPU. Lowering them would refuse
+      legitimate large documents, so the useful change is to make them
+      configurable rather than to guess at new numbers.
 
 ---
 
@@ -131,10 +145,6 @@ These are the owner's, not the engine's.
       dependency that does not build for WASM — so it costs the footprint and
       reach this project positions itself on. The decision is whether a buyer
       is asking.
-- [ ] **How the project presents itself.** `README.md` still describes a
-      TypeScript-only, zero-dependency single file and does not mention the Rust
-      engine in its features. That is a positioning choice rather than a
-      factual error to fix quietly.
 
 ---
 
