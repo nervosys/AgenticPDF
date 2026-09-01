@@ -2722,6 +2722,14 @@ mod render_report {
             census.mask_ignored_at_image
         );
         eprintln!("  {} bands clipped away", census.bands_clipped_away);
+        eprintln!(
+            "  {} dash patterns set, {} strokes under one, {} pieces; declined {} zero-entry, {} over budget",
+            census.dash_patterns_set,
+            census.strokes_under_a_dash,
+            census.dash_pieces,
+            census.dash_declined_zero_entry,
+            census.dash_declined_over_budget
+        );
         // Stored size against drawn size, for the images on the page. A
         // stencil glyph denser than it is drawn loses strokes to a
         // point-sampling host; one *thinner* than it is drawn cannot, and

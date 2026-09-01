@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **677 of 681 — 99.4 %** |
-| Over the threshold | 4 |
+| Matching (total variation ≤ 0.12) | **678 of 681 — 99.6 %** |
+| Over the threshold | 3 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 621 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 623 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -623,6 +623,23 @@ fill is a list of one. Four pages improved, none regressed, net -0.207.
 
 Both pages are **still over the threshold** at 0.170 and 0.160, ink 1.15 down
 from 1.33. So the masked fills were most of the darkness and are not all of it.
+
+**A zero-length dash is a dot, and dots are how a leader is drawn.**
+`[0 4] 0 d` under `1 J` paints a disc the width of the line every four units --
+the standard dotted leader in a table of contents. `dash_subpaths` declined any
+pattern with a zero entry as unwalkable and left the line **solid**, which on
+one technical reference's contents page drew 32 solid rules where the document
+asked for dots: ink 1.24, and that page scored 0.239. It now scores **0.077**.
+
+Two details cost a test each. Only a pattern that advances by *nothing at all*
+is unwalkable -- an individual zero entry is fine, and `[3 0]` simply gives
+pieces that abut. And the phase-skip loop stepped over a zero-length entry even
+at phase zero, swallowing the first dot of every leader; it now advances only
+while `at > 0.0`.
+
+The op carries no line cap, so each dot is a segment one width long centred on
+the point rather than a disc: a quarter more ink than the disc, against seven
+times for the solid rule.
 
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the

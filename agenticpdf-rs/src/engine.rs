@@ -2296,11 +2296,18 @@ const MAX_DASH_PIECES: usize = 20_000;
 /// justifies it is the same thing that justifies mesh types 4 and 5: the tests
 /// below check decoded geometry directly, and the cost when no dash is live is
 /// a matched `None` arm.
-fn dash_subpaths(paths: &[Vec<[f64; 2]>], pattern: &[f64], phase: f64) -> Vec<Vec<[f64; 2]>> {
+fn dash_subpaths(
+    paths: &[Vec<[f64; 2]>],
+    pattern: &[f64],
+    phase: f64,
+    dot: f64,
+) -> Vec<Vec<[f64; 2]>> {
     let total: f64 = pattern.iter().sum();
-    if total <= 0.0 || pattern.iter().any(|v| *v <= 0.0) {
-        // A zero-length entry would advance the walk below by nothing and spin
-        // there forever. Solid is the honest answer to a pattern like that.
+    if total <= 0.0 || pattern.iter().any(|v| *v < 0.0) {
+        // Only a pattern that advances by nothing at all is unwalkable -- the
+        // loop below would spin on it forever. An *individual* zero entry is
+        // walkable and meaningful, so it is no longer declined here: see the
+        // dot handling in the lit branch.
         tally(|c| c.dash_declined_zero_entry += 1);
         return paths.to_vec();
     }
@@ -2313,7 +2320,10 @@ fn dash_subpaths(paths: &[Vec<[f64; 2]>], pattern: &[f64], phase: f64) -> Vec<Ve
         // says and what keeps the corners of a dashed rectangle from drifting.
         let mut at = phase % total;
         let mut index = 0usize;
-        while at >= pattern[index] {
+        // `at > 0.0` so a zero-length entry is not skipped past at phase zero:
+        // it is the dot the pattern opens with, and consuming it here loses
+        // the first dot of every leader.
+        while at > 0.0 && at >= pattern[index] {
             at -= pattern[index];
             index = (index + 1) % pattern.len();
         }
@@ -2339,7 +2349,29 @@ fn dash_subpaths(paths: &[Vec<[f64; 2]>], pattern: &[f64], phase: f64) -> Vec<Ve
                     true => {
                         run.push(cut);
                         if run.len() >= 2 {
-                            out.push(std::mem::take(&mut run));
+                            let mut piece = std::mem::take(&mut run);
+                            // A lit run of zero length is a *dot*, not nothing.
+                            // `[0 4] 0 d` with `1 J` is how a dotted leader is
+                            // written -- a zero-length dash under a round cap
+                            // paints a disc the width of the line -- and a
+                            // table of contents is full of them. Declining the
+                            // pattern drew 32 solid rules on one page, about
+                            // seven times the ink the dots carry.
+                            //
+                            // The op carries no cap, so the disc is served by a
+                            // segment one width long about the point. Square
+                            // rather than round: a quarter more ink than the
+                            // disc, against seven times for the solid rule.
+                            if piece[0] == piece[piece.len() - 1] && dot > 0.0 {
+                                let (ux, uy) = (dx / span, dy / span);
+                                let (half_x, half_y) = (ux * dot / 2.0, uy * dot / 2.0);
+                                let at = piece[0];
+                                piece = vec![
+                                    [at[0] - half_x, at[1] - half_y],
+                                    [at[0] + half_x, at[1] + half_y],
+                                ];
+                            }
+                            out.push(piece);
                         } else {
                             run.clear();
                         }
@@ -3842,7 +3874,12 @@ fn run_content(
                                         tally(|c| c.strokes_under_a_dash += 1);
                                         let scaled: Vec<f64> =
                                             pattern.iter().map(|v| v * scale).collect();
-                                        dash_subpaths(&paths, &scaled, phase * scale)
+                                        dash_subpaths(
+                                            &paths,
+                                            &scaled,
+                                            phase * scale,
+                                            (line_width * scale).max(0.1),
+                                        )
                                     }
                                     None => paths,
                                 };
@@ -9018,7 +9055,7 @@ startxref
     #[test]
     fn a_dash_pattern_cuts_a_line_into_pieces() {
         let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
-        let out = dash_subpaths(&line, &[2.0, 2.0], 0.0);
+        let out = dash_subpaths(&line, &[2.0, 2.0], 0.0, 0.0);
         assert_eq!(out.len(), 3, "{out:?}");
         assert_eq!(out[0], vec![[0.0, 0.0], [2.0, 0.0]]);
         assert_eq!(out[1], vec![[4.0, 0.0], [6.0, 0.0]]);
@@ -9032,7 +9069,7 @@ startxref
     #[test]
     fn a_dash_phase_shifts_where_the_pattern_starts() {
         let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
-        let out = dash_subpaths(&line, &[2.0, 2.0], 2.0);
+        let out = dash_subpaths(&line, &[2.0, 2.0], 2.0, 0.0);
         // Two, not three: shifted by one gap, the line now *ends* in a gap
         // rather than in a dash.
         assert_eq!(out.len(), 2, "{out:?}");
@@ -9048,25 +9085,81 @@ startxref
     #[test]
     fn a_dash_runs_across_a_corner() {
         let path = vec![vec![[0.0, 0.0], [3.0, 0.0], [3.0, 3.0]]];
-        let out = dash_subpaths(&path, &[4.0, 1.0], 0.0);
+        let out = dash_subpaths(&path, &[4.0, 1.0], 0.0, 0.0);
         // The first lit run is four units long: three across and one up, so it
         // has to carry the corner point between them.
         assert_eq!(out[0], vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0]], "{out:?}");
     }
 
-    /// A pattern that cannot be walked leaves the path solid.
+    /// Only a pattern that advances by nothing at all is unwalkable.
     ///
-    /// A zero-length entry advances the walk by nothing, which would spin
-    /// forever; an all-zero array is the spec's own way of saying solid. Both
-    /// return the path untouched rather than an empty one, because a rule that
-    /// vanishes is worse than a rule that is too heavy.
+    /// An all-zero array is the specification's own way of saying solid, and
+    /// walking it would spin forever, so it returns the path untouched.
     #[test]
-    fn an_unwalkable_dash_pattern_leaves_the_line_solid() {
+    fn a_dash_pattern_that_advances_by_nothing_leaves_the_line_solid() {
         let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
-        for pattern in [vec![0.0, 0.0], vec![3.0, 0.0], vec![0.0]] {
-            let out = dash_subpaths(&line, &pattern, 0.0);
+        for pattern in [vec![0.0, 0.0], vec![0.0]] {
+            let out = dash_subpaths(&line, &pattern, 0.0, 0.0);
             assert_eq!(out, line, "pattern {pattern:?} should leave the line alone");
         }
+    }
+
+    /// A zero-length *gap* is walkable, and covers the same line.
+    ///
+    /// `[3 0]` is three on and nothing off, so the pieces abut. This used to be
+    /// declined alongside the genuinely unwalkable patterns, which was
+    /// harmless here and not harmless for `[0 4]` -- see the dot test below.
+    #[test]
+    fn a_zero_gap_gives_pieces_that_abut() {
+        let line = vec![vec![[0.0, 0.0], [10.0, 0.0]]];
+        let out = dash_subpaths(&line, &[3.0, 0.0], 0.0, 0.0);
+        assert!(out.len() > 1, "{out:?}");
+        assert_eq!(out[0][0], [0.0, 0.0], "{out:?}");
+        assert_eq!(*out.last().unwrap().last().unwrap(), [10.0, 0.0], "{out:?}");
+        for pair in out.windows(2) {
+            assert_eq!(
+                *pair[0].last().unwrap(),
+                pair[1][0],
+                "a zero gap leaves no gap: {out:?}"
+            );
+        }
+    }
+
+    /// A zero-length dash is a dot, and dots are how a leader is drawn.
+    ///
+    /// `[0 4] 0 d` under `1 J` paints a disc the width of the line every four
+    /// units -- the standard dotted leader, and a table of contents is full of
+    /// them. Declining the pattern drew a solid rule instead: one page of a
+    /// technical reference carries 32 such leaders and came out at ink 1.24,
+    /// roughly seven times the ink the dots carry along those lines.
+    ///
+    /// The op carries no line cap, so each dot is a segment one width long
+    /// centred on the point rather than a disc.
+    #[test]
+    fn a_zero_length_dash_paints_a_dot() {
+        let line = vec![vec![[0.0, 0.0], [12.0, 0.0]]];
+        let out = dash_subpaths(&line, &[0.0, 4.0], 0.0, 0.75);
+        assert!(
+            out.len() >= 3,
+            "a dot every four units over twelve: {out:?}"
+        );
+        for piece in &out {
+            assert_eq!(piece.len(), 2, "{out:?}");
+            let length = (piece[1][0] - piece[0][0]).hypot(piece[1][1] - piece[0][1]);
+            assert!(
+                (length - 0.75).abs() < 1e-9,
+                "a dot is one line width long, not {length}: {out:?}"
+            );
+        }
+        // Centred on the multiples of four, not hung off them.
+        assert!(
+            (out[0][0][0] - -0.375).abs() < 1e-9,
+            "the first dot sits at 0: {out:?}"
+        );
+        assert!(
+            (out[1][0][0] - 3.625).abs() < 1e-9,
+            "and the next four along: {out:?}"
+        );
     }
 
     /// A pattern fine enough to shatter a page is declined, not drawn.
@@ -9077,7 +9170,7 @@ startxref
     #[test]
     fn a_dash_pattern_finer_than_the_budget_stays_solid() {
         let line = vec![vec![[0.0, 0.0], [600.0, 0.0]]];
-        let out = dash_subpaths(&line, &[0.005, 0.005], 0.0);
+        let out = dash_subpaths(&line, &[0.005, 0.005], 0.0, 0.0);
         assert_eq!(out, line, "{} pieces", out.len());
     }
 
