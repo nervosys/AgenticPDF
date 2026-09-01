@@ -831,3 +831,184 @@ mod tests {
         assert!(document.display_list(1).is_ok());
     }
 }
+
+#[cfg(test)]
+mod real_documents {
+    use super::*;
+
+    /// Open every document under a directory and report what came back.
+    ///
+    /// The non-PDF formats are covered by unit tests over fixtures this
+    /// repository wrote, which says the parsers do what their authors expected
+    /// and nothing about what real files contain. This walks a directory of
+    /// real ones and reports, per format: how many opened, how many produced no
+    /// text at all, and how many failed outright.
+    ///
+    /// Nothing here asserts. A file that fails to open may be genuinely
+    /// broken, and a file with no text may genuinely have none -- the point is
+    /// the *rate*, and a rate is only readable next to the others.
+    ///
+    /// `APDF_DOCS=<dir> cargo test --release -- --ignored real_documents_open
+    /// --nocapture`
+    #[test]
+    #[ignore = "walks a directory of real documents; run deliberately"]
+    fn real_documents_open() {
+        let Ok(root) = std::env::var("APDF_DOCS") else {
+            eprintln!("set APDF_DOCS to a directory of documents");
+            return;
+        };
+        // Build output and dependency trees hold tens of thousands of files
+        // that are documents only in the sense that they end in `.md`.
+        const SKIP: [&str; 6] = [
+            "node_modules",
+            "target",
+            ".git",
+            "dist",
+            "coverage",
+            ".cargo",
+        ];
+        const WANTED: [&str; 15] = [
+            "docx", "xlsx", "pptx", "doc", "xls", "ppt", "odt", "ods", "odp", "epub", "rtf", "csv",
+            "html", "htm", "md",
+        ];
+        let cap: usize = std::env::var("APDF_DOCS_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(400);
+
+        let mut found: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(&root)];
+        let mut per_ext: std::collections::BTreeMap<String, usize> = Default::default();
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if path.is_dir() {
+                    if !SKIP.contains(&name.as_str()) && !name.starts_with('.') {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                let Some(ext) = path.extension().map(|e| e.to_string_lossy().to_lowercase()) else {
+                    continue;
+                };
+                if !WANTED.contains(&ext.as_str()) {
+                    continue;
+                }
+                // Capped per extension, so 7,000 Markdown files do not crowd
+                // out the one spreadsheet.
+                let seen = per_ext.entry(ext).or_insert(0);
+                if *seen >= cap {
+                    continue;
+                }
+                *seen += 1;
+                found.push(path);
+            }
+        }
+        found.sort();
+
+        #[derive(Default)]
+        struct Tally {
+            seen: usize,
+            opened: usize,
+            failed: usize,
+            empty: usize,
+            panicked: usize,
+            chars: usize,
+            blocks: usize,
+        }
+        let mut by_ext: std::collections::BTreeMap<String, Tally> = Default::default();
+        let mut failures: Vec<(String, String)> = Vec::new();
+
+        for path in &found {
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let t = by_ext.entry(ext.clone()).or_default();
+            t.seen += 1;
+            let Ok(bytes) = std::fs::read(path) else {
+                t.failed += 1;
+                continue;
+            };
+            // A panic here is the most interesting result the walk can
+            // produce -- a parser that crashes on a real file is worse than one
+            // that reads it wrongly -- so it is caught and counted rather than
+            // ending the survey at the first bad document. The first run found
+            // exactly one, and it took 462 seconds to reach it.
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Document::open_with_hint(&bytes, Some(&ext))
+                    .map(|doc| (doc.extract_text(), doc.section_count()))
+            }));
+            match outcome {
+                Ok(Ok((text, sections))) => {
+                    t.opened += 1;
+                    let n = text.trim().chars().count();
+                    t.chars += n;
+                    t.blocks += sections;
+                    if n == 0 {
+                        t.empty += 1;
+                        if failures.len() < 24 {
+                            failures.push((format!("empty {ext}"), name));
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    t.failed += 1;
+                    if failures.len() < 24 {
+                        failures.push((format!("failed {ext}"), format!("{name}: {e:?}")));
+                    }
+                }
+                Err(_) => {
+                    t.panicked += 1;
+                    if failures.len() < 24 {
+                        failures.push((format!("PANIC {ext}"), name));
+                    }
+                }
+            }
+        }
+
+        let panics: usize = by_ext.values().map(|t| t.panicked).sum();
+        eprintln!("{} documents under {root}", found.len());
+        if panics > 0 {
+            eprintln!("  !! {panics} documents PANICKED the parser");
+        }
+        eprintln!(
+            "  {:<6} {:>6} {:>7} {:>7} {:>7}  mean chars",
+            "ext", "seen", "opened", "empty", "failed"
+        );
+        for (ext, t) in &by_ext {
+            eprintln!(
+                "  {:<6} {:>6} {:>7} {:>7} {:>7}  {:.0}",
+                ext,
+                t.seen,
+                t.opened,
+                t.empty,
+                t.failed + t.panicked,
+                t.chars as f64 / t.opened.max(1) as f64
+            );
+        }
+        let absent: Vec<&str> = WANTED
+            .iter()
+            .filter(|e| !by_ext.contains_key(**e))
+            .copied()
+            .collect();
+        if !absent.is_empty() {
+            eprintln!("  no local corpus at all for: {}", absent.join(", "));
+        }
+        if !failures.is_empty() {
+            eprintln!("-- first failures and empties:");
+            for (kind, what) in &failures {
+                eprintln!("  {kind:<14} {what}");
+            }
+        }
+    }
+}

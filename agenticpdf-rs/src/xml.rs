@@ -475,7 +475,17 @@ pub fn decode_entities(input: &str) -> String {
         let tail = &rest[amp..];
         // An entity reference is short; a bare '&' in text is common, so bound
         // the search rather than scanning to end of document.
-        let Some(semi) = tail[..tail.len().min(12)].find(';') else {
+        //
+        // The bound is a count of *bytes* and the text is UTF-8, so it can land
+        // inside a character. Slicing there panics, and it takes only an
+        // ampersand with a multi-byte character eleven bytes after it -- one
+        // real HTML page, with a lambda in it, brought the parser down that
+        // way. Walk back to a boundary instead.
+        let mut window = tail.len().min(12);
+        while !tail.is_char_boundary(window) {
+            window -= 1;
+        }
+        let Some(semi) = tail[..window].find(';') else {
             out.push('&');
             rest = &tail[1..];
             continue;
@@ -560,6 +570,32 @@ pub fn text_of(reader: &mut Reader, qname: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A bare ampersand near a multi-byte character does not panic.
+    ///
+    /// The entity search is bounded to twelve *bytes*, and a boundary walk is
+    /// what keeps that bound from landing inside a character. Here the lambda
+    /// occupies bytes 11 and 12 of the tail, so a naive slice at 12 splits it.
+    ///
+    /// Found by opening real documents rather than fixtures: hand-written test
+    /// packages are all ASCII, and the parsers had never met a Greek letter.
+    #[test]
+    fn an_ampersand_near_a_multibyte_character_does_not_panic() {
+        // 1 byte of '&' + 10 of ASCII puts the lambda across the bound.
+        let input = "&abcdefghijλ and more";
+        assert_eq!(decode_entities(input), input);
+
+        // The same hazard from either side of the bound, and with the
+        // character sitting exactly on it.
+        for pad in 0..14 {
+            let text = format!("&{}λ;x", "a".repeat(pad));
+            let _ = decode_entities(&text);
+        }
+
+        // Real entities still decode with a multi-byte character alongside.
+        assert_eq!(decode_entities("λ &amp; μ"), "λ & μ");
+        assert_eq!(decode_entities("&#955;"), "λ");
+    }
     use super::*;
 
     fn events(xml: &str) -> Vec<Event> {
