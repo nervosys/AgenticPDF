@@ -264,6 +264,28 @@ impl Styles {
     fn is_ordered(&self, name: &str) -> bool {
         self.ordered_lists.get(name).copied().unwrap_or(false)
     }
+
+    /// Whether a paragraph style is a block quote, following its ancestry.
+    ///
+    /// Word writes a quoted paragraph as `text:style-name="Quote"` and nothing
+    /// else, so without this it reads as body text that happens to be italic —
+    /// which is what the same document saved as .docx and .doc did not say.
+    /// LibreOffice calls its own "Quotations", hence both spellings.
+    fn is_quote(&self, name: &str) -> bool {
+        let mut at = name;
+        // A cap rather than a visited set: a cycle is malformed input.
+        for _ in 0..8 {
+            let decoded = at.replace("_20_", " ").to_ascii_lowercase();
+            if decoded.contains("quote") || decoded.contains("quotation") {
+                return true;
+            }
+            match self.parents.get(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        false
+    }
 }
 
 /// Overlay one style's stated properties onto another.
@@ -443,6 +465,13 @@ fn read_blocks(
                             level: level.clamp(1, 6),
                             content,
                         }),
+                        None if package.styles.is_quote(&style) => {
+                            blocks.push(Block::Quote(vec![Block::Paragraph {
+                                content,
+                                align: package.styles.alignment(&style),
+                                indent: 0.0,
+                            }]))
+                        }
                         None => blocks.push(Block::Paragraph {
                             content,
                             align: package.styles.alignment(&style),

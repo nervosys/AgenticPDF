@@ -122,7 +122,11 @@ impl DocxReader<'_> {
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
                     "pPr" => self.read_paragraph_properties(reader, &element, &mut properties),
-                    "r" => self.read_run(reader, &element, &TextStyle::default(), &mut content),
+                    "r" => {
+                        // Read before the call: `read_run` borrows self.
+                        let inherited = self.styles.text_style(&properties.style_id);
+                        self.read_run(reader, &element, &inherited, &mut content)
+                    }
                     "hyperlink" => self.read_hyperlink(reader, &element, &mut content),
                     _ => {}
                 },
@@ -158,6 +162,7 @@ impl DocxReader<'_> {
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
                     "pStyle" => {
                         let id = element.attr_local("val").unwrap_or_default();
+                        properties.style_id = id.to_string();
                         properties.heading = self.styles.heading_level(id);
                         properties.quote = self.styles.is_quote(id);
                         // Only where the paragraph has not said so itself. In a
@@ -274,43 +279,14 @@ impl DocxReader<'_> {
             match event {
                 Event::End(name) if name == start.qname => break,
                 Event::Start(element) if element.in_ns(ns::W) => {
-                    let on = is_on(&element);
-                    match element.local.as_str() {
-                        "b" | "bCs" => style.bold = on,
-                        "i" | "iCs" => style.italic = on,
-                        "strike" | "dstrike" => style.strikethrough = on,
-                        "u" => {
-                            style.underline = on && element.attr_local("val") != Some("none");
-                        }
-                        // Word's hidden-text property: invisible on the page,
-                        // fully present in the file.
-                        "vanish" | "webHidden" => style.hidden = on,
-                        "vertAlign" => match element.attr_local("val") {
-                            Some("superscript") => style.superscript = true,
-                            Some("subscript") => style.subscript = true,
-                            _ => {}
-                        },
-                        // Half-points, as everywhere in WordprocessingML.
-                        "sz" | "szCs" => {
-                            style.size = attr_i64(&element, "val").map(|v| v as f64 / 2.0);
-                        }
-                        "rFonts" => {
-                            style.font = element
-                                .attr_local("ascii")
-                                .or(element.attr_local("hAnsi"))
-                                .filter(|name| !name.is_empty())
-                                .map(str::to_string);
-                        }
-                        "color" => style.color = parse_color(element.attr_local("val")),
-                        "rStyle"
-                            if self
-                                .styles
-                                .is_code(element.attr_local("val").unwrap_or_default()) =>
-                        {
-                            style.code = true;
-                        }
-                        _ => {}
+                    if element.local == "rStyle"
+                        && self
+                            .styles
+                            .is_code(element.attr_local("val").unwrap_or_default())
+                    {
+                        style.code = true;
                     }
+                    apply_run_property(&element, style);
                 }
                 _ => {}
             }
@@ -563,8 +539,46 @@ struct Paragraph {
     properties: ParagraphProperties,
 }
 
+/// Apply one `<w:rPr>` child to a text style.
+///
+/// A free function because the same properties appear in two places: on a run,
+/// and in a style definition. Word puts a "Quote" paragraph's italic only in
+/// the style, so a reader that looks at runs alone reports the quote as upright
+/// -- the same document saved as .doc and .odt says italic.
+fn apply_run_property(element: &Element, style: &mut TextStyle) {
+    let on = is_on(element);
+    match element.local.as_str() {
+        "b" | "bCs" => style.bold = on,
+        "i" | "iCs" => style.italic = on,
+        "strike" | "dstrike" => style.strikethrough = on,
+        "u" => style.underline = on && element.attr_local("val") != Some("none"),
+        // Word's hidden-text property: invisible on the page, fully present in
+        // the file.
+        "vanish" | "webHidden" => style.hidden = on,
+        "vertAlign" => match element.attr_local("val") {
+            Some("superscript") => style.superscript = true,
+            Some("subscript") => style.subscript = true,
+            _ => {}
+        },
+        // Half-points, as everywhere in WordprocessingML.
+        "sz" | "szCs" => style.size = attr_i64(element, "val").map(|v| v as f64 / 2.0),
+        "rFonts" => {
+            style.font = element
+                .attr_local("ascii")
+                .or(element.attr_local("hAnsi"))
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+        }
+        "color" => style.color = parse_color(element.attr_local("val")),
+        _ => {}
+    }
+}
+
 #[derive(Debug, Default)]
 struct ParagraphProperties {
+    /// The style the paragraph names, so its runs can inherit the character
+    /// formatting the style declares.
+    style_id: String,
     heading: Option<u8>,
     numbering: Option<NumberingRef>,
     align: Align,
@@ -670,6 +684,8 @@ struct Styles {
     numbering: HashMap<String, NumberingRef>,
     /// Style id → the style it is based on, so inherited numbering is found.
     based_on: HashMap<String, String>,
+    /// Style id → the character formatting the style itself declares.
+    text: HashMap<String, TextStyle>,
 }
 
 impl Styles {
@@ -702,6 +718,12 @@ impl Styles {
                         && let Some(value) = attr_i64(&element, "val")
                     {
                         styles.numbering.entry(id.clone()).or_default().id = value;
+                    }
+                }
+                "b" | "bCs" | "i" | "iCs" | "strike" | "dstrike" | "u" | "vanish" | "webHidden"
+                | "vertAlign" | "sz" | "szCs" | "rFonts" | "color" => {
+                    if let Some(id) = &current {
+                        apply_run_property(&element, styles.text.entry(id.clone()).or_default());
                     }
                 }
                 "ilvl" => {
@@ -787,6 +809,29 @@ impl Styles {
             }
         }
         None
+    }
+
+    /// The character formatting a paragraph style implies, with `basedOn`
+    /// ancestors applied first so the named style overrides them.
+    fn text_style(&self, id: &str) -> TextStyle {
+        let mut chain = vec![id];
+        let mut at = id;
+        for _ in 0..8 {
+            match self.based_on.get(at) {
+                Some(parent) => {
+                    chain.push(parent);
+                    at = parent;
+                }
+                None => break,
+            }
+        }
+        let mut style = TextStyle::default();
+        for name in chain.into_iter().rev() {
+            if let Some(declared) = self.text.get(name) {
+                style = declared.clone();
+            }
+        }
+        style
     }
 
     fn is_quote(&self, id: &str) -> bool {

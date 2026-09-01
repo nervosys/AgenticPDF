@@ -650,3 +650,42 @@ fn styles_xml_is_read_alongside_the_content_styles() {
         "**emphasised**\n"
     );
 }
+
+#[test]
+fn odt_reads_a_quote_style_as_a_block_quote() {
+    // Word writes a quoted paragraph as `text:style-name="Quote"` and nothing
+    // else, so a reader that only maps style names to headings reports it as
+    // body text — while the same document as .docx and .doc called it a quote.
+    // LibreOffice names its own "Quotations", hence both spellings, and the
+    // ancestry is followed so a style derived from either counts.
+    let content = r#"<office:document-content
+           xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+           xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+           xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0">
+         <office:automatic-styles>
+           <style:style style:name="P1" style:parent-style-name="Quotations"/>
+         </office:automatic-styles>
+         <office:body><office:text>
+           <text:p text:style-name="Quote">a direct quote</text:p>
+           <text:p text:style-name="P1">an inherited quote</text:p>
+           <text:p text:style-name="Standard">ordinary body text</text:p>
+         </office:text></office:body>
+       </office:document-content>"#;
+    let zip = crate::testing::build_zip(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.text",
+            false,
+        ),
+        ("content.xml", content.as_bytes(), false),
+    ]);
+    let document = crate::formats::parse(&zip, crate::detect::Format::Odt).expect("parse");
+    let markdown = crate::doc::to_markdown(&document);
+
+    assert!(markdown.contains("> a direct quote"), "{markdown}");
+    assert!(markdown.contains("> an inherited quote"), "{markdown}");
+    assert!(
+        markdown.contains("ordinary body text") && !markdown.contains("> ordinary"),
+        "body text is not a quote: {markdown}"
+    );
+}

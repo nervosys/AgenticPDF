@@ -156,6 +156,49 @@ fn docx_reads_numbering_definitions_to_tell_lists_apart() {
 }
 
 #[test]
+fn docx_takes_character_formatting_from_the_paragraph_style() {
+    // Word's "Quote" style is italic, and it says so in the style rather than
+    // on the run. A reader that looks only at runs reports the quote upright —
+    // the same document saved as .doc and .odt both said italic.
+    //
+    // `basedOn` is applied first so the named style overrides its ancestors:
+    // Emphatic is bold via its parent and switches the italic back off.
+    let styles = r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+         <w:style w:type="paragraph" w:styleId="Quote">
+           <w:name w:val="Quote"/><w:rPr><w:i/></w:rPr>
+         </w:style>
+         <w:style w:type="paragraph" w:styleId="Strong">
+           <w:name w:val="Strong Base"/><w:rPr><w:b/><w:i/></w:rPr>
+         </w:style>
+         <w:style w:type="paragraph" w:styleId="Emphatic">
+           <w:name w:val="Emphatic"/><w:basedOn w:val="Strong"/>
+           <w:rPr><w:b/><w:i w:val="0"/></w:rPr>
+         </w:style>
+       </w:styles>"#;
+    let body = r#"<w:p><w:pPr><w:pStyle w:val="Quote"/></w:pPr>
+           <w:r><w:t>quoted</w:t></w:r></w:p>
+         <w:p><w:pPr><w:pStyle w:val="Emphatic"/></w:pPr>
+           <w:r><w:t>emphatic</w:t></w:r></w:p>
+         <w:p><w:r><w:t>plain</w:t></w:r></w:p>"#;
+
+    let zip = docx_with_parts(body, &[("word/styles.xml", styles.as_bytes(), false)]);
+    let markdown = to_markdown(&open(&zip, Format::Docx));
+
+    assert!(
+        markdown.contains("_quoted_"),
+        "italic from the style: {markdown}"
+    );
+    assert!(
+        markdown.contains("**emphatic**") && !markdown.contains("_emphatic_"),
+        "bold inherited, italic switched off by the child: {markdown}"
+    );
+    assert!(
+        !markdown.contains("_plain_") && !markdown.contains("**plain**"),
+        "a paragraph naming no style is unstyled: {markdown}"
+    );
+}
+
+#[test]
 fn docx_takes_a_list_from_the_paragraph_style_when_the_paragraph_is_silent() {
     // How Word actually writes a bulleted list: the paragraph says only
     // `<w:pStyle w:val="ListBullet"/>`, and the `<w:numPr>` lives in the style
