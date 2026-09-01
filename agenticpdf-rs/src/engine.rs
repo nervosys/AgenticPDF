@@ -2513,6 +2513,12 @@ pub struct SoftMaskCensus {
     pub mask_ignored_at_stroke: usize,
     /// Transparency groups composited with a constant alpha below 1.
     pub groups_faded: usize,
+    /// Text runs and glyphs shown in a Type 3 font. Their `/CharProcs` are not
+    /// executed, so a substituted face stands in for artwork the document
+    /// supplied -- which is why two datasheets in the corpus lay down two
+    /// thirds of the reference's ink.
+    pub type3_runs: usize,
+    pub type3_glyphs: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
     /// is already suppressed when it cannot change the page; an image is not,
     /// because an image has no single colour to test.
@@ -2567,7 +2573,7 @@ thread_local! {
             masked_fills_in: 0, masked_fills_out: 0, bands_clipped_away: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
-            groups_faded: 0,
+            groups_faded: 0, type3_runs: 0, type3_glyphs: 0,
             mask_ignored_at_form: 0, mask_ignored_at_fill: 0,
             mask_ignored_at_stroke: 0, images_under_multiply: 0,
             images_under_other_blend: 0, images_under_text_clip: 0,
@@ -4444,6 +4450,18 @@ fn push_text_op(
         // markers -- without disturbing the line it sits on.
         let placed = mat_mul(&[1.0, 0.0, 0.0, 1.0, 0.0, ts.rise], tm);
         let face = font.map(|f| f.object).unwrap_or(0);
+        // A Type 3 font supplies its glyphs as content streams in
+        // `/CharProcs`, and this engine runs none of them: only the advance
+        // widths are honoured, and a substituted face stands in for artwork the
+        // document provided. Counted here because the substitution is silent --
+        // the run has a face, the glyphs land in the right places, and the only
+        // sign is that the page carries less ink than it should.
+        if font.map(|f| f.type3).unwrap_or(false) {
+            tally(|c| {
+                c.type3_runs += 1;
+                c.type3_glyphs += codes.len().max(s.chars().count());
+            });
+        }
         emit_text_op(
             &s, font_name, face, font_size, &advs, &codes, measured, &placed, ctm, color, ops,
         );
@@ -5899,6 +5917,10 @@ fn walk_outline(
 // ============================================================================
 
 struct Font {
+    /// A Type 3 font, whose glyphs are content streams in `/CharProcs` rather
+    /// than outlines in a font file. Only the advance widths are honoured; the
+    /// procedures are never run, so the text is drawn with a substituted face.
+    type3: bool,
     /// Composite (Type0) fonts use multi-byte codes.
     two_byte: bool,
     /// code -> Unicode string (from ToUnicode CMap).
@@ -6149,6 +6171,7 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
         .and_then(|o| o.as_name().map(String::from))
         .unwrap_or_default();
     let two_byte = subtype == "Type0";
+    let type3 = subtype == "Type3";
 
     // ToUnicode CMap.
     let mut to_unicode = HashMap::new();
@@ -6231,6 +6254,7 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
 
     Font {
         object: 0,
+        type3,
         two_byte,
         to_unicode,
         simple,
@@ -9269,6 +9293,7 @@ endstream\nendobj\n\
         let font = Font {
             object: 0,
             two_byte: true,
+            type3: false,
             to_unicode: tu,
             simple: None,
             codespace: vec![(0x00, 0x80, 1), (0x8140, 0x9ffc, 2)],
@@ -9290,6 +9315,7 @@ endstream\nendobj\n\
         let font = Font {
             object: 0,
             two_byte: true,
+            type3: false,
             to_unicode: tu,
             simple: None,
             codespace: vec![], // Identity-H
@@ -9310,6 +9336,7 @@ endstream\nendobj\n\
         let font = Font {
             object: 0,
             two_byte: true,
+            type3: false,
             to_unicode: HashMap::new(),
             simple: None,
             codespace: vec![],
@@ -9332,6 +9359,7 @@ endstream\nendobj\n\
         let font = Font {
             object: 0,
             two_byte: true,
+            type3: false,
             to_unicode: HashMap::new(),
             simple: None,
             codespace: vec![],

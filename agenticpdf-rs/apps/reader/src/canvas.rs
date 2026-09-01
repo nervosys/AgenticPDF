@@ -2768,6 +2768,46 @@ mod render_report {
             })
             .sum();
         eprintln!("  stroke subpaths in total: {stroke_subpaths}");
+        // Text, grouped by baseline angle and by whether the run named a face
+        // the document embedded. A page whose ink is short can be short of
+        // glyphs, short of faces, or drawing them at the wrong angle, and
+        // these three numbers separate those.
+        let mut by_rot: std::collections::BTreeMap<i64, (usize, usize)> = Default::default();
+        let mut faceless = 0usize;
+        let mut chars = 0usize;
+        for op in &list.ops {
+            if let RenderOp::Text {
+                rot,
+                text,
+                codes,
+                face,
+                ..
+            } = op
+            {
+                // `codes` is what the painter draws from -- a character code
+                // with no Unicode meaning still has a glyph. Counting `text`
+                // instead under-reports exactly those, which is the difference
+                // between "we lost 140 glyphs" and "140 glyphs have no
+                // Unicode".
+                let drawn = codes.len().max(text.chars().count());
+                let key = (rot.to_degrees().round()) as i64;
+                let entry = by_rot.entry(key).or_default();
+                entry.0 += 1;
+                entry.1 += drawn;
+                chars += drawn;
+                if *face == 0 {
+                    faceless += 1;
+                }
+            }
+        }
+        eprintln!(
+            "  {chars} glyphs in {} text ops",
+            counts.get("text").unwrap_or(&0)
+        );
+        for (deg, (runs, glyphs)) in &by_rot {
+            eprintln!("    {deg:4}deg: {runs} runs, {glyphs} glyphs");
+        }
+        eprintln!("    {faceless} runs name no embedded face");
         // The widest strokes, which is where a rule that is too heavy shows.
         let mut strokes: Vec<(f64, f64, [f64; 4], [f64; 4])> = Vec::new();
         for op in &list.ops {
@@ -3077,6 +3117,10 @@ mod render_report {
         eprintln!(
             "  images declined under a text clip:{}",
             c.images_under_text_clip
+        );
+        eprintln!(
+            "  Type 3 text drawn with a stand-in: {} runs, {} glyphs",
+            c.type3_runs, c.type3_glyphs
         );
         eprintln!(
             "  dash patterns set:                {}",

@@ -620,12 +620,25 @@ corpus made it matter; the Separation case did, twenty-two times.
 **The eight pages left have now been looked at, and "sparse artefact" is not
 what they are.** Two distinct leads, neither chased:
 
-- **The Echo pair loses a third of its ink.** Four of the eight failures are two
-  documents from one product family, and their ink ratios are **0.62 to 0.68** --
-  they lay down two thirds of the marks the reference does. The page is 881 text
-  runs, four fills, no images, no strokes, and the fonts are **embedded**. So it
-  is not substitution and it is not a picture: a third of the text weight is
-  going somewhere. This is the biggest single unexplained thing left.
+- **The Echo pair loses a third of its ink, and the reason is Type 3 fonts.**
+  Four of the eight failures are two documents from one product family, ink
+  ratios **0.62 to 0.68**. Their text is set in **Type 3** fonts, which supply
+  their glyphs as content streams in `/CharProcs` rather than as outlines in a
+  font file -- and this engine runs none of those procedures. Only the advance
+  widths are honoured (`build_one_font` reads the `/FontMatrix` for exactly that
+  reason), so the glyphs land in the right places drawn by a substituted face,
+  and the page comes out light. Nothing about it looks wrong: the runs have a
+  face, the spacing is right, and the only symptom is the missing ink.
+
+  Counted: the Echo pair alone shows **1,756 runs and 1,780 glyphs** in Type 3
+  over three pages each. Across all 270 documents in `~/Documents` it is 76 runs
+  and 423 glyphs. So Type 3 is *rare but concentrated* -- almost nothing uses it,
+  and a document that does uses it for everything.
+
+  **This is the next piece of work, and it is well-scoped.** The engine already
+  runs content streams and executes form XObjects; a Type 3 glyph is the same
+  thing with the font matrix in place of the form matrix. `page_ops` reports
+  Type 3 runs and glyphs, so the effect will be measurable before and after.
 - **One page is 16 % *darker*** (`Bumblebee_X` p3, ink 1.16), which is the
   opposite direction and so a different cause.
 
