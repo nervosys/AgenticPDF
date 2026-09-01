@@ -117,7 +117,7 @@ These are the owner's, not the engine's.
 
       ```bash
       # Minimal: prevent history rewrites and accidental deletion.
-      gh api -X PUT repos/nervosys/AgenticPDF/branches/master/protection         -F required_status_checks=null -F enforce_admins=false         -F required_pull_request_reviews=null -F restrictions=null         -F allow_force_pushes=false -F allow_deletions=false
+      gh api -X PUT repos/nervosys/AgenticPDF/branches/master/protection \n        -F required_status_checks=null \n        -F enforce_admins=false \n        -F required_pull_request_reviews=null \n        -F restrictions=null \n        -F allow_force_pushes=false \n        -F allow_deletions=false
       ```
 - [ ] **Is a FIPS-capable build a product requirement?** Assessed in
       [`docs/development/FIPS_ASSESSMENT.md`](docs/development/FIPS_ASSESSMENT.md):
