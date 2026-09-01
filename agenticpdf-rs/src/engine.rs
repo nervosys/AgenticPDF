@@ -2465,6 +2465,12 @@ pub struct SoftMaskCensus {
     /// mask is only implemented for groups and this says what that costs.
     pub mask_ignored_at_image: usize,
     pub mask_ignored_at_form: usize,
+    /// Fills and strokes painted directly on the page while a soft mask was in
+    /// force. A mask applies to everything painted under it, and this engine
+    /// applies it only where a transparency group is being composited -- so
+    /// these paint at full strength.
+    pub mask_ignored_at_fill: usize,
+    pub mask_ignored_at_stroke: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
     /// is already suppressed when it cannot change the page; an image is not,
     /// because an image has no single colour to test.
@@ -2519,7 +2525,8 @@ thread_local! {
             masked_fills_in: 0, masked_fills_out: 0, bands_clipped_away: 0,
             over_budget: 0, image_mask_dropped: 0, image_mask_dropped_ccitt: 0,
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
-            mask_ignored_at_form: 0, images_under_multiply: 0,
+            mask_ignored_at_form: 0, mask_ignored_at_fill: 0,
+            mask_ignored_at_stroke: 0, images_under_multiply: 0,
             images_under_other_blend: 0, images_under_text_clip: 0,
         }) };
 }
@@ -3715,11 +3722,16 @@ fn run_content(
                                             clip,
                                         },
                                     ),
-                                    None => ops.push(RenderOp::Fill {
-                                        subpaths: paths.clone(),
-                                        color: fill_color,
-                                        even_odd: op.ends_with('*'),
-                                    }),
+                                    None => {
+                                        if soft_mask.is_some() {
+                                            tally(|c| c.mask_ignored_at_fill += 1);
+                                        }
+                                        ops.push(RenderOp::Fill {
+                                            subpaths: paths.clone(),
+                                            color: fill_color,
+                                            even_odd: op.ends_with('*'),
+                                        })
+                                    }
                                 }
                             }
                             if strokes && !blend_is_noop(stroke_color, blend) {
@@ -3746,6 +3758,9 @@ fn run_content(
                                 if paths.is_empty() {
                                     stack.clear();
                                     continue;
+                                }
+                                if soft_mask.is_some() {
+                                    tally(|c| c.mask_ignored_at_stroke += 1);
                                 }
                                 ops.push(RenderOp::Stroke {
                                     subpaths: paths,

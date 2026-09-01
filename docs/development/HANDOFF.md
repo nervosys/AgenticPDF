@@ -541,9 +541,41 @@ uses one, so the sweep after them is flat by construction rather than by
 evidence. They are verified by synthetic tests against decoded geometry instead.
 Treat the corpus as silent on them, not as endorsing them.
 
+**A fill or stroke painted under a live soft mask is unmasked.** The mask is
+applied only where a transparency group is composited, and the spec applies it
+to everything painted. Now counted: **2 fills** across the 34-document tree,
+zero strokes, zero images. Small, and no longer invisible.
+
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the
 corpus made it matter; the Separation case did, twenty-two times.
+
+**An ebook page with two bands in the wrong tint.** 0.213, mae 0.025 -- the
+worst page left that is not a sparse-page artefact. Two full-width rounded bands
+are painted in a saturated pink and purple where the reference paints a pale
+tint of the same hue; the small tab at the left edge of each band is saturated
+in both and matches exactly. So it is one fill, one wrong colour, twice.
+
+Ruled out, each with a measurement rather than an argument:
+- **Dashes.** Zero `d` operators on the page.
+- **A Separation tint.** The file contains no Separation or DeviceN at all.
+- **Missing gradients.** The page's single `sh` produces 26 bands and they are
+  not lost: they are the soft mask's own content, consumed correctly to build a
+  26-region mask. The `sh`-and-bands counter in `page_ops` is what showed this.
+- **A mask deleting the fills.** Zero fills enter the one masked group; zero
+  fills, strokes or images are painted anywhere on the page while a mask is in
+  force. All four counters read zero.
+- **A blend mode.** None is in force at any paint on the page.
+
+What has *not* been checked is the form XObjects. The band colours do not appear
+in the page's own content stream, so both bands are painted inside `Fm0`, `Fm1`
+or `Fm2` -- and that is where to start.
+
+**A warning to whoever does.** Three separate wrong-object mistakes were made
+chasing this page: a probe directory that a `cp` had landed elsewhere (so the
+census read zeros that looked like data), and twice reading a page's content by
+*file* order when the page tree orders them differently. Take the `/Pages`
+`/Kids` array and index it; do not trust the order objects appear in the file.
 
 **The worst pages left are sparse ones.** An order-details receipt p1 at 0.266
 (mae 0.004), a returns label at 0.241 (mae 0.033), a technical reference p3 at

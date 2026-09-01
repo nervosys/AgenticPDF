@@ -2715,6 +2715,12 @@ mod render_report {
             "  {} fills entered a mask, {} pieces came out",
             census.masked_fills_in, census.masked_fills_out
         );
+        eprintln!(
+            "  mask ignored at {} fills, {} strokes, {} images",
+            census.mask_ignored_at_fill,
+            census.mask_ignored_at_stroke,
+            census.mask_ignored_at_image
+        );
         eprintln!("  {} bands clipped away", census.bands_clipped_away);
 
         let mut counts: std::collections::BTreeMap<&str, usize> = Default::default();
@@ -3003,6 +3009,14 @@ mod render_report {
         eprintln!(
             "  mask in force but ignored, form:  {}",
             c.mask_ignored_at_form
+        );
+        eprintln!(
+            "  mask in force but ignored, fill:  {}",
+            c.mask_ignored_at_fill
+        );
+        eprintln!(
+            "  mask in force but ignored, stroke:{}",
+            c.mask_ignored_at_stroke
         );
         eprintln!(
             "  images under /BM Multiply:        {}",
