@@ -1067,7 +1067,11 @@ fn render_table(table: &Table, out: &mut String) {
         out.push('|');
         for column in 0..columns {
             out.push(' ');
-            out.push_str(row.get(column).map(String::as_str).unwrap_or(""));
+            // Trimmed because the pipes delimit the cell: whitespace around the
+            // content is not content, and carrying it through made the same
+            // table differ between formats -- a merged-away cell came out as a
+            // single space from two readers and as nothing from the other two.
+            out.push_str(row.get(column).map(String::as_str).unwrap_or("").trim());
             out.push_str(" |");
         }
         out.push('\n');

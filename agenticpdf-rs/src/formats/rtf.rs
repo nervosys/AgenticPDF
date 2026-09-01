@@ -115,6 +115,13 @@ struct Parser<'a> {
     /// stylesheet — as a reader that treats it purely as a resource does —
     /// loses every heading in every document Word produced.
     heading_styles: HashMap<i64, u8>,
+    /// Style numbers the stylesheet names as a quote.
+    ///
+    /// Word marks a quoted paragraph the same way it marks a heading: `\s15`
+    /// on the paragraph and the meaning in the stylesheet. Without this the
+    /// paragraph is body text that happens to be italic, which is what the
+    /// same document saved as .docx, .doc and .odt did not say.
+    quote_styles: std::collections::HashSet<i64>,
     /// The style definition currently being read from `\stylesheet`.
     style_number: Option<i64>,
     style_outline: Option<u8>,
@@ -143,6 +150,7 @@ impl<'a> Parser<'a> {
             pending_marker: String::new(),
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
+            quote_styles: std::collections::HashSet::new(),
             style_number: None,
             style_outline: None,
             style_name: String::new(),
@@ -479,6 +487,16 @@ impl<'a> Parser<'a> {
         if let Some(level) = level {
             self.heading_styles.insert(number, level);
         }
+
+        // LibreOffice writes "Quotations"; Word writes "Quote".
+        let compact: String = name
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if compact.contains("quote") || compact.contains("quotation") {
+            self.quote_styles.insert(number);
+        }
     }
 
     fn consume_skip(&mut self) {
@@ -505,14 +523,23 @@ impl<'a> Parser<'a> {
                 .and_then(|number| self.heading_styles.get(&number).copied())
         });
 
+        let quoted = self
+            .state
+            .style_ref
+            .is_some_and(|number| self.quote_styles.contains(&number));
+
         let block = if let Some(level) = heading {
             Block::Heading { level, content }
         } else {
-            Block::Paragraph {
+            let paragraph = Block::Paragraph {
                 content,
                 align: self.state.align,
                 // Twips to points.
                 indent: (self.state.indent as f64 / 20.0).max(0.0),
+            };
+            match quoted {
+                true => Block::Quote(vec![paragraph]),
+                false => paragraph,
             }
         };
 
@@ -946,6 +973,31 @@ mod tests {
         let deep = format!("{}{}", r"{\rtf1", "{".repeat(MAX_DEPTH + 100));
         let document = parse_rtf(deep.as_bytes());
         assert!(document.sections[0].blocks.is_empty());
+    }
+
+    /// A style the stylesheet names as a quote makes a block quote.
+    ///
+    /// Word marks a quoted paragraph the way it marks a heading: the style
+    /// number on the paragraph, and the meaning only in the stylesheet.
+    /// Without reading it the paragraph is body text that happens to be
+    /// italic, which is what the same document saved as .docx, .doc and
+    /// .odt did not say.
+    #[test]
+    fn a_quote_style_from_the_stylesheet_makes_a_block_quote() {
+        let rtf = format!(
+            "{HEADER}{}",
+            concat!(
+                r"{\stylesheet{\s15 Quote;}{\s16 Body Text;}}",
+                r" \s15 quoted text\par",
+                r" \s16 ordinary text\par}"
+            )
+        );
+        let markdown = markdown_of(&rtf);
+        assert!(markdown.contains("> quoted text"), "{markdown}");
+        assert!(
+            markdown.contains("ordinary text") && !markdown.contains("> ordinary"),
+            "{markdown}"
+        );
     }
 
     #[test]
