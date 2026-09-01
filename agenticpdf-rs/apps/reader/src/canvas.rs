@@ -2722,6 +2722,53 @@ mod render_report {
             census.mask_ignored_at_image
         );
         eprintln!("  {} bands clipped away", census.bands_clipped_away);
+        // Stored size against drawn size, for the images on the page. A
+        // stencil glyph denser than it is drawn loses strokes to a
+        // point-sampling host; one *thinner* than it is drawn cannot, and
+        // light ink on such a page has another cause entirely.
+        {
+            let mut session = crate::session::Session::open(bytes.clone()).expect("open");
+            for _ in 1..page {
+                session.next_page();
+            }
+            let list = session.display_list().expect("geometry");
+            let scale = 1200.0 / list.width.max(1.0);
+            let textures = session.textures(1200 * 1600);
+            let mut ratios: Vec<(f64, u32, u32, f64, f64)> = Vec::new();
+            for op in &list.ops {
+                let RenderOp::Image { w, h, name, .. } = op else {
+                    continue;
+                };
+                let Some(t) = textures.iter().find(|t| t.name == *name) else {
+                    continue;
+                };
+                let (drawn_w, drawn_h) = (w * scale, h * scale);
+                ratios.push((
+                    (t.width as f64 * t.height as f64) / (drawn_w * drawn_h).max(1e-9),
+                    t.width,
+                    t.height,
+                    drawn_w,
+                    drawn_h,
+                ));
+            }
+            ratios.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let image_ops = list
+                .ops
+                .iter()
+                .filter(|op| matches!(op, RenderOp::Image { .. }))
+                .count();
+            eprintln!(
+                "  {image_ops} image ops, {} textures, {} matched; stored-to-drawn pixel ratio:",
+                textures.len(),
+                ratios.len()
+            );
+            for (r, tw, th, dw, dh) in ratios.iter().take(4) {
+                eprintln!("    {tw}x{th} stored, {dw:.1}x{dh:.1} drawn, {r:.2}x");
+            }
+            if let Some(mid) = ratios.get(ratios.len() / 2) {
+                eprintln!("    median {:.2}x", mid.0);
+            }
+        }
         eprintln!(
             "  Type 3: {} glyphs drawn, {} no name, {} no procedure, {} left to a stand-in",
             census.type3_drawn, census.type3_no_name, census.type3_no_proc, census.type3_glyphs

@@ -4960,6 +4960,62 @@ fn collect_inline_images(
             }
         }
     }
+    // A Type 3 glyph is a content stream too, and a bitmap font's glyph is one
+    // inline image. `dvips` writes exactly this: `/Resources<</ProcSet[/PDF
+    // /ImageB]>>` and a `BI ... ID ... EI` per glyph, so there is no `/XObject`
+    // anywhere to find and the walk above sees nothing.
+    //
+    // Every procedure is walked, not only the codes the page shows. Which
+    // glyphs a page uses is known to the interpreter and not to a resource
+    // walk, and a texture nobody draws costs a name; a glyph nobody has costs
+    // the painter's missing-texture branch, which outlines a grey rectangle.
+    // A paper setting its mathematics this way drew 396 images against 0
+    // textures and rendered as 396 grey rectangles.
+    if let Some(fonts) = doc
+        .get(resources, "Font")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        for entry in fonts.values() {
+            let resolved = doc.resolve(entry);
+            let Some(fd) = resolved.as_dict() else {
+                continue;
+            };
+            if doc
+                .get(fd, "Subtype")
+                .and_then(|o| o.as_name().map(String::from))
+                .as_deref()
+                != Some("Type3")
+            {
+                continue;
+            }
+            let Some(procs) = doc
+                .get(fd, "CharProcs")
+                .and_then(|o| doc.resolve(&o).as_dict().cloned())
+            else {
+                continue;
+            };
+            // A glyph with no resources of its own uses the page's -- but the
+            // page's name this very font, so handing them back re-enters this
+            // loop once per glyph per level and only the depth cap ends it.
+            // With a hundred glyphs that is a hundred to the power of the cap;
+            // a sweep that took a minute a shard had not finished in ten.
+            let inner = match doc.get(fd, "Resources").and_then(|o| o.as_dict().cloned()) {
+                Some(own) => own,
+                None => {
+                    let mut borrowed = resources.clone();
+                    borrowed.remove("Font");
+                    borrowed
+                }
+            };
+            for proc_ref in procs.values() {
+                if let Object::Stream(d, raw) = doc.resolve(proc_ref)
+                    && let Ok(glyph) = decode_stream_in(doc, &d, &raw)
+                {
+                    collect_inline_images(doc, &glyph, &inner, depth + 1, out);
+                }
+            }
+        }
+    }
     // A tiling pattern is a content stream too, and a page that fills with one
     // never names what the tile draws.
     if let Some(patterns) = doc
@@ -5015,6 +5071,37 @@ fn collect_image_xobjects(doc: &Document, resources: &Dict, out: &mut Dict, dept
             if let Object::Stream(d, _) = doc.resolve(entry)
                 && let Some(inner) = doc.get(&d, "Resources").and_then(|o| o.as_dict().cloned())
             {
+                collect_image_xobjects(doc, &inner, out, depth + 1);
+            }
+        }
+    }
+    // A Type 3 font's glyphs are content streams too, and a glyph that draws
+    // an image names it in the font's own `/Resources`. Same shape as the
+    // pattern case above: reaching images only through `/XObject` finds the
+    // font's *users* and never its pictures.
+    //
+    // A paper setting its mathematics in a Type 3 font whose every glyph is a
+    // 1-bit `/ImageMask` drew 396 images and had 0 textures, so the painter
+    // fell through to its missing-texture branch and outlined a grey rectangle
+    // per glyph.
+    if let Some(fonts) = doc
+        .get(resources, "Font")
+        .and_then(|o| o.as_dict().cloned())
+    {
+        for entry in fonts.values() {
+            let resolved = doc.resolve(entry);
+            let Some(d) = resolved.as_dict() else {
+                continue;
+            };
+            if doc
+                .get(d, "Subtype")
+                .and_then(|o| o.as_name().map(String::from))
+                .as_deref()
+                != Some("Type3")
+            {
+                continue;
+            }
+            if let Some(inner) = doc.get(d, "Resources").and_then(|o| o.as_dict().cloned()) {
                 collect_image_xobjects(doc, &inner, out, depth + 1);
             }
         }
@@ -8983,6 +9070,107 @@ startxref
         let line = vec![vec![[0.0, 0.0], [600.0, 0.0]]];
         let out = dash_subpaths(&line, &[0.005, 0.005], 0.0);
         assert_eq!(out, line, "{} pieces", out.len());
+    }
+
+    /// A page whose one Type 3 glyph draws a picture, either inline or as an
+    /// XObject named in the font's own resources.
+    ///
+    /// The font deliberately declares **no** `/Resources` in the inline case.
+    /// That is what a `dvips` bitmap font does, and it is also the shape that
+    /// made the resource walk re-enter itself: with no resources of its own a
+    /// glyph falls back to the page's, and the page's name this very font.
+    fn page_with_a_type3_glyph_drawing_an_image(inline: bool) -> Vec<u8> {
+        const PAGE: &str = "BT /F1 10 Tf 20 30 Td (a) Tj ET";
+        let glyph: Vec<u8> = match inline {
+            // Two by two, one bit a sample, as a stencil. The two data bytes
+            // are binary, so the stream is assembled rather than formatted.
+            true => {
+                let mut g =
+                    b"100 0 d0 q 100 0 0 100 0 0 cm BI /W 2 /H 2 /IM true /BPC 1 ID ".to_vec();
+                g.extend_from_slice(&[0x00, 0x00]);
+                g.extend_from_slice(b" EI Q");
+                g
+            }
+            false => b"100 0 d0 q 100 0 0 100 0 0 cm /Im0 Do Q".to_vec(),
+        };
+        let font_resources = match inline {
+            true => String::new(),
+            false => "/Resources<</XObject<</Im0 7 0 R>>>>".to_string(),
+        };
+
+        let mut out: Vec<u8> = Vec::new();
+        out.extend_from_slice(
+            format!(
+                concat!(
+                    "%PDF-1.5\n",
+                    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                    "/Resources<</Font<</F1 5 0 R>>>>>>endobj\n",
+                    "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                    "5 0 obj<</Type/Font/Subtype/Type3/FontMatrix[0.01 0 0 0.01 0 0]",
+                    "/FontBBox[0 0 100 100]/FirstChar 97/LastChar 97/Widths[100]",
+                    "/CharProcs<</ga 6 0 R>>{}",
+                    "/Encoding<</Type/Encoding/Differences[97/ga]>>>>endobj\n",
+                    "6 0 obj<</Length {}>>stream\n"
+                ),
+                PAGE.len(),
+                PAGE,
+                font_resources,
+                glyph.len()
+            )
+            .as_bytes(),
+        );
+        out.extend_from_slice(&glyph);
+        out.extend_from_slice(b"\nendstream endobj\n");
+        if !inline {
+            out.extend_from_slice(
+                b"7 0 obj<</Type/XObject/Subtype/Image/Width 1/Height 1/ImageMask true\
+/BitsPerComponent 1/Length 1>>stream\n",
+            );
+            out.extend_from_slice(&[0x00]);
+            out.extend_from_slice(b"\nendstream endobj\n");
+        }
+        out.extend_from_slice(b"startxref\n0\n%%EOF");
+        out
+    }
+
+    /// Every image a Type 3 glyph draws is found by the texture walk.
+    ///
+    /// The engine emits an `Image` op per glyph; the painter looks the name up
+    /// among the page's textures and, finding none, falls through to its
+    /// missing-texture branch and outlines a grey rectangle. A paper setting
+    /// its mathematics in a `dvips` bitmap font drew **396 images against 0
+    /// textures** and rendered as 396 grey rectangles -- which scored *better*
+    /// before the glyphs were drawn at all, because a substituted face at
+    /// least puts ink where letters go.
+    ///
+    /// `collect_inline_images` followed `Do` into forms and into tiling
+    /// patterns -- both with a comment saying why -- but never into a glyph
+    /// procedure. Both shapes are checked here: the inline images a bitmap
+    /// font writes, and the image XObject a font may name in its resources.
+    #[test]
+    fn a_type3_glyphs_picture_is_found_by_the_texture_walk() {
+        for inline in [true, false] {
+            let bytes = page_with_a_type3_glyph_drawing_an_image(inline);
+            let drawn: Vec<String> = extract_display_list(&bytes, 1)
+                .expect("a display list")
+                .ops
+                .iter()
+                .filter_map(|op| match op {
+                    RenderOp::Image { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(drawn.len(), 1, "inline={inline}: the glyph draws one image");
+            let textures = extract_page_textures(&bytes, 1).expect("textures");
+            assert!(
+                textures.iter().any(|t| t.name == drawn[0]),
+                "inline={inline}: the glyph draws {:?}, textures offer {:?}",
+                drawn[0],
+                textures.iter().map(|t| &t.name).collect::<Vec<_>>()
+            );
+        }
     }
 
     /// The horizontal span of each red fill, in the order the page painted them.

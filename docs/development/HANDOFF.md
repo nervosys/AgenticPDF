@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **676 of 681 — 99.3 %** |
-| Over the threshold | 5 |
+| Matching (total variation ≤ 0.12) | **677 of 681 — 99.4 %** |
+| Over the threshold | 4 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 619 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 620 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -645,22 +645,33 @@ what they are.** Two distinct leads, neither chased:
   anything. `a_filtered_type3_glyph_procedure_is_decoded_first` guards it.
 - **One page is 16 % *darker*** (`Bumblebee_X` p3, ink 1.16), which is the
   opposite direction and so a different cause.
-- **Drawing Type 3 glyphs pushed one page out of tolerance, and the cause is
-  the check harness, not the engine.** An MIT paper's Type 3 font supplies each
-  glyph as a **1-bit `/ImageMask` stencil** -- 396 images on page 1, one per
-  glyph. Drawing them properly took that page from **0.108 to 0.170**, ink
-  **0.85**: we now draw the right thing and it comes out thin.
+- **Drawing Type 3 glyphs pushed one page out of tolerance. Fixed, and the
+  first diagnosis was wrong.** An MIT paper's Type 3 font supplies each glyph as
+  a **1-bit stencil** -- 396 images on page 1, one per glyph. Drawing them took
+  that page from **0.108 to 0.170**, ink **0.85**.
 
-  The sweep rasterises through `dewey`'s `ImagePainter`, whose `draw_image` is
-  **nearest-neighbour by its own comment** ("a predictable sample beats a
-  smoothed one"). Point-sampling a stencil down to glyph size drops most of
-  each stroke. Our own `fit_to_draw`/`sample_rgba` already box-filters for the
-  JSON painter; `paint_page` does not, so every painter that point-samples sees
-  the full-resolution stencil.
+  The reading that cost the most time: the sweep rasterises through `dewey`'s
+  `ImagePainter`, which is nearest-neighbour by its own comment, so *of course*
+  it thinned the stencils. `shrink_to_draw` was written to area-average an
+  image drawn smaller than it is stored, swept, and moved the target page by
+  **zero** -- net +0.010 across the corpus, every row inside noise.
 
-  **Next piece of work, and well-scoped:** area-average an image in the shared
-  paint path when it is drawn smaller than it is stored. It touches every image
-  on every page, so it needs its own sweep -- do not bundle it.
+  What it could not do was act, because the page had **396 image ops and 0
+  textures**: the painter was falling through to its missing-texture branch and
+  outlining a grey rectangle per glyph. `collect_inline_images` follows `Do`
+  into forms and into tiling patterns -- each with a comment saying why -- but
+  never into a glyph procedure, and this font is a `dvips` bitmap font:
+  `/Resources<</ProcSet[/PDF/ImageB]>>`, one `BI ... ID ... EI` per glyph, no
+  `/XObject` anywhere. With the walk extended: **396 of 396 matched**, page 1
+  **0.170 -> 0.091**, page 3 **0.052 -> 0.045**, nothing else in the corpus
+  moved.
+
+  `shrink_to_draw` was then re-measured on top of the working textures, where
+  the stencils turn out to be stored **18x denser than drawn** -- exactly what
+  it was written for. It earned **-0.001 over 113 pages**. Removed. Kept only
+  as this note: a flat sweep is not a verdict until the corpus can exercise the
+  change, and the same code read as worthless, then plausible, then worthless
+  again on three successive measurements.
 
 The rest sit at ink 0.87 to 1.00 with differences spread thinly, which is
 consistent with the artefact reading -- but that is now a description of two or
