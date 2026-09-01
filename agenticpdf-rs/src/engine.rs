@@ -2556,6 +2556,14 @@ pub struct SoftMaskCensus {
     pub type3_no_name: usize,
     pub type3_no_proc: usize,
     pub type3_drawn: usize,
+    /// Runs skipped because the decoded *text* was blank, and the glyphs they
+    /// would have drawn. A run with codes but no Unicode is still ink.
+    /// Every call into `push_text_op`, whatever became of it.
+    pub text_runs_seen: usize,
+    /// Every `Text` op actually emitted, from either show operator.
+    pub text_ops_emitted: usize,
+    pub runs_dropped_blank_text: usize,
+    pub glyphs_dropped_blank_text: usize,
     /// Images painted under a blend mode that is not Normal. A fill under one
     /// is already suppressed when it cannot change the page; an image is not,
     /// because an image has no single colour to test.
@@ -2612,6 +2620,8 @@ thread_local! {
             image_mask_dropped_jbig2: 0, mask_ignored_at_image: 0,
             groups_faded: 0, type3_runs: 0, type3_glyphs: 0,
             type3_no_name: 0, type3_no_proc: 0, type3_drawn: 0,
+            text_runs_seen: 0, text_ops_emitted: 0,
+            runs_dropped_blank_text: 0, glyphs_dropped_blank_text: 0,
             mask_ignored_at_form: 0, mask_ignored_at_fill: 0,
             mask_ignored_at_stroke: 0, images_under_multiply: 0,
             images_under_other_blend: 0, images_under_text_clip: 0,
@@ -4503,6 +4513,13 @@ fn push_text_op(
     let measured = font.map(|f| !f.has_widths).unwrap_or(true);
     // The advance is returned either way: invisible text still moves the pen,
     // and anything drawn after it on the line depends on that.
+    tally(|c| c.text_runs_seen += 1);
+    if ts.visible() && s.trim().is_empty() && !codes.is_empty() {
+        tally(|c| {
+            c.runs_dropped_blank_text += 1;
+            c.glyphs_dropped_blank_text += codes.len();
+        });
+    }
     if ts.visible() && !s.trim().is_empty() {
         // Rise lifts the run off the baseline -- superscripts and footnote
         // markers -- without disturbing the line it sits on.
@@ -4669,6 +4686,7 @@ fn emit_text_op(
     let advances: Vec<f64> = advs_em.iter().map(|a| a * factor).collect();
     let width = advances.iter().sum();
     let rot = trm[1].atan2(trm[0]);
+    tally(|c| c.text_ops_emitted += 1);
     ops.push(RenderOp::Text {
         text: text.to_string(),
         x: trm[4],
@@ -6202,6 +6220,11 @@ struct Font {
     /// The object number the font dictionary was fetched from, so a renderer
     /// can tell two subsets sharing a `/BaseFont` apart.
     object: u32,
+    /// The document supplies this font's glyph outlines, in a `/FontFile`,
+    /// `/FontFile2` or `/FontFile3` on its descriptor. When it does, a glyph is
+    /// selected by code, so a code that means no Unicode still draws correctly;
+    /// when it does not, a substituted face can only guess.
+    embedded: bool,
 }
 
 impl Font {
@@ -6341,12 +6364,24 @@ impl Font {
                 {
                     tmp.push(c);
                 }
-                // No placeholder here, unlike the simple-font case below. A
-                // composite code that no `/ToUnicode` covers is usually a
-                // document that means something other than what it says --
-                // one in the corpus shows plain ASCII bytes through an
-                // Identity-H font -- and holding the slot open only puts
-                // wrong glyphs, or a fallback face, where nothing was.
+                // A composite code that no `/ToUnicode` covers still has a
+                // glyph, provided the document supplied the outlines: a glyph
+                // is selected by code, and the Unicode is only what the code
+                // happens to *mean*. Holding the slot open with a replacement
+                // character gives the painter somewhere to draw it.
+                //
+                // Where the face is not embedded there is nothing to draw but
+                // a guess, and a guess puts wrong glyphs where nothing was --
+                // one document in the corpus shows plain ASCII bytes through
+                // an Identity-H font. So the slot is held open only when the
+                // document can fill it.
+                //
+                // One essay lost 41 runs of a page this way, paragraphs set in
+                // a subset Adobe Gothic with no `/ToUnicode` at all: the page
+                // came out at ink 0.86 against the reference.
+                if tmp.is_empty() && self.embedded {
+                    tmp.push('\u{FFFD}');
+                }
                 emit(&tmp, w, code, out, advs, codes_out);
             }
         } else {
@@ -6551,8 +6586,27 @@ fn build_one_font(doc: &Document, font: &Dict) -> Font {
     let (widths, default_width, has_widths) =
         parse_font_widths(doc, font, two_byte, simple.as_deref());
 
+    // Whether the document supplies the glyph outlines. For a Type0 the
+    // descriptor hangs off the descendant CIDFont, not off the font itself.
+    let descendant = doc
+        .get(font, "DescendantFonts")
+        .and_then(|o| o.as_array().and_then(|a| a.first().map(|x| doc.resolve(x))))
+        .and_then(|o| o.as_dict().cloned())
+        .unwrap_or_default();
+    let embedded = [&descendant, font].iter().any(|d| {
+        doc.get(d, "FontDescriptor")
+            .map(|o| doc.resolve(&o))
+            .and_then(|o| o.as_dict().cloned())
+            .is_some_and(|fd| {
+                ["FontFile", "FontFile2", "FontFile3"]
+                    .iter()
+                    .any(|k| doc.get(&fd, k).is_some())
+            })
+    });
+
     Font {
         object: 0,
+        embedded,
         type3,
         char_procs,
         glyph_names,
@@ -9384,6 +9438,99 @@ startxref
         );
     }
 
+    /// A page setting one Identity-H run in a font with **no** `/ToUnicode`.
+    ///
+    /// `embedded` decides whether the descendant carries a `/FontFile2`, which
+    /// is the whole difference between the two tests below.
+    fn page_with_an_identity_h_run(embedded: bool) -> Vec<u8> {
+        const PAGE: &str = "BT /F1 12 Tf 20 30 Td <00410042> Tj ET";
+        let fontfile = match embedded {
+            true => "/FontFile2 8 0 R",
+            false => "",
+        };
+        let mut out: Vec<u8> = format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R",
+                "/Resources<</Font<</F1 5 0 R>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "5 0 obj<</Type/Font/Subtype/Type0/BaseFont/AAAAAA+Test/Encoding/Identity-H",
+                "/DescendantFonts[6 0 R]>>endobj\n",
+                "6 0 obj<</Type/Font/Subtype/CIDFontType2/BaseFont/AAAAAA+Test",
+                "/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>",
+                "/FontDescriptor 7 0 R/DW 1000>>endobj\n",
+                "7 0 obj<</Type/FontDescriptor/FontName/AAAAAA+Test/Flags 4",
+                "/FontBBox[0 0 1000 1000]/ItalicAngle 0/Ascent 800/Descent -200",
+                "/CapHeight 700/StemV 80{}>>endobj\n"
+            ),
+            PAGE.len(),
+            PAGE,
+            fontfile
+        )
+        .into_bytes();
+        if embedded {
+            // The outlines are never parsed here -- only their presence is
+            // read -- so a short stream stands in for a real face.
+            out.extend_from_slice(b"8 0 obj<</Length 4/Length1 4>>stream\n");
+            out.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+            out.extend_from_slice(b"\nendstream endobj\n");
+        }
+        out.extend_from_slice(b"startxref\n0\n%%EOF");
+        out
+    }
+
+    /// A composite code with no Unicode still draws, when the document
+    /// supplied the glyph.
+    ///
+    /// A glyph is selected by *code*; the Unicode is only what the code
+    /// happens to mean. Dropping a run because its codes decode to nothing
+    /// lost whole paragraphs of one essay -- 41 runs on a page, set in a
+    /// subset Adobe Gothic with no `/ToUnicode` at all -- and the page came
+    /// out at ink 0.86, scoring 0.177. It now scores 0.088.
+    #[test]
+    fn an_embedded_composite_font_draws_codes_with_no_unicode() {
+        let ops = extract_display_list(&page_with_an_identity_h_run(true), 1)
+            .expect("a display list")
+            .ops;
+        let runs: Vec<(&String, &Vec<u32>)> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Text { text, codes, .. } => Some((text, codes)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(runs.len(), 1, "{ops:?}");
+        assert_eq!(
+            runs[0].1,
+            &vec![0x41, 0x42],
+            "the codes are what draw: {ops:?}"
+        );
+        assert_eq!(
+            runs[0].0.chars().count(),
+            2,
+            "one character slot per glyph, so the painter has somewhere to draw: {ops:?}"
+        );
+    }
+
+    /// Without the outlines, the same run is left alone.
+    ///
+    /// There is nothing to draw but a guess, and a guess puts wrong glyphs
+    /// where nothing was: one document in the corpus shows plain ASCII bytes
+    /// through an Identity-H font, and holding the slot open there would set
+    /// a substituted face loose on codes that are not characters.
+    #[test]
+    fn a_composite_font_without_outlines_draws_nothing_for_unknown_codes() {
+        let ops = extract_display_list(&page_with_an_identity_h_run(false), 1)
+            .expect("a display list")
+            .ops;
+        assert!(
+            !ops.iter().any(|op| matches!(op, RenderOp::Text { .. })),
+            "no face, no guess: {ops:?}"
+        );
+    }
+
     /// A page that sets a luminosity soft mask and then fills a plain
     /// rectangle -- no form, no group, just `re f`.
     ///
@@ -9938,6 +10085,7 @@ endstream\nendobj\n\
         tu.insert(0x8140u32, "—".to_string()); // 2-byte code
         let font = Font {
             object: 0,
+            embedded: false,
             two_byte: true,
             type3: false,
             char_procs: None,
@@ -9964,6 +10112,7 @@ endstream\nendobj\n\
         tu.insert(0x0041u32, "A".to_string());
         let font = Font {
             object: 0,
+            embedded: false,
             two_byte: true,
             type3: false,
             char_procs: None,
@@ -9989,6 +10138,7 @@ endstream\nendobj\n\
         // UniGB-UCS2-H style: 2-byte code is the Unicode scalar directly.
         let font = Font {
             object: 0,
+            embedded: false,
             two_byte: true,
             type3: false,
             char_procs: None,
@@ -10016,6 +10166,7 @@ endstream\nendobj\n\
         // rather than a garbage glyph-id character.
         let font = Font {
             object: 0,
+            embedded: false,
             two_byte: true,
             type3: false,
             char_procs: None,

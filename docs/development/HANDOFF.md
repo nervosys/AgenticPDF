@@ -14,10 +14,10 @@ harnesses, the branch, the traps.
 | | |
 | --- | --- |
 | Corpus | 285 reference sets, 710 pages, 681 comparable against PDF.js |
-| Matching (total variation ≤ 0.12) | **678 of 681 — 99.6 %** |
-| Over the threshold | 3 |
+| Matching (total variation ≤ 0.12) | **679 of 681 — 99.7 %** |
+| Over the threshold | 2 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 623 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 625 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -640,6 +640,28 @@ while `at > 0.0`.
 The op carries no line cap, so each dot is a segment one width long centred on
 the point rather than a disc: a quarter more ink than the disc, against seven
 times for the solid rule.
+
+**A composite code with no Unicode still draws, when the document supplied the
+glyph.** `decode_with_advances` emitted nothing for a two-byte code that no
+`/ToUnicode` covered, and a run whose text came out blank was skipped whole. One
+essay lost **41 of 94 runs on a page** that way -- paragraphs set in a subset
+Adobe Gothic carrying no `/ToUnicode` at all -- and scored 0.177 at ink 0.86. It
+now scores **0.088** at ink 1.05.
+
+A glyph is selected by *code*; the Unicode is only what the code happens to
+mean. So the slot is held open with a replacement character, and only when the
+font is `embedded` -- a new field, read from `/FontFile`, `/FontFile2` or
+`/FontFile3` on the descriptor, which for a Type0 hangs off the descendant. The
+old comment's caution was right for the case it named: one corpus document shows
+plain ASCII bytes through an Identity-H font, and there a substituted face would
+put wrong glyphs where nothing was. Both sides now have a test.
+
+**How it was found, since no score said it.** `page_ops` was extended to count
+runs reaching the painter against `Text` ops emitted: **94 in, 73 out**. The
+content stream has 131 show operators, so the first reading was that all 37 `TJ`
+arrays produced nothing -- wrong, because `TJ` calls `emit_text_op` directly and
+never passes through `push_text_op`. Two counters on the same path, rather than
+one counter and an inference, gave the real split.
 
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the

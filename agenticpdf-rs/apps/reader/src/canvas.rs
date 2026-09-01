@@ -2723,6 +2723,14 @@ mod render_report {
         );
         eprintln!("  {} bands clipped away", census.bands_clipped_away);
         eprintln!(
+            "  {} runs skipped for blank text, carrying {} glyphs",
+            census.runs_dropped_blank_text, census.glyphs_dropped_blank_text
+        );
+        eprintln!(
+            "  {} text runs reached the painter, {} ops emitted",
+            census.text_runs_seen, census.text_ops_emitted
+        );
+        eprintln!(
             "  {} dash patterns set, {} strokes under one, {} pieces; declined {} zero-entry, {} over budget",
             census.dash_patterns_set,
             census.strokes_under_a_dash,
