@@ -17,7 +17,7 @@ harnesses, the branch, the traps.
 | Matching (total variation ≤ 0.12) | **677 of 681 — 99.4 %** |
 | Over the threshold | 4 |
 | Not comparable | 29 (no reference, or a page we decline to render) |
-| Tests | 620 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
+| Tests | 621 crate + 2 integration, 77 reader; clippy `-D warnings` clean, `cargo fmt` clean |
 | Branch | `master`, pushed |
 
 **Check the reference index before trusting a page count.** Each reference
@@ -612,6 +612,17 @@ Treat the corpus as silent on them, not as endorsing them.
 applied only where a transparency group is composited, and the spec applies it
 to everything painted. Now counted: **2 fills** across the 34-document tree,
 zero strokes, zero images. Small, and no longer invisible.
+
+**A soft mask now applies to a plain fill, not only to a form.** `gs` sets a
+mask and it governs whatever is painted next, which is very often a bare
+`re f` on the page. This engine cut only *groups* by a mask, so such a fill
+painted at full strength: two Microsoft order pages carry four masked fills
+each and came out a third too dark. The machinery was already there --
+`apply_mask_to_group` cuts a list of ops into the mask's regions, and a single
+fill is a list of one. Four pages improved, none regressed, net -0.207.
+
+Both pages are **still over the threshold** at 0.170 and 0.160, ink 1.15 down
+from 1.33. So the masked fills were most of the darkness and are not all of it.
 
 **DeviceN still reads as coverage.** Its tint transform takes one input per
 colorant and this engine evaluates functions of one variable. Nothing in the

@@ -3805,14 +3805,23 @@ fn run_content(
                                         },
                                     ),
                                     None => {
-                                        if soft_mask.is_some() {
-                                            tally(|c| c.mask_ignored_at_fill += 1);
-                                        }
-                                        ops.push(RenderOp::Fill {
+                                        let painted = RenderOp::Fill {
                                             subpaths: paths.clone(),
                                             color: fill_color,
                                             even_odd: op.ends_with('*'),
-                                        })
+                                        };
+                                        // A soft mask set by `gs` applies to
+                                        // whatever is painted next, and that is
+                                        // very often a plain `re f` on the page
+                                        // rather than a form. The same cutting
+                                        // a masked group gets serves a single
+                                        // fill: it is one op in the list.
+                                        match &soft_mask {
+                                            Some(mask) => {
+                                                ops.extend(apply_mask_to_group(vec![painted], mask))
+                                            }
+                                            None => ops.push(painted),
+                                        }
                                     }
                                 }
                             }
@@ -9279,6 +9288,83 @@ startxref
         assert!(
             filtered,
             "the second, filtered glyph painted nothing: {ops:?}"
+        );
+    }
+
+    /// A page that sets a luminosity soft mask and then fills a plain
+    /// rectangle -- no form, no group, just `re f`.
+    ///
+    /// The mask's group paints mid-grey over the left half of the box and
+    /// leaves the right half black, so the left of the fill should survive at
+    /// about half strength and the right should very nearly vanish.
+    fn page_masking_a_plain_fill() -> Vec<u8> {
+        const PAGE: &str = "/GS0 gs 1 0 0 rg 0 0 100 100 re f";
+        const MASK: &str = "0.5 g 0 0 50 100 re f";
+        format!(
+            concat!(
+                "%PDF-1.5\n",
+                "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+                "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+                "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 100 100]/Contents 4 0 R",
+                "/Resources<</ExtGState<</GS0 5 0 R>>>>>>endobj\n",
+                "4 0 obj<</Length {}>>stream\n{}\nendstream endobj\n",
+                "5 0 obj<</Type/ExtGState/SMask<</S/Luminosity/G 6 0 R>>>>endobj\n",
+                "6 0 obj<</Type/XObject/Subtype/Form/BBox[0 0 100 100]",
+                "/Group<</S/Transparency/Type/Group/CS/DeviceGray>>/Length {}>>",
+                "stream\n{}\nendstream endobj\n",
+                "startxref\n0\n%%EOF"
+            ),
+            PAGE.len(),
+            PAGE,
+            MASK.len(),
+            MASK
+        )
+        .into_bytes()
+    }
+
+    /// A soft mask applies to a plain fill, not only to a form.
+    ///
+    /// `gs` sets a mask and it governs whatever is painted next. That is very
+    /// often a bare `re f` on the page, and this engine cut only *groups* by a
+    /// mask, so such a fill painted at full strength. Two Microsoft order
+    /// pages carry four masked fills each and came out a third too dark: ink
+    /// 1.33 against the reference, scoring 0.266 and 0.229.
+    ///
+    /// The machinery was already there -- `apply_mask_to_group` cuts a list of
+    /// ops into the mask's regions -- and a single fill is a list of one.
+    #[test]
+    fn a_soft_mask_cuts_a_plain_fill() {
+        let ops = extract_display_list(&page_masking_a_plain_fill(), 1)
+            .expect("a display list")
+            .ops;
+        let reds: Vec<[f64; 4]> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill { color, .. } if color[0] > 0.5 => Some(*color),
+                _ => None,
+            })
+            .collect();
+        // One piece, not two: the black half of the mask has no coverage, so
+        // it produces nothing at all rather than a transparent rectangle.
+        assert_eq!(reds.len(), 1, "{ops:?}");
+        assert!(
+            (reds[0][3] - 0.5).abs() < 0.01,
+            "mid-grey luminosity is half coverage: {reds:?}"
+        );
+        let xs: Vec<f64> = ops
+            .iter()
+            .filter_map(|op| match op {
+                RenderOp::Fill {
+                    subpaths, color, ..
+                } if color[0] > 0.5 => Some(subpaths),
+                _ => None,
+            })
+            .flat_map(|sp| sp.iter().flatten().map(|p| p[0]))
+            .collect();
+        let right = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            right < 60.0,
+            "only the lit left half survives, but the fill reaches {right}: {ops:?}"
         );
     }
 
