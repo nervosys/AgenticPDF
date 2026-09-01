@@ -969,6 +969,15 @@ fn render_block(block: &Block, indent: usize, out: &mut String) {
 fn render_list(list: &List, indent: usize, out: &mut String) {
     let pad = "  ".repeat(indent);
     for (offset, item) in list.items.iter().enumerate() {
+        // An item whose only content is a nested list has nothing of its own to
+        // mark. OpenDocument writes a level of nesting exactly that way -- a
+        // `<text:list-item>` holding only a `<text:list>` -- and marking the
+        // empty parent renders "- - text", where the same slide saved as .pptx
+        // renders an indented "  - text".
+        if let [Block::List(inner)] = item.blocks.as_slice() {
+            render_list(inner, indent + 1, out);
+            continue;
+        }
         let marker = if list.ordered {
             format!("{}. ", list.start + offset as u64)
         } else {

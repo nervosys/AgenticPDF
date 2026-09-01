@@ -515,6 +515,30 @@ fn xlsx_handles_cell_types() {
 }
 
 #[test]
+fn pptx_reads_a_table_on_a_slide() {
+    // A table lives in a `<p:graphicFrame>`, not a `<p:sp>`. A walk that knows
+    // only shapes and pictures drops it without a trace: a slide holding
+    // nothing else came back empty, while the same deck saved as .odp showed
+    // PowerPoint's fallback picture of the table instead of the table.
+    // The helper wraps this in the slide and package around it.
+    let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>Growth</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>EMEA</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>8%</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+           </a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+    let markdown = to_markdown(&open(&pptx(&[("", frame)], &[0]), Format::Pptx));
+    assert!(markdown.contains("| Region | Growth |"), "{markdown}");
+    assert!(markdown.contains("| EMEA | 8% |"), "{markdown}");
+    // A cell's contents are its value, never a bullet.
+    assert!(!markdown.contains("- Region"), "{markdown}");
+}
+
+#[test]
 fn xlsx_shows_a_number_the_way_the_cell_does() {
     // Excel writes seventeen significant digits so the double round-trips:
     // `0.28` is stored as `0.28000000000000003`, and the two parse to the same

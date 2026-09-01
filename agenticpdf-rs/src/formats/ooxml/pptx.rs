@@ -28,8 +28,8 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::zip::ZipArchive;
 use crate::doc::{
-    Align, Block, ImageRef, Inline, List, ListItem, PageSize, Run, Section, SectionKind,
-    SemanticDoc, TextStyle, image_media_type, inline_text,
+    Align, Block, Cell, ImageRef, Inline, List, ListItem, PageSize, Row, Run, Section, SectionKind,
+    SemanticDoc, Table, TextStyle, image_media_type, inline_text,
 };
 use crate::formats::ooxml::{Package, Rels, attr_i64, emu_to_points, rel_id};
 use crate::xml::{Element, Event, Reader, ns};
@@ -191,6 +191,14 @@ impl SlideReader<'_> {
                     }
                     blocks.extend(shape.blocks);
                 }
+                // A table lives inside a `<p:graphicFrame>` rather than a
+                // shape, so a walk that knows only `<p:sp>` and `<p:pic>` drops
+                // it silently -- a slide of figures came back empty.
+                (ns::P, "graphicFrame") => {
+                    if let Some(table) = self.read_graphic_frame(&mut reader, &element) {
+                        blocks.push(Block::Table(table));
+                    }
+                }
                 (ns::P, "pic") => {
                     if let Some(image) = self.read_picture(&mut reader, &element) {
                         blocks.push(Block::Figure {
@@ -251,6 +259,102 @@ impl SlideReader<'_> {
             }
         }
         shape
+    }
+
+    /// Read a `<p:graphicFrame>`, returning its table if it holds one.
+    ///
+    /// A frame can also carry a chart or a diagram; those have no text to
+    /// recover here and are skipped, which is why this returns an option
+    /// rather than an empty table.
+    fn read_graphic_frame(&mut self, reader: &mut Reader, start: &Element) -> Option<Table> {
+        let mut rows: Vec<Row> = Vec::new();
+        let mut depth = 1usize;
+
+        while let Some(event) = reader.read_event() {
+            match event {
+                Event::End(name) if name == start.qname => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Start(element) if element.qname == start.qname => depth += 1,
+                Event::Start(element) if element.is(ns::A, "tr") => {
+                    rows.push(self.read_table_row(reader, &element));
+                }
+                _ => {}
+            }
+        }
+
+        match rows.iter().all(|row| row.cells.is_empty()) {
+            true => None,
+            false => Some(Table {
+                rows,
+                // DrawingML marks a header row in the table style rather than
+                // on the row, and the first row of a slide table is one in
+                // every deck anybody writes.
+                header_rows: 1,
+                caption: None,
+                // The frame's `<a:gridCol>` widths are in EMU and the layout
+                // computes its own; carrying them would only be a second
+                // opinion nothing reads.
+                column_widths: Vec::new(),
+            }),
+        }
+    }
+
+    /// Read one `<a:tr>`, whose cells hold text bodies like any shape's.
+    fn read_table_row(&mut self, reader: &mut Reader, start: &Element) -> Row {
+        let mut cells: Vec<Cell> = Vec::new();
+        let mut depth = 1usize;
+
+        while let Some(event) = reader.read_event() {
+            match event {
+                Event::End(name) if name == start.qname => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Start(element) if element.qname == start.qname => depth += 1,
+                Event::Start(element) if element.is(ns::A, "tc") => {
+                    cells.push(self.read_table_cell(reader, &element));
+                }
+                _ => {}
+            }
+        }
+        Row { cells }
+    }
+
+    /// Read one `<a:tc>`: the same paragraphs a shape holds, without bullets.
+    fn read_table_cell(&mut self, reader: &mut Reader, start: &Element) -> Cell {
+        let mut blocks: Vec<Block> = Vec::new();
+        let mut depth = 1usize;
+
+        while let Some(event) = reader.read_event() {
+            match event {
+                Event::End(name) if name == start.qname => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Start(element) if element.qname == start.qname => depth += 1,
+                Event::Start(element) if element.is(ns::A, "p") => {
+                    if let Some(mut paragraph) = self.read_paragraph(reader, &element) {
+                        // A cell's contents are its value, never a list item.
+                        paragraph.bullet = Bullet::None;
+                        paragraph.level = 0;
+                        push_paragraph(&mut blocks, paragraph);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Cell {
+            blocks,
+            ..Cell::default()
+        }
     }
 
     /// Read one DrawingML `<a:p>` paragraph.

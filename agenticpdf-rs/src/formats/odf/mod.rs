@@ -559,6 +559,23 @@ fn read_list(
     }
 }
 
+/// A cell holding one single-item list is holding a paragraph.
+///
+/// PowerPoint bullets everything it writes to OpenDocument, table cells
+/// included: every cell arrives as `<text:list><text:list-item><text:p>`, with
+/// a list style that shows no bullet. Taken at face value a header row reads
+/// `- Region | - Growth`.
+///
+/// Only the lone single-item case is unwrapped. A cell that really does hold a
+/// bulleted list keeps it, because two bullets in a cell are a list whoever
+/// wrote them.
+fn unwrap_lone_list(blocks: Vec<Block>) -> Vec<Block> {
+    match blocks.as_slice() {
+        [Block::List(list)] if list.items.len() == 1 => list.items[0].blocks.clone(),
+        _ => blocks,
+    }
+}
+
 /// Read a `<table:table>` from a text or presentation document.
 fn read_table(
     reader: &mut Reader,
@@ -637,7 +654,13 @@ fn read_row(
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(1)
                     .clamp(1, 1000);
-                let blocks = read_blocks(reader, &element.qname, package, document, depth);
+                let blocks = unwrap_lone_list(read_blocks(
+                    reader,
+                    &element.qname,
+                    package,
+                    document,
+                    depth,
+                ));
 
                 for _ in 0..repeat {
                     cells.push(Cell {
@@ -861,9 +884,15 @@ fn read_slides(content: &[u8], package: &mut Package, document: &mut SemanticDoc
             continue;
         }
 
+        // The page's own name, where the author gave it one. Both PowerPoint
+        // and LibreOffice auto-name every page "Slide3", "page3" and the like,
+        // which is an identifier rather than a title: taken as one, an untitled
+        // slide grows a heading that is not in the deck, and the same deck
+        // saved as .pptx has none.
         let name = element
             .attr_local("name")
-            .filter(|value| !value.trim().is_empty())
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !is_generated_page_name(value))
             .map(str::to_string);
         let (title, blocks, notes) = read_slide(&mut reader, &element, package, document);
 
@@ -875,6 +904,19 @@ fn read_slides(content: &[u8], package: &mut Package, document: &mut SemanticDoc
             page_size,
         });
     }
+}
+
+/// Whether a page name is one an application generated rather than a title.
+fn is_generated_page_name(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    let digits = lower.trim_start_matches(|c: char| c.is_ascii_alphabetic() || c.is_whitespace());
+    let stem = &lower[..lower.len() - digits.len()];
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && matches!(
+            stem.trim(),
+            "slide" | "page" | "folie" | "diapositiva" | "diapositive"
+        )
 }
 
 /// Read one slide, separating its title placeholder and its notes.
@@ -947,6 +989,11 @@ fn read_frame_blocks(
     // collected across the whole frame and applied at the end.
     let mut alt: Option<String> = None;
     let mut nesting = 1usize;
+    // A frame holding a table also carries a picture of it: PowerPoint writes
+    // both so that a reader which understands neither still shows something.
+    // The table is the content and the picture is a rendering of it, so
+    // finding one discards the other.
+    let mut has_table = false;
 
     while let Some(event) = reader.read_event() {
         match event {
@@ -959,6 +1006,12 @@ fn read_frame_blocks(
             Event::Start(element) if element.qname == start.qname => nesting += 1,
             Event::Start(element) if element.is(ns::ODF_DRAW, "text-box") => {
                 blocks.extend(read_blocks(reader, &element.qname, package, document, 1));
+            }
+            Event::Start(element) if element.is(ns::ODF_TABLE, "table") => {
+                if let Some(table) = read_table(reader, &element, package, document, 1) {
+                    has_table = true;
+                    blocks.push(Block::Table(table));
+                }
             }
             Event::Start(element) if element.is(ns::ODF_DRAW, "image") => {
                 let href = element
@@ -995,7 +1048,10 @@ fn read_frame_blocks(
         .attr_local("name")
         .filter(|name| !name.trim().is_empty())
         .map(str::to_string);
-    for mut image in images {
+    for mut image in images.into_iter().take(match has_table {
+        true => 0,
+        false => usize::MAX,
+    }) {
         image.alt = alt.clone().or_else(|| fallback.clone());
         blocks.push(Block::Figure {
             image,
