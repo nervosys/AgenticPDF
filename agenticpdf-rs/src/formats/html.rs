@@ -19,7 +19,6 @@
 //! from such elements carry [`crate::doc::TextStyle::hidden`], which
 //! [`crate::sanitize`] reports and `--sanitize` strips.
 
-use crate::container::zip::decode_utf8_lossy;
 use crate::doc::{
     Align, Block, Cell, ImageRef, Inline, List, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
 };
@@ -38,8 +37,190 @@ const VOID_ELEMENTS: [&str; 14] = [
 const MAX_DEPTH: usize = 256;
 
 /// Parse an HTML or XHTML document into the semantic model.
+/// Decode an HTML document, honouring the encoding it declares.
+///
+/// Assuming UTF-8 is wrong often enough to matter: Word's "filtered HTML"
+/// export declares `charset=windows-1252` and writes `±` as a single 0xB1 byte,
+/// which as UTF-8 is invalid and comes out as a replacement character. The same
+/// document as .docx said `±2%`, which is how this was noticed.
+///
+/// The order is the one the HTML specification gives, minus the parts that need
+/// a live network or a user preference: a byte-order mark wins, then a declared
+/// charset near the top of the file, then UTF-8, then windows-1252 — which is
+/// the practical default for a page that declares nothing and is not valid
+/// UTF-8.
+fn decode_html(data: &[u8]) -> String {
+    if let Some(rest) = data.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    if data.starts_with(&[0xFF, 0xFE]) || data.starts_with(&[0xFE, 0xFF]) {
+        let (text, _, _) = encoding_rs::UTF_16LE.decode(data);
+        if data.starts_with(&[0xFE, 0xFF]) {
+            let (text, _, _) = encoding_rs::UTF_16BE.decode(data);
+            return text.into_owned();
+        }
+        return text.into_owned();
+    }
+
+    if let Some(encoding) = declared_encoding(data) {
+        let (text, _, _) = encoding.decode(data);
+        return text.into_owned();
+    }
+    match std::str::from_utf8(data) {
+        Ok(text) => text.to_string(),
+        // Not UTF-8 and saying nothing about itself: windows-1252 decodes every
+        // byte, so this replaces mojibake with a plausible reading rather than
+        // with replacement characters.
+        Err(_) => encoding_rs::WINDOWS_1252.decode(data).0.into_owned(),
+    }
+}
+
+/// The charset a document declares, from the first part of the file.
+///
+/// Bounded because the declaration is required to be early, and scanning a
+/// whole document for a string that should be in its first kilobyte is work
+/// that a large file should not have to pay for.
+fn declared_encoding(data: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    const LOOK: usize = 4096;
+    let head = &data[..data.len().min(LOOK)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let at = text.find("charset")? + "charset".len();
+    let rest = text[at..].trim_start().strip_prefix('=')?.trim_start();
+    let name: String = rest
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    encoding_rs::Encoding::for_label(name.as_bytes())
+}
+
+/// Expand the entities an HTML document uses.
+///
+/// The XML decoder handles the five predefined names and numeric references,
+/// and deliberately handles nothing else: leaving declared entities alone is
+/// what makes an expansion attack impossible there. HTML's named entities are a
+/// different matter — they are fixed by the specification rather than declared
+/// by the document, so expanding them cannot be steered by the input.
+///
+/// Without this, `&nbsp;` reaches the output verbatim, and Word's HTML export
+/// uses it for every indent.
+fn decode_html_entities(input: &str) -> String {
+    // The XML pass first: it handles `&amp;`, `&#160;` and the rest, and leaves
+    // anything it does not know untouched for the table below.
+    let once = decode_entities(input);
+    if !once.contains('&') {
+        return once;
+    }
+
+    let mut out = String::with_capacity(once.len());
+    let mut rest = once.as_str();
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        // A named reference is short; bound the search the way the XML decoder
+        // does, and walk back to a character boundary before slicing.
+        let mut window = tail.len().min(12);
+        while !tail.is_char_boundary(window) {
+            window -= 1;
+        }
+        match tail[..window]
+            .find(';')
+            .and_then(|semi| html_entity(&tail[1..semi]).map(|value| (value, semi)))
+        {
+            Some((value, semi)) => {
+                out.push_str(value);
+                rest = &tail[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The named entities a real document actually uses.
+///
+/// Not the full set of two thousand: this is the punctuation, currency and
+/// accented letters that appear in prose, and anything absent is left as
+/// written rather than guessed at.
+fn html_entity(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "nbsp" => "\u{00A0}",
+        "copy" => "©",
+        "reg" => "®",
+        "trade" => "™",
+        "hellip" => "…",
+        "mdash" => "—",
+        "ndash" => "–",
+        "minus" => "−",
+        "lsquo" => "\u{2018}",
+        "rsquo" => "\u{2019}",
+        "ldquo" => "\u{201C}",
+        "rdquo" => "\u{201D}",
+        "sbquo" => "\u{201A}",
+        "bdquo" => "\u{201E}",
+        "bull" => "•",
+        "middot" => "·",
+        "deg" => "°",
+        "plusmn" => "±",
+        "times" => "×",
+        "divide" => "÷",
+        "frac12" => "½",
+        "frac14" => "¼",
+        "frac34" => "¾",
+        "sup2" => "²",
+        "sup3" => "³",
+        "micro" => "µ",
+        "para" => "¶",
+        "sect" => "§",
+        "dagger" => "†",
+        "Dagger" => "‡",
+        "permil" => "‰",
+        "prime" => "′",
+        "Prime" => "″",
+        "laquo" => "«",
+        "raquo" => "»",
+        "lsaquo" => "‹",
+        "rsaquo" => "›",
+        "euro" => "€",
+        "pound" => "£",
+        "yen" => "¥",
+        "cent" => "¢",
+        "curren" => "¤",
+        "larr" => "←",
+        "rarr" => "→",
+        "harr" => "↔",
+        "darr" => "↓",
+        "uarr" => "↑",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "pi" => "π",
+        "sigma" => "σ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "omega" => "ω",
+        "infin" => "∞",
+        "ne" => "≠",
+        "le" => "≤",
+        "ge" => "≥",
+        "asymp" => "≈",
+        "shy" => "\u{00AD}",
+        "ensp" => "\u{2002}",
+        "emsp" => "\u{2003}",
+        "thinsp" => "\u{2009}",
+        "zwnj" => "\u{200C}",
+        "zwj" => "\u{200D}",
+        _ => return None,
+    })
+}
+
 pub fn parse_html(data: &[u8]) -> SemanticDoc {
-    let source = decode_utf8_lossy(data);
+    let source = decode_html(data);
     let tokens = tokenize(&source);
 
     let mut parser = Parser {
@@ -148,7 +329,7 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 fn push_text(text: &mut String, tokens: &mut Vec<Token>) {
     if !text.is_empty() {
-        let decoded = decode_entities(&std::mem::take(text));
+        let decoded = decode_html_entities(&std::mem::take(text));
         tokens.push(Token::Text(decoded));
     }
 }
@@ -253,7 +434,7 @@ fn parse_attributes(input: &str) -> Vec<(String, String)> {
                 chars[start..at].iter().collect()
             }
         };
-        attrs.push((name, decode_entities(&value)));
+        attrs.push((name, decode_html_entities(&value)));
     }
 
     attrs
@@ -1068,6 +1249,76 @@ mod tests {
             markdown.contains("[x](https://example.com)"),
             "got {markdown}"
         );
+    }
+
+    /// A document is decoded with the encoding it declares.
+    ///
+    /// Word's "filtered HTML" export declares windows-1252 and writes a
+    /// plus-or-minus sign as one 0xB1 byte. Read as UTF-8 that is invalid and
+    /// becomes a replacement character, which is how this was found: the same
+    /// document as .docx said the sign, and the .html said nothing readable.
+    #[test]
+    fn a_declared_charset_is_honoured() {
+        let mut bytes =
+            br#"<html><head><meta http-equiv=Content-Type content="text/html; charset=windows-1252"></head><body><p>"#
+                .to_vec();
+        // 0xB1 is the sign in windows-1252, and invalid alone in UTF-8.
+        bytes.extend_from_slice(&[0xB1, b'2', b'%']);
+        bytes.extend_from_slice(b"</p></body></html>");
+
+        let text = crate::doc::to_markdown(&parse_html(&bytes));
+        assert!(text.contains("\u{00B1}2%"), "{text}");
+        assert!(
+            !text.contains('\u{FFFD}'),
+            "no replacement character: {text}"
+        );
+    }
+
+    /// Undeclared and not valid UTF-8 falls back rather than mangling.
+    #[test]
+    fn an_undeclared_non_utf8_document_falls_back_to_windows_1252() {
+        let mut bytes = b"<html><body><p>caf".to_vec();
+        bytes.push(0xE9);
+        bytes.extend_from_slice(b"</p></body></html>");
+        let text = crate::doc::to_markdown(&parse_html(&bytes));
+        assert!(text.contains("caf\u{00E9}"), "{text}");
+    }
+
+    /// A UTF-8 document with no declaration is still UTF-8.
+    #[test]
+    fn an_undeclared_utf8_document_is_read_as_utf8() {
+        let text = crate::doc::to_markdown(&parse_html(
+            "<html><body><p>caf\u{00E9} \u{03BB}</p></body></html>".as_bytes(),
+        ));
+        assert!(text.contains("caf\u{00E9} \u{03BB}"), "{text}");
+    }
+
+    /// HTML's named entities are expanded; the XML decoder knows only five.
+    ///
+    /// They are fixed by the specification rather than declared by the
+    /// document, so expanding them cannot be steered by the input -- which is
+    /// why this lives here and not in the XML decoder, where leaving an unknown
+    /// name alone is what makes an expansion attack impossible.
+    #[test]
+    fn html_named_entities_are_expanded() {
+        let text = crate::doc::to_markdown(&parse_html(
+            b"<html><body><p>a&nbsp;b &mdash; 20&deg;C &plusmn;1 &euro;5 &lambda; &amp; &#955;</p><p>&notareal; stays</p></body></html>",
+        ));
+        // Expanded, then normalised to an ordinary space by the text pass,
+        // which is what a consumer of extracted text wants. The contract is
+        // that the entity does not survive as written.
+        assert!(text.contains("a b"), "nbsp: {text}");
+        assert!(!text.contains("&nbsp;"), "nbsp: {text}");
+        assert!(text.contains('\u{2014}'), "mdash: {text}");
+        assert!(text.contains("20\u{00B0}C"), "deg: {text}");
+        assert!(text.contains("\u{00B1}1"), "plusmn: {text}");
+        assert!(text.contains("\u{20AC}5"), "euro: {text}");
+        assert!(
+            text.contains("\u{03BB} & \u{03BB}"),
+            "named and numeric alike: {text}"
+        );
+        // An entity nobody defines is left as written rather than guessed at.
+        assert!(text.contains("&notareal; stays"), "{text}");
     }
 
     #[test]
