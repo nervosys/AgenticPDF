@@ -526,11 +526,18 @@ impl Parser {
                             self.at += 1;
                             let content = self.parse_inlines("p", hidden);
                             if !crate::doc::inline_text(&content).trim().is_empty() {
-                                blocks.push(Block::Paragraph {
-                                    content,
-                                    align: alignment(&attrs),
-                                    indent: 0.0,
-                                });
+                                match word_list_class(&attrs) {
+                                    // Word's HTML export writes list items as
+                                    // paragraphs, and says so in the class.
+                                    Some((ordered, level)) => {
+                                        push_word_list_item(&mut blocks, ordered, level, content);
+                                    }
+                                    None => blocks.push(Block::Paragraph {
+                                        content,
+                                        align: alignment(&attrs),
+                                        indent: 0.0,
+                                    }),
+                                }
                             }
                         }
                         "ul" | "ol" => {
@@ -959,6 +966,160 @@ fn span(attrs: &[(String, String)], name: &str) -> usize {
         .clamp(1, 1000)
 }
 
+/// Recognise a list item that Word's HTML export wrote as a paragraph.
+///
+/// "Filtered HTML" out of Word contains no `<ul>` at all: every item is a `<p>`
+/// carrying the marker as literal text, so a reader that trusts the tags sees a
+/// list of bullets as prose. The class names it writes say what the markup does
+/// not — `MsoListBullet`, `MsoListNumber2CxSpFirst` — giving both the kind and
+/// the nesting depth, which is a far better signal than sniffing the text for a
+/// bullet glyph.
+///
+/// Returns `(ordered, level)`, where level 0 is the outermost. Word's plain
+/// `MsoListParagraph` is deliberately not matched: it names no kind, so there is
+/// nothing to recover from it, and guessing would turn indented prose into a
+/// list.
+fn word_list_class(attrs: &[(String, String)]) -> Option<(bool, usize)> {
+    let class = attribute(attrs, "class")?;
+    for token in class.split_whitespace() {
+        let Some(rest) = token.strip_prefix("MsoList") else {
+            continue;
+        };
+        let (ordered, rest) = match rest.strip_prefix("Bullet") {
+            Some(rest) => (false, rest),
+            None => match rest.strip_prefix("Number") {
+                Some(rest) => (true, rest),
+                None => continue,
+            },
+        };
+        // `MsoListBullet` is the first level and carries no digit;
+        // `MsoListBullet2CxSpFirst` is the second. The `CxSp` suffix marks an
+        // item's position in a run and says nothing about depth.
+        let level = rest
+            .chars()
+            .next()
+            .and_then(|c| c.to_digit(10))
+            .map(|d| d.saturating_sub(1) as usize)
+            .unwrap_or(0);
+        return Some((ordered, level));
+    }
+    None
+}
+
+/// Add one of Word's paragraph-shaped list items to the blocks built so far.
+///
+/// Consecutive items merge into one list, and a deeper level nests inside the
+/// item above it, so the shape a reader sees matches the shape Word drew.
+fn push_word_list_item(blocks: &mut Vec<Block>, ordered: bool, level: usize, mut content: Vec<Inline>) {
+    strip_list_marker(&mut content, ordered);
+    if crate::doc::inline_text(&content).trim().is_empty() {
+        return;
+    }
+    let item = ListItem {
+        blocks: vec![Block::Paragraph {
+            content,
+            align: Align::Left,
+            indent: 0.0,
+        }],
+        checked: None,
+    };
+    insert_list_item(blocks, ordered, level, item);
+}
+
+/// Place an item at `level`, descending through the lists already built.
+fn insert_list_item(blocks: &mut Vec<Block>, ordered: bool, level: usize, item: ListItem) {
+    if level > 0
+        && let Some(Block::List(list)) = blocks.last_mut()
+            && let Some(parent) = list.items.last_mut() {
+                insert_list_item(&mut parent.blocks, ordered, level - 1, item);
+                return;
+            }
+        // A depth with nothing above it to hang from — a document that starts
+        // at the second level, or one whose first item was empty. Flattening it
+        // to this level keeps the text; dropping it would not.
+    match blocks.last_mut() {
+        // A change of kind starts a new list: a numbered run following a
+        // bulleted one is not a continuation of it.
+        Some(Block::List(list)) if list.ordered == ordered => list.items.push(item),
+        _ => blocks.push(Block::List(List {
+            ordered,
+            start: 1,
+            items: vec![item],
+        })),
+    }
+}
+
+/// Remove the marker Word wrote into the item's own text.
+///
+/// The bullet or number is real text in this export, followed by a run of
+/// non-breaking spaces that whitespace collapsing has already reduced to one.
+/// Left in place it would be rendered twice, once by us and once by Word.
+fn strip_list_marker(content: &mut Vec<Inline>, ordered: bool) {
+    let mut marker_gone = false;
+    loop {
+        let Some(Inline::Run(run)) = content.first() else {
+            return;
+        };
+        let trimmed = run.text.trim_start();
+        if trimmed.is_empty() {
+            content.remove(0);
+            continue;
+        }
+        let stripped = match marker_gone {
+            true => Some(trimmed),
+            false => split_marker(trimmed, ordered),
+        };
+        // Not the marker after all: leave the run alone rather than eat a word
+        // because a class name said "list".
+        let Some(rest) = stripped else { return };
+        marker_gone = true;
+        let rest = rest.trim_start().to_string();
+        if rest.is_empty() {
+            content.remove(0);
+            continue;
+        }
+        if let Some(Inline::Run(run)) = content.first_mut() {
+            run.text = rest;
+        }
+        return;
+    }
+}
+
+/// Split a leading list marker off an item's text, if one is there.
+fn split_marker(text: &str, ordered: bool) -> Option<&str> {
+    match ordered {
+        // `1.`, `12)`, `a.`, `iv)` — the number as Word rendered it. Our own
+        // numbering replaces it, so the source's is dropped rather than kept.
+        true => {
+            let rest = text.trim_start_matches(|c: char| c.is_ascii_alphanumeric());
+            match rest.len() < text.len() && text.len() - rest.len() <= 4 {
+                true => rest.strip_prefix(['.', ')']),
+                false => None,
+            }
+        }
+        // A single glyph. Word writes it in Symbol or Wingdings, which land in
+        // the private use area, or as one of the characters below when the font
+        // survived the export.
+        false => {
+            let first = text.chars().next()?;
+            let bullet = matches!(first, '\u{F000}'..='\u{F0FF}')
+                || matches!(
+                    first,
+                    '\u{00B7}' | '\u{2022}' | '\u{25AA}' | '\u{25CF}' | '\u{25E6}'
+                        | '\u{2023}' | '\u{00A7}' | '\u{2013}' | '-' | '*' | 'o'
+                );
+            let rest = &text[first.len_utf8()..];
+            // The marker stands alone. Without this, a bulleted paragraph
+            // beginning "opening remarks" would lose its first letter.
+            let alone = rest.is_empty() || rest.starts_with(char::is_whitespace);
+            match bullet && alone {
+                true => Some(rest),
+                false => None,
+            }
+        }
+    }
+}
+
 fn alignment(attrs: &[(String, String)]) -> Align {
     let style = attribute(attrs, "style").unwrap_or("").to_ascii_lowercase();
     let align = attribute(attrs, "align").unwrap_or("").to_ascii_lowercase();
@@ -1161,6 +1322,96 @@ mod tests {
         assert_eq!(
             markdown_of("<ul><li>parent<ul><li>child</li></ul></li></ul>"),
             "- parent\n  - child\n"
+        );
+    }
+
+    /// Word's HTML export writes every list item as a paragraph.
+    ///
+    /// There is no `<ul>` anywhere in the file: the bullet is literal text and
+    /// the structure lives in the class name. Read by the tags alone, a
+    /// four-item bulleted list came back as four paragraphs of prose, each
+    /// opening with a stray bullet character -- the .docx of the same document
+    /// had the list.
+    #[test]
+    fn word_html_list_paragraphs_become_a_list() {
+        // Trimmed from Word's own "filtered HTML", keeping the shape: a Symbol
+        // span holding the bullet, then a run of non-breaking spaces, then the
+        // text. `CxSp` marks position in a run and says nothing about depth.
+        let markdown = markdown_of(concat!(
+            "<p class=MsoListBullet><span style='font-family:Symbol'>\u{00B7}",
+            "<span style='font:7.0pt'>&nbsp;&nbsp;&nbsp;</span></span>Top level one</p>",
+            "<p class=MsoListBullet2CxSpFirst><span style='font-family:Symbol'>\u{00B7}",
+            "<span style='font:7.0pt'>&nbsp;&nbsp;&nbsp;</span></span>Nested under one</p>",
+            "<p class=MsoListBullet2CxSpLast><span style='font-family:Symbol'>\u{00B7}",
+            "<span style='font:7.0pt'>&nbsp;&nbsp;&nbsp;</span></span>Also nested</p>",
+            "<p class=MsoListBullet><span style='font-family:Symbol'>\u{00B7}",
+            "<span style='font:7.0pt'>&nbsp;&nbsp;&nbsp;</span></span>Top level two</p>",
+            "<p class=MsoListNumberCxSpFirst>1.<span style='font:7.0pt'>&nbsp;&nbsp;</span>",
+            "First step</p>",
+            "<p class=MsoListNumberCxSpLast>2.<span style='font:7.0pt'>&nbsp;&nbsp;</span>",
+            "Second step</p>",
+        ));
+        assert_eq!(
+            markdown,
+            concat!(
+                "- Top level one\n",
+                "  - Nested under one\n",
+                "  - Also nested\n",
+                "- Top level two\n",
+                // A blank line, because the change of kind starts a second
+                // list and Markdown would otherwise read the two as one.
+                "\n",
+                "1. First step\n",
+                "2. Second step\n",
+            )
+        );
+    }
+
+    /// Only a class that names the kind counts.
+    ///
+    /// `MsoListParagraph` is the class Word writes when the list comes from a
+    /// paragraph style, and it says bullet or number nowhere. Treating it as a
+    /// list would turn indented prose into one, so it stays a paragraph.
+    #[test]
+    fn word_classes_that_name_no_kind_stay_paragraphs() {
+        assert_eq!(
+            markdown_of("<p class=MsoListParagraph>Indented prose.</p>"),
+            "Indented prose.\n"
+        );
+        assert_eq!(
+            markdown_of("<p class=MsoNormal>Ordinary prose.</p>"),
+            "Ordinary prose.\n"
+        );
+    }
+
+    /// The marker is only removed when it really is the marker.
+    ///
+    /// `o` is one of Word's bullet glyphs, so a bulleted item beginning with
+    /// the word "opening" is exactly the case that would lose a letter to a
+    /// careless strip. A marker stands alone; a first letter does not.
+    #[test]
+    fn a_word_list_item_keeps_text_that_only_looks_like_a_marker() {
+        assert_eq!(
+            markdown_of("<p class=MsoListBullet>opening remarks</p>"),
+            "- opening remarks\n"
+        );
+        assert_eq!(
+            markdown_of("<p class=MsoListBullet>o\u{00A0}opening remarks</p>"),
+            "- opening remarks\n"
+        );
+        // A number that is the sentence, not the marker.
+        assert_eq!(
+            markdown_of("<p class=MsoListNumber>2024 was flat</p>"),
+            "1. 2024 was flat\n"
+        );
+    }
+
+    /// A level with nothing above it keeps its text rather than vanishing.
+    #[test]
+    fn a_word_list_starting_below_the_top_level_is_flattened_not_dropped() {
+        assert_eq!(
+            markdown_of("<p class=MsoListBullet3>orphan</p>"),
+            "- orphan\n"
         );
     }
 

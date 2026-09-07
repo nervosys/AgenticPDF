@@ -673,6 +673,8 @@ fn append_list_item(blocks: &mut Vec<Block>, item: ListItem, level: u8, ordered:
 /// Style definitions from `word/styles.xml`.
 #[derive(Debug, Default)]
 struct Styles {
+    /// Style id → nesting level for the built-in list styles.
+    list_levels: HashMap<String, u8>,
     /// Style id → heading level (1-9).
     headings: HashMap<String, u8>,
     quotes: Vec<String>,
@@ -767,6 +769,24 @@ impl Styles {
             self.headings.insert(id.to_string(), 2);
             return;
         }
+        // "List Bullet 2" is the second level of a bulleted list, and the only
+        // place that depth is recorded: Word gives each level its own style
+        // with its own `numId` and writes no `<w:ilvl>` at all, so a reader
+        // that trusts the numbering alone sees every item at the top level and
+        // flattens the list. Word's own HTML export reads the name the same
+        // way, which is how the difference showed up.
+        for prefix in ["listbullet", "listnumber", "listcontinue"] {
+            let Some(rest) = compact.strip_prefix(prefix) else {
+                continue;
+            };
+            // The unsuffixed style is the first level.
+            if let Ok(level) = rest.parse::<u8>()
+                && (2..=9).contains(&level)
+            {
+                self.list_levels.insert(id.to_string(), level - 1);
+            }
+            return;
+        }
         if compact.contains("quote") {
             self.quotes.push(id.to_string());
             return;
@@ -793,6 +813,19 @@ impl Styles {
     /// this style would otherwise inherit", which is why it stops the walk
     /// rather than continuing up the chain.
     fn numbering(&self, id: &str) -> Option<NumberingRef> {
+        let mut reference = self.numbering_of(id)?;
+        // Only where the style chain gave no level of its own: an explicit
+        // `<w:ilvl>` says what it means and is not to be second-guessed.
+        if reference.level == 0
+            && let Some(level) = self.list_levels.get(id)
+        {
+            reference.level = *level;
+        }
+        Some(reference)
+    }
+
+    /// The numbering the style chain carries, before the name is consulted.
+    fn numbering_of(&self, id: &str) -> Option<NumberingRef> {
         let mut at = id;
         // A cap rather than a visited set: a cycle is malformed input, and
         // eight levels is deeper than any real style chain.

@@ -155,6 +155,59 @@ fn docx_reads_numbering_definitions_to_tell_lists_apart() {
     );
 }
 
+/// Word records a list's depth in the style's name and nowhere else.
+///
+/// A "List Bullet 2" paragraph carries `<w:pStyle w:val="ListBullet2"/>` and
+/// nothing more: the style holds a `<w:numPr>` with its own `numId` and no
+/// `<w:ilvl>` at all. Read by the numbering alone every item is at level zero,
+/// so a two-level list came back flat -- which showed up as a disagreement with
+/// Word's own HTML export of the same document, where the depth is explicit.
+#[test]
+fn docx_reads_a_lists_depth_from_the_style_name() {
+    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:style w:styleId="ListBullet"><w:name w:val="List Bullet"/>
+          <w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:style>
+        <w:style w:styleId="ListBullet2"><w:name w:val="List Bullet 2"/>
+          <w:pPr><w:numPr><w:numId w:val="2"/></w:numPr></w:pPr></w:style>
+      </w:styles>"#;
+    let numbering = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:abstractNum w:abstractNumId="0">
+          <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl>
+          <w:lvl w:ilvl="1"><w:numFmt w:val="bullet"/></w:lvl>
+        </w:abstractNum>
+        <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+        <w:num w:numId="2"><w:abstractNumId w:val="0"/></w:num>
+      </w:numbering>"#;
+    let zip = docx_with_parts(
+        r#"<w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r><w:t>one</w:t></w:r></w:p>
+           <w:p><w:pPr><w:pStyle w:val="ListBullet2"/></w:pPr><w:r><w:t>under one</w:t></w:r></w:p>
+           <w:p><w:pPr><w:pStyle w:val="ListBullet2"/></w:pPr><w:r><w:t>also under</w:t></w:r></w:p>
+           <w:p><w:pPr><w:pStyle w:val="ListBullet"/></w:pPr><w:r><w:t>two</w:t></w:r></w:p>"#,
+        &[
+            ("word/styles.xml", styles, true),
+            ("word/numbering.xml", numbering, true),
+        ],
+    );
+    assert_eq!(
+        to_markdown(&open(&zip, Format::Docx)),
+        "- one\n  - under one\n  - also under\n- two\n"
+    );
+}
+
+/// An explicit level is not second-guessed by the style's name.
+#[test]
+fn docx_prefers_an_explicit_level_to_the_style_name() {
+    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:style w:styleId="ListBullet3"><w:name w:val="List Bullet 3"/>
+          <w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr></w:style>
+      </w:styles>"#;
+    let zip = docx_with_parts(
+        r#"<w:p><w:pPr><w:pStyle w:val="ListBullet3"/></w:pPr><w:r><w:t>flat</w:t></w:r></w:p>"#,
+        &[("word/styles.xml", styles, true)],
+    );
+    assert_eq!(to_markdown(&open(&zip, Format::Docx)), "- flat\n");
+}
+
 #[test]
 fn docx_takes_character_formatting_from_the_paragraph_style() {
     // Word's "Quote" style is italic, and it says so in the style rather than
