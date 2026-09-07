@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 
 use crate::doc::{
-    Align, Block, Cell, Inline, List, ListItem, Row, Run, Section, SemanticDoc, Table, TextStyle,
+    Align, Block, Cell, Inline, ListItem, Row, Run, Section, SemanticDoc, Table, TextStyle,
 };
 
 /// Maximum group nesting, mirroring the XML reader's cap.
@@ -115,6 +115,13 @@ struct Parser<'a> {
     /// stylesheet — as a reader that treats it purely as a resource does —
     /// loses every heading in every document Word produced.
     heading_styles: HashMap<i64, u8>,
+    /// Style number → the nesting level its name carries, for the built-in
+    /// list styles. Word states a list's depth here and nowhere else: the
+    /// paragraph gets `\s21` and an `\ilvl0` that means "as the style says".
+    list_styles: HashMap<i64, u8>,
+    /// Group depth at which `\stylesheet` was seen, so its immediate children
+    /// can be told from the groups inside them.
+    style_depth: Option<usize>,
     /// Style numbers the stylesheet names as a quote.
     ///
     /// Word marks a quoted paragraph the same way it marks a heading: `\s15`
@@ -150,6 +157,8 @@ impl<'a> Parser<'a> {
             pending_marker: String::new(),
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
+            list_styles: HashMap::new(),
+            style_depth: None,
             quote_styles: std::collections::HashSet::new(),
             style_number: None,
             style_outline: None,
@@ -166,8 +175,10 @@ impl<'a> Parser<'a> {
                         self.stack.push(self.state.clone());
                     }
                     // Each style definition is its own group inside
-                    // `\stylesheet`; opening one starts a fresh record.
-                    if self.state.destination == Destination::StyleSheet {
+                    // `\stylesheet`; opening one starts a fresh record. Only
+                    // the groups one level down are definitions -- a real
+                    // definition contains groups of its own, and Word's does.
+                    if self.at_style_definition() {
                         self.begin_style();
                     }
                 }
@@ -178,7 +189,7 @@ impl<'a> Parser<'a> {
                     if self.state.destination == Destination::ListMarker {
                         self.marker = Some(std::mem::take(&mut self.pending_marker));
                     }
-                    if self.state.destination == Destination::StyleSheet {
+                    if self.at_style_definition() {
                         self.commit_style();
                     }
                     if let Some(outer) = self.stack.pop() {
@@ -296,7 +307,10 @@ impl<'a> Parser<'a> {
             }
             // Read rather than skipped: this is where Word records which style
             // numbers are headings.
-            "stylesheet" => self.state.destination = Destination::StyleSheet,
+            "stylesheet" => {
+                self.state.destination = Destination::StyleSheet;
+                self.style_depth = Some(self.stack.len());
+            }
             // `\info` holds metadata, and only some of its fields are wanted.
             // Discarding by default keeps the unrecognised ones — `\operator`,
             // `\doccomm` — out of the body text.
@@ -455,6 +469,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether the group just entered, or about to be left, is one style
+    /// definition rather than something nested inside one.
+    ///
+    /// Word writes a definition with groups in it — `{\*\pn ...}` states the
+    /// numbering a list style carries. Treating those as definitions too
+    /// consumed the style's number before its name had been read, so the whole
+    /// definition was filed under style zero: a "List Bullet 2" paragraph then
+    /// resolved to nothing, and the list it belonged to came back flat.
+    fn at_style_definition(&self) -> bool {
+        self.state.destination == Destination::StyleSheet
+            && self.style_depth.is_some_and(|depth| self.stack.len() == depth + 1)
+    }
+
     /// Start reading a style definition.
     fn begin_style(&mut self) {
         self.style_number = None;
@@ -496,6 +523,10 @@ impl<'a> Parser<'a> {
             .collect();
         if compact.contains("quote") || compact.contains("quotation") {
             self.quote_styles.insert(number);
+        }
+
+        if let Some(level) = crate::formats::list_style_level(&compact) {
+            self.list_styles.insert(number, level);
         }
     }
 
@@ -561,20 +592,23 @@ impl<'a> Parser<'a> {
                 blocks: vec![block],
                 checked: None,
             };
-            if let Some(Block::List(list)) = self.blocks.last_mut()
-                && list.ordered == ordered
-            {
-                list.items.push(item);
-                return;
-            }
-            self.blocks.push(Block::List(List {
-                ordered,
-                start: marker
-                    .as_deref()
-                    .and_then(parse_leading_number)
-                    .unwrap_or(1),
-                items: vec![item],
-            }));
+            // `\ilvl` states the depth when it is not zero; at zero it means
+            // "as the style says", and the style says it in its name.
+            let level = self
+                .state
+                .list_level
+                .filter(|level| *level > 0)
+                .or_else(|| {
+                    self.state
+                        .style_ref
+                        .and_then(|number| self.list_styles.get(&number).copied())
+                })
+                .unwrap_or(0);
+            let start = marker
+                .as_deref()
+                .and_then(parse_leading_number)
+                .unwrap_or(1);
+            crate::formats::append_list_item(&mut self.blocks, item, level, ordered, start);
             return;
         }
 
@@ -888,6 +922,36 @@ mod tests {
              \pard{{\listtext\'b7\tab}}\ilvl0 Second item\par}}"
         );
         assert_eq!(markdown_of(&rtf), "- First item\n- Second item\n");
+    }
+
+    /// Word states a list's depth in the style's name and nowhere else.
+    ///
+    /// A "List Bullet 2" paragraph carries `\s36` and an `\ilvl0` that means
+    /// "as the style says", exactly as the .docx of the same document does.
+    /// Read by `\ilvl` alone a two-level list came back flat.
+    /// A style definition may contain groups of its own.
+    ///
+    /// Word writes `{\*\pn ...}` inside a list style to state its numbering.
+    /// Read as a definition in its own right it consumed the `\s36` before the
+    /// name arrived, filing the whole style under number zero -- so every
+    /// paragraph using it resolved to nothing at all.
+    #[test]
+    fn a_group_inside_a_style_definition_is_not_a_style() {
+        let rtf = format!(
+            r"{HEADER}{{\stylesheet{{\s3\ql{{\*\pn \pnlvlbody\ilvl0\pndec }}\f0 heading 3;}}}}\pard\s3 Named\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "### Named\n");
+    }
+
+    #[test]
+    fn reads_a_lists_depth_from_the_style_name() {
+        let rtf = format!(
+            r"{HEADER}{{\stylesheet{{\s35\ql\f0 List Bullet;}}{{\s36\ql\f0 List Bullet 2;}}}}\pard\s35\ls1\ilvl0 One\par \pard\s36\ls2\ilvl0 Under one\par \pard\s36\ls2\ilvl0 Also under\par \pard\s35\ls1\ilvl0 Two\par}}"
+        );
+        assert_eq!(
+            markdown_of(&rtf),
+            "- One\n  - Under one\n  - Also under\n- Two\n"
+        );
     }
 
     #[test]

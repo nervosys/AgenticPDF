@@ -1052,7 +1052,7 @@ fn push_word_list_item(blocks: &mut Vec<Block>, ordered: bool, level: u8, mut co
         }],
         checked: None,
     };
-    crate::formats::append_list_item(blocks, item, level, ordered);
+    crate::formats::append_list_item(blocks, item, level, ordered, 1);
 }
 
 /// Remove the marker Word wrote into the item's own text.

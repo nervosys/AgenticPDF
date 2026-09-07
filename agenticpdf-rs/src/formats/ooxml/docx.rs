@@ -639,7 +639,7 @@ fn push_paragraph(blocks: &mut Vec<Block>, paragraph: Paragraph) {
         blocks: vec![block],
         checked: None,
     };
-    crate::formats::append_list_item(blocks, item, reference.level, reference.ordered);
+    crate::formats::append_list_item(blocks, item, reference.level, reference.ordered, 1);
 }
 
 // ============================================================================

@@ -516,7 +516,7 @@ fn read_blocks(
                     // lists gave a flat stack of one-item lists.
                     let (ordered, items) = read_list(reader, &element, package, document, depth + 1);
                     for (level, item) in items {
-                        crate::formats::append_list_item(&mut blocks, item, level, ordered);
+                        crate::formats::append_list_item(&mut blocks, item, level, ordered, 1);
                     }
                 }
                 (ns::ODF_TABLE, "table") => {

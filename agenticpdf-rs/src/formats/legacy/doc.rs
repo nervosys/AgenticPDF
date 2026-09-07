@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::ole::{Ole2, encoding_for_lid, is_lead_byte, u16_at, u32_at};
 use crate::doc::{
-    Align, Block, Cell, Inline, List, ListItem, Row, Run, Section, SemanticDoc, Table, TextStyle,
+    Align, Block, Cell, Inline, ListItem, Row, Run, Section, SemanticDoc, Table, TextStyle,
     inline_text,
 };
 
@@ -872,7 +872,16 @@ impl Assembler {
         // 0xF801 marks a paragraph whose numbering is suppressed.
         let ilfo = pap.props.ilfo.unwrap_or(0);
         if ilfo != 0 && ilfo != 0xF801 {
-            let level = (pap.props.ilvl.unwrap_or(0) as usize).min(LEVELS - 1);
+            // Word records a list's depth in the style's name when the
+            // paragraph carries no level of its own -- "List Bullet 2" is the
+            // second level, and `ilvl` stays at zero. Read by `ilvl` alone a
+            // two-level list came back flat, which is what the .docx of the
+            // same document disagreed with.
+            let level = match pap.props.ilvl.unwrap_or(0) {
+                0 => style.list_level.unwrap_or(0) as usize,
+                stated => stated as usize,
+            }
+            .min(LEVELS - 1);
             let fallback = ListDef::unknown();
             let list = self.lists.by_ilfo.get(&ilfo).unwrap_or(&fallback).clone();
             let ordered = list.ordered[level];
@@ -882,7 +891,7 @@ impl Assembler {
                 blocks: vec![paragraph],
                 checked: None,
             };
-            append_list_item(blocks, item, level, ordered, start);
+            crate::formats::append_list_item(blocks, item, level as u8, ordered, start);
             return;
         }
 
@@ -952,34 +961,6 @@ impl Assembler {
             column_widths: Vec::new(),
         }));
     }
-}
-
-/// Append a list item, merging with the run before it and nesting by level.
-fn append_list_item(
-    blocks: &mut Vec<Block>,
-    item: ListItem,
-    level: usize,
-    ordered: bool,
-    start: u64,
-) {
-    if level > 0
-        && let Some(Block::List(list)) = blocks.last_mut()
-        && let Some(last) = list.items.last_mut()
-    {
-        append_list_item(&mut last.blocks, item, level - 1, ordered, start);
-        return;
-    }
-    if let Some(Block::List(list)) = blocks.last_mut()
-        && list.ordered == ordered
-    {
-        list.items.push(item);
-        return;
-    }
-    blocks.push(Block::List(List {
-        ordered,
-        start: if ordered { start } else { 1 },
-        items: vec![item],
-    }));
 }
 
 /// Append a character, extending the previous run when the style is unchanged.

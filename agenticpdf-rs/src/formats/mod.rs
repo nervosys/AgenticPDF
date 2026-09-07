@@ -86,11 +86,15 @@ pub(crate) fn list_style_level(name: &str) -> Option<u8> {
 /// every reader has to rebuild the nesting the same way: a deeper item goes
 /// inside the item above it, and a change of kind starts a new list rather than
 /// continuing the last one.
+///
+/// `start` is the number the source gave, and is used only where this call
+/// creates a new ordered list; a bulleted one has nothing to count.
 pub(crate) fn append_list_item(
     blocks: &mut Vec<crate::doc::Block>,
     item: crate::doc::ListItem,
     level: u8,
     ordered: bool,
+    start: u64,
 ) {
     use crate::doc::{Block, List};
 
@@ -98,7 +102,7 @@ pub(crate) fn append_list_item(
         && let Some(Block::List(list)) = blocks.last_mut()
         && let Some(parent) = list.items.last_mut()
     {
-        append_list_item(&mut parent.blocks, item, level - 1, ordered);
+        append_list_item(&mut parent.blocks, item, level - 1, ordered, start);
         return;
     }
     // Falling through with `level > 0` is a depth with nothing above it to hang
@@ -115,7 +119,10 @@ pub(crate) fn append_list_item(
 
     blocks.push(Block::List(List {
         ordered,
-        start: 1,
+        start: match ordered {
+            true => start,
+            false => 1,
+        },
         items: vec![item],
     }));
 }

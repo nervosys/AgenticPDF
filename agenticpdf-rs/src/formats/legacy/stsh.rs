@@ -38,6 +38,8 @@ pub struct ResolvedStyle {
     pub code: bool,
     /// Whether the style's name marks a block quote.
     pub quote: bool,
+    /// Nesting level named by a built-in list style, zero-based.
+    pub list_level: Option<u8>,
 }
 
 /// The document's resolved style table.
@@ -61,6 +63,7 @@ struct Std {
     istd_base: u16,
     code: bool,
     quote: bool,
+    list_level: Option<u8>,
     /// Paragraph styles carry a paragraph UPX (prefixed with their own istd)
     /// and a character UPX; character styles carry only the latter.
     upx_papx: Vec<u8>,
@@ -167,6 +170,7 @@ fn parse_std(record: &[u8], cb_std_base: usize) -> Option<Std> {
         istd_base,
         code: lower.contains("code") || lower.contains("plain text"),
         quote: lower.contains("quote"),
+        list_level: crate::formats::list_style_level(&lower),
         upx_papx,
         upx_chpx,
         is_paragraph,
@@ -222,6 +226,11 @@ fn resolve(
         }
         base.code |= style.code;
         base.quote |= style.quote;
+        // The leaf's own name wins: a style based on "List Bullet" is not
+        // itself at that depth unless its own name says so.
+        if style.list_level.is_some() {
+            base.list_level = style.list_level;
+        }
         memo.insert(current, base.clone());
     }
     base
@@ -237,6 +246,7 @@ mod tests {
             istd_base,
             code: false,
             quote: false,
+            list_level: None,
             upx_papx: Vec::new(),
             upx_chpx: Vec::new(),
             is_paragraph: true,
