@@ -18,6 +18,13 @@
 //! against an agent that reads the DOM rather than the pixels. Runs produced
 //! from such elements carry [`crate::doc::TextStyle::hidden`], which
 //! [`crate::sanitize`] reports and `--sanitize` strips.
+//!
+//! Each of those may be written on the element or stated for a class, an id or
+//! a tag in the document's own `<style>` block, and the stylesheet is the
+//! commoner form. Reading only the attribute meant the identical payload was
+//! reported when written inline and passed through clean when written as a
+//! class, so this module reads the document's own stylesheet — see
+//! [`Stylesheet`] — for that and for the emphasis a class states.
 
 use crate::doc::{
     Align, Block, Cell, ImageRef, Inline, List, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
@@ -221,6 +228,9 @@ fn html_entity(name: &str) -> Option<&'static str> {
 
 pub fn parse_html(data: &[u8]) -> SemanticDoc {
     let source = decode_html(data);
+    // Before the body, because a rule in the head decides whether the text
+    // below it is visible at all.
+    let sheet = read_stylesheet(&source);
     let tokens = tokenize(&source);
 
     let mut parser = Parser {
@@ -230,6 +240,7 @@ pub fn parse_html(data: &[u8]) -> SemanticDoc {
         style: TextStyle::default(),
         title: None,
         assets: Vec::new(),
+        sheet,
     };
     let blocks = parser.parse_blocks(&[], &[]);
 
@@ -237,6 +248,261 @@ pub fn parse_html(data: &[u8]) -> SemanticDoc {
     doc.title = parser.title.clone();
     doc.body().blocks = blocks;
     doc
+}
+
+/// The rules a document's own `<style>` blocks state, by simple selector.
+///
+/// Not a CSS engine, and deliberately so. It reads what a document says about
+/// its own classes and tags, which is enough for the two things that change
+/// what a reader reports: whether text is visible, and whether it is emphasised.
+/// Anything it does not understand it ignores, so an unparsed rule leaves the
+/// element exactly as it was.
+#[derive(Debug, Default)]
+struct Stylesheet {
+    /// Declarations for `.name`, in document order.
+    classes: Vec<(String, String)>,
+    /// Declarations for `#name`. Hiding one element by its id is the same
+    /// trick as hiding a class of them, and just as easy to write.
+    ids: Vec<(String, String)>,
+    /// Declarations for a bare tag name.
+    tags: Vec<(String, String)>,
+}
+
+impl Stylesheet {
+    /// Every declaration that applies to an element, in cascade order: the
+    /// tag's, then each of its classes', then its own `style` attribute, which
+    /// is nearest and so comes last.
+    fn declarations(&self, tag: &str, attrs: &[(String, String)]) -> String {
+        let mut out = String::new();
+        let mut push = |value: &str| {
+            out.push_str(value);
+            out.push(';');
+        };
+        for (name, value) in &self.tags {
+            if name == tag {
+                push(value);
+            }
+        }
+        if let Some(classes) = attribute(attrs, "class") {
+            for class in classes.split_whitespace() {
+                let class = class.to_ascii_lowercase();
+                for (name, value) in &self.classes {
+                    if *name == class {
+                        push(value);
+                    }
+                }
+            }
+        }
+        if let Some(id) = attribute(attrs, "id") {
+            let id = id.trim().to_ascii_lowercase();
+            for (name, value) in &self.ids {
+                if *name == id {
+                    push(value);
+                }
+            }
+        }
+        if let Some(inline) = attribute(attrs, "style") {
+            push(inline);
+        }
+        out
+    }
+}
+
+/// Read the `<style>` blocks a document carries.
+///
+/// Only whole-document stylesheets are read; a linked one would have to be
+/// fetched, and this reader never goes to the network for a document's own
+/// content. Selectors are matched only in their simplest forms — a tag, a
+/// class, or a tag with a class — because those carry the meaning and anything
+/// more would need a real cascade to resolve honestly.
+fn read_stylesheet(source: &str) -> Stylesheet {
+    /// Enough for any real document's own styles, and a bound on the work a
+    /// hostile one can ask for.
+    const MAX_CSS: usize = 512 * 1024;
+    const MAX_RULES: usize = 4096;
+
+    let mut sheet = Stylesheet::default();
+    let lower = source.to_ascii_lowercase();
+    let mut at = 0usize;
+    let mut budget = MAX_CSS;
+
+    while let Some(start) = lower[at..].find("<style") {
+        let open = at + start;
+        // `<styles>` is not `<style>`; the tag name has to end here.
+        let name_ends = match lower[open + "<style".len()..].chars().next() {
+            None | Some('>') | Some('/') => true,
+            Some(character) => character.is_whitespace(),
+        };
+        if !name_ends {
+            at = open + "<style".len();
+            continue;
+        }
+        // Past the opening tag itself.
+        let Some(body_at) = lower[open..].find('>').map(|offset| open + offset + 1) else {
+            break;
+        };
+        let end = lower[body_at..]
+            .find("</style")
+            .map(|offset| body_at + offset)
+            .unwrap_or(lower.len());
+        let block = &source[body_at..end];
+        // The budget is a byte count and the block is UTF-8, so the cut has
+        // to be walked back to a character boundary before slicing.
+        let mut take = block.len().min(budget);
+        while !block.is_char_boundary(take) {
+            take -= 1;
+        }
+        budget -= take;
+        parse_rules(&block[..take], &mut sheet, MAX_RULES, 0);
+        at = end + 1;
+        if at >= lower.len() || budget == 0 {
+            break;
+        }
+    }
+    sheet
+}
+
+/// Split a stylesheet into `selectors { declarations }` and file each rule.
+fn parse_rules(css: &str, sheet: &mut Stylesheet, max_rules: usize, depth: usize) {
+    /// At-rules nest, but not deeply in anything anyone writes.
+    const MAX_NESTING: usize = 4;
+
+    let css = strip_css_comments(css);
+    let mut rest = css.as_str();
+
+    while sheet.classes.len() + sheet.ids.len() + sheet.tags.len() < max_rules {
+        let Some(open) = rest.find('{') else { break };
+        let selectors = rest[..open].trim();
+        let Some(close) = matching_brace(rest, open) else {
+            break;
+        };
+        let inner = rest[open + 1..close].trim();
+        rest = &rest[close + 1..];
+
+        // An at-rule -- `@media`, `@supports` -- brackets rules of its own, and
+        // those are read: a rule that hides text hides it whether or not it is
+        // wrapped, and skipping the block would leave the wrapping as a way to
+        // put a payload past the check. `@font-face` and the like hold
+        // declarations rather than rules, and fall out below with no selector
+        // to match.
+        if selectors.starts_with('@') {
+            if depth < MAX_NESTING {
+                parse_rules(inner, sheet, max_rules, depth + 1);
+            }
+            continue;
+        }
+        let declarations = inner;
+        if declarations.is_empty() {
+            continue;
+        }
+
+        for selector in selectors.split(',') {
+            let selector = selector.trim().to_ascii_lowercase();
+            if let Some(class) = simple_selector(&selector, '.') {
+                sheet.classes.push((class, declarations.to_string()));
+            } else if let Some(id) = simple_selector(&selector, '#') {
+                sheet.ids.push((id, declarations.to_string()));
+            } else if selector.chars().all(|c| c.is_ascii_alphanumeric()) && !selector.is_empty() {
+                sheet.tags.push((selector, declarations.to_string()));
+            }
+        }
+    }
+}
+
+/// The name in `.name`/`#name`, or in `tag.name`/`tag#name`.
+///
+/// A qualified selector is filed under the name alone. Narrowing it to the tag
+/// as well would be more faithful, but the looser reading only ever adds a
+/// style the document does state somewhere, and missing a `display:none`
+/// matters more than applying one an element's tag did not qualify for.
+///
+/// Anything with a space, a combinator or a pseudo-class in it returns nothing:
+/// those need a real cascade to resolve, and guessing at one would report
+/// styling the document does not actually apply.
+fn simple_selector(selector: &str, sigil: char) -> Option<String> {
+    let (tag, name) = selector.split_once(sigil)?;
+    if !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// The `}` closing the block that opens at `open`, counting nested braces.
+///
+/// An at-rule's block holds rules with braces of their own, so taking the first
+/// `}` would end the wrong block -- and then every rule after it was read
+/// against a selector that began with the leftover brace, and silently ignored.
+fn matching_brace(css: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, character) in css[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Remove `/* ... */`, which may otherwise hide a brace from the splitter.
+fn strip_css_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("*/") {
+            Some(end) => rest = &rest[start + 2 + end + 2..],
+            // Unterminated: the rest of the sheet is comment.
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The emphasis a set of declarations states, if any.
+///
+/// Word's HTML puts the italic of a quotation here rather than in an `<i>`, and
+/// so does a great deal of hand-written HTML that styles by class.
+fn style_emphasis(declarations: &str, style: &mut TextStyle) {
+    let compact: String = declarations
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+
+    for (property, value) in compact.split(';').filter_map(|one| one.split_once(':')) {
+        // A later rule wins, so every declaration is applied in order rather
+        // than the first match taken.
+        match property {
+            // A weight is bold from 600 up, which is where the named values
+            // `bold` and `bolder` sit.
+            "font-weight" => {
+                style.bold = match value.parse::<u32>() {
+                    Ok(weight) => weight >= 600,
+                    Err(_) => matches!(value, "bold" | "bolder"),
+                }
+            }
+            "font-style" => style.italic = matches!(value, "italic" | "oblique"),
+            "text-decoration" | "text-decoration-line" => {
+                style.underline = value.contains("underline");
+                style.strikethrough = value.contains("line-through");
+            }
+            _ => {}
+        }
+    }
 }
 
 // ============================================================================
@@ -455,6 +721,8 @@ struct Parser {
     style: TextStyle,
     title: Option<String>,
     assets: Vec<String>,
+    /// What the document's own `<style>` blocks say about its classes and tags.
+    sheet: Stylesheet,
 }
 
 impl Parser {
@@ -506,7 +774,10 @@ impl Parser {
                 // element implicitly — this is what makes `<li>a<li>b` work.
                 Token::Open { ref name, .. } if open_stop.contains(&name.as_str()) => break,
                 Token::Open { name, attrs } => {
-                    let hidden = is_hidden(&attrs);
+                    // Computed once: a block element's own class may both
+                    // hide it and emphasise what is inside it.
+                    let element_style = self.element_style(&name, &attrs);
+                    let hidden = element_style.hidden;
                     match name.as_str() {
                         "head" => {
                             self.at += 1;
@@ -516,7 +787,7 @@ impl Parser {
                             flush!();
                             self.at += 1;
                             let level = name[1..].parse::<u8>().unwrap_or(1);
-                            let content = self.parse_inlines(&name, hidden);
+                            let content = self.parse_inlines(&name, element_style.clone());
                             if !crate::doc::inline_text(&content).trim().is_empty() {
                                 blocks.push(Block::Heading { level, content });
                             }
@@ -524,7 +795,7 @@ impl Parser {
                         "p" => {
                             flush!();
                             self.at += 1;
-                            let content = self.parse_inlines("p", hidden);
+                            let content = self.parse_inlines("p", element_style.clone());
                             if !crate::doc::inline_text(&content).trim().is_empty() {
                                 match word_list_class(&attrs) {
                                     // Word's HTML export writes list items as
@@ -657,16 +928,13 @@ impl Parser {
     }
 
     /// Parse inline content until `tag` closes.
-    fn parse_inlines(&mut self, tag: &str, hidden: bool) -> Vec<Inline> {
+    fn parse_inlines(&mut self, tag: &str, style: TextStyle) -> Vec<Inline> {
         if self.depth >= MAX_DEPTH {
             return Vec::new();
         }
         self.depth += 1;
 
-        let outer = self.style.clone();
-        if hidden {
-            self.style.hidden = true;
-        }
+        let outer = std::mem::replace(&mut self.style, style);
 
         let mut content = Vec::new();
         while self.at < self.tokens.len() {
@@ -724,13 +992,14 @@ impl Parser {
             "sub" => style.subscript = true,
             _ => {}
         }
-        if is_hidden(attrs) {
-            style.hidden = true;
-        }
-        self.style = style;
+        // Whatever the element's own class or the stylesheet adds on top of
+        // what its tag means. Applied second so a rule can turn off what the
+        // tag turned on.
+        let outer_style = std::mem::replace(&mut self.style, style);
+        let style = self.element_style(name, attrs);
+        self.style = outer_style;
 
-        let content = self.parse_inlines(name, false);
-        self.style = outer;
+        let content = self.parse_inlines(name, style);
 
         // An anchor with an href becomes a link; without one it is a bare span.
         if name == "a"
@@ -753,6 +1022,32 @@ impl Parser {
         }
 
         content
+    }
+
+    /// The character style an element imposes on the content inside it.
+    ///
+    /// Both of the things read here may be stated by the element or by a rule
+    /// in the document's own stylesheet, and the stylesheet is the commoner
+    /// form of each. A class stating `display:none` hides text exactly as well
+    /// as the element stating it -- the same payload was reported when written
+    /// inline and missed when written as a class, which is the whole of the
+    /// trick -- and Word writes a quotation's italic in a `<style>` block and
+    /// nowhere else.
+    ///
+    /// Only what the element declares is changed; everything else is inherited,
+    /// so a rule saying `font-weight:normal` can turn off an enclosing `<b>`
+    /// while a rule saying nothing about weight leaves it alone.
+    fn element_style(&self, tag: &str, attrs: &[(String, String)]) -> TextStyle {
+        let mut style = self.style.clone();
+        let declarations = self.sheet.declarations(tag, attrs);
+        style_emphasis(&declarations, &mut style);
+        if attrs.iter().any(|(key, _)| key == "hidden")
+            || attribute(attrs, "aria-hidden") == Some("true")
+            || style_hides(&declarations)
+        {
+            style.hidden = true;
+        }
+        style
     }
 
     fn parse_list(&mut self, tag: &str, attrs: &[(String, String)]) -> List {
@@ -1150,17 +1445,7 @@ fn alignment(attrs: &[(String, String)]) -> Align {
 }
 
 /// Whether an element's attributes make its text invisible.
-fn is_hidden(attrs: &[(String, String)]) -> bool {
-    if attrs.iter().any(|(key, _)| key == "hidden") {
-        return true;
-    }
-    if attribute(attrs, "aria-hidden") == Some("true") {
-        return true;
-    }
-
-    let Some(style) = attribute(attrs, "style") else {
-        return false;
-    };
+fn style_hides(style: &str) -> bool {
     let style: String = style
         .to_ascii_lowercase()
         .chars()
@@ -1630,6 +1915,158 @@ mod tests {
             let doc = parse_html(html.as_bytes());
             assert_eq!(doc.hidden_text().len(), 1, "not flagged for {style}");
         }
+    }
+
+    /// Text hidden by a rule in the document's own stylesheet.
+    ///
+    /// This is the same attack as `style="display:none"` and the commoner way
+    /// to write it, and it went entirely undetected: the identical payload was
+    /// reported when written inline and passed through clean when written as a
+    /// class. Every form of the trick is reachable this way, so every form is
+    /// checked here.
+    #[test]
+    fn text_hidden_by_the_stylesheet_is_flagged() {
+        for rule in [
+            ".x { display: none }",
+            ".x { visibility: hidden }",
+            ".x { font-size: 0 }",
+            ".x { opacity: 0 }",
+            ".x { color: #fff; background-color: #fff }",
+        ] {
+            let html = format!(
+                "<html><head><style>{rule}</style></head>\
+                 <body><p class=x>PAYLOAD</p><p>visible</p></body></html>"
+            );
+            let hidden = parse_html(html.as_bytes()).hidden_text();
+            assert!(
+                hidden.iter().any(|(_, text)| text.contains("PAYLOAD")),
+                "not flagged by {rule}"
+            );
+            assert!(
+                !hidden.iter().any(|(_, text)| text.contains("visible")),
+                "wrongly flagged by {rule}"
+            );
+        }
+    }
+
+    /// Hiding one element by its id is the same trick as hiding a class.
+    #[test]
+    fn text_hidden_by_an_id_rule_is_flagged() {
+        let document = parse_html(
+            b"<html><head><style>#ghost{display:none}</style></head>\
+              <body><p id=ghost>PAYLOAD</p></body></html>",
+        );
+        assert!(
+            document
+                .hidden_text()
+                .iter()
+                .any(|(_, text)| text.contains("PAYLOAD"))
+        );
+    }
+
+    /// A tag rule hides every element of that tag.
+    #[test]
+    fn text_hidden_by_a_tag_rule_is_flagged() {
+        let document = parse_html(
+            b"<html><head><style>aside{display:none}</style></head>\
+              <body><aside>PAYLOAD</aside></body></html>",
+        );
+        assert!(
+            document
+                .hidden_text()
+                .iter()
+                .any(|(_, text)| text.contains("PAYLOAD"))
+        );
+    }
+
+    /// Emphasis stated by a class, which is how most HTML states it.
+    #[test]
+    fn emphasis_from_the_stylesheet_is_read() {
+        assert_eq!(
+            markdown_of(
+                "<style>.loud{font-weight:bold}.quiet{font-style:italic}</style>\
+                 <p class=loud>Loud</p><p class=quiet>Quiet</p>"
+            ),
+            "**Loud**\n\n_Quiet_\n"
+        );
+        // A numeric weight, and an inline element rather than a block.
+        assert_eq!(
+            markdown_of("<style>.w{font-weight:700}</style><p>a <span class=w>b</span></p>"),
+            "a **b**\n"
+        );
+        assert_eq!(
+            markdown_of("<style>.w{font-weight:300}</style><p><span class=w>b</span></p>"),
+            "b\n"
+        );
+    }
+
+    /// A rule can turn off what the tag turned on.
+    #[test]
+    fn a_rule_overrides_the_tag_it_applies_to() {
+        assert_eq!(
+            markdown_of("<style>.plain{font-weight:normal}</style><p><b class=plain>b</b></p>"),
+            "b\n"
+        );
+    }
+
+    /// Selectors this reader cannot resolve honestly are ignored.
+    ///
+    /// A descendant selector needs a real cascade to know whether it applies.
+    /// Claiming it does would report styling the document does not apply, and
+    /// -- far worse for the hidden-text check -- claiming it does not where it
+    /// does is the failure that matters, so the conservative reading is only
+    /// safe because the simple forms above cover what documents actually write.
+    #[test]
+    fn selectors_that_need_a_cascade_are_ignored() {
+        assert_eq!(
+            markdown_of("<style>div p .x{font-weight:bold}</style><p><span class=x>a</span></p>"),
+            "a\n"
+        );
+    }
+
+    /// Wrapping the rule in an at-rule does not get a payload past the check.
+    ///
+    /// This is why an at-rule's contents are read rather than skipped: the
+    /// wrapping would otherwise be a one-line way around hidden-text detection.
+    #[test]
+    fn text_hidden_inside_an_at_rule_is_still_flagged() {
+        let document = parse_html(
+            b"<html><head><style>@media all { .x { display: none } }</style></head>              <body><p class=x>PAYLOAD</p></body></html>",
+        );
+        assert!(
+            document
+                .hidden_text()
+                .iter()
+                .any(|(_, text)| text.contains("PAYLOAD"))
+        );
+    }
+
+    /// An at-rule brackets rules of its own; its braces are not a rule.
+    #[test]
+    fn at_rules_do_not_derail_the_rules_after_them() {
+        assert_eq!(
+            markdown_of(
+                "<style>@media print { .p { color: red } } .loud{font-weight:bold}</style>\
+                 <p class=loud>Loud</p>"
+            ),
+            "**Loud**\n"
+        );
+    }
+
+    /// A comment may hide a brace, which would otherwise split a rule wrongly.
+    #[test]
+    fn css_comments_are_removed_before_rules_are_split() {
+        assert_eq!(
+            markdown_of("<style>/* .a { x } */ .loud{font-weight:bold}</style><p class=loud>L</p>"),
+            "**L**\n"
+        );
+    }
+
+    /// The stylesheet is still not emitted as text.
+    #[test]
+    fn reading_the_stylesheet_does_not_put_it_in_the_document() {
+        let markdown = markdown_of("<style>.loud{font-weight:bold}</style><p class=loud>L</p>");
+        assert!(!markdown.contains("font-weight"), "{markdown}");
     }
 
     #[test]
