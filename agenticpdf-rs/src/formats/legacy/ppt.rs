@@ -59,6 +59,14 @@ const ART_FOPT: u16 = 0xF00B;
 const ART_CHILD_ANCHOR: u16 = 0xF00F;
 /// `tableProperties`: non-zero on the group shape of a table.
 const PID_TABLE_PROPERTIES: u16 = 0x039F;
+/// `groupShapeBooleans`, whose `fHidden` bit takes a shape off the slide.
+const PID_GROUP_SHAPE_BOOLEANS: u16 = 0x03BF;
+const GROUP_SHAPE_HIDDEN: u32 = 0x0000_0002;
+
+/// Per-slide show settings, present only where a slide has any.
+const RT_SS_SLIDE_INFO_ATOM: u16 = 0x03F9;
+/// `fHidden` in that atom's `slideFlags`: the slide is dropped from the show.
+const SLIDE_FLAG_HIDDEN: u16 = 0x0004;
 const RT_CRYPT_SESSION_10: u16 = 0x2F14;
 
 // Text types, which say what role a text shape plays on its page.
@@ -371,7 +379,11 @@ fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
             .map(|(record, _)| collect_shapes(record.body))
             .unwrap_or_default();
 
-        sections.push(build_slide(shapes, notes));
+        let mut section = build_slide(shapes, notes);
+        if slide_is_hidden(record.body) {
+            hide_section(&mut section);
+        }
+        sections.push(section);
     }
     sections
 }
@@ -395,7 +407,13 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
             }
             *budget -= 1;
             match record.kind {
-                RT_SLIDE => sections.push(build_slide(collect_shapes(record.body), Vec::new())),
+                RT_SLIDE => {
+                    let mut section = build_slide(collect_shapes(record.body), Vec::new());
+                    if slide_is_hidden(record.body) {
+                        hide_section(&mut section);
+                    }
+                    sections.push(section);
+                }
                 // Notes attach to the slide they follow.
                 RT_NOTES => {
                     let notes = collect_shapes(record.body);
@@ -415,6 +433,9 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
 
 /// A text shape gathered from a slide.
 struct Shape {
+    /// Hidden through PowerPoint's selection pane: not drawn, fully
+    /// extractable, and so exactly the payload a reader must report.
+    hidden: bool,
     /// Paragraph and character formatting, where the shape states it.
     props: Option<TextProps>,
     /// The grid, where this shape is a group PowerPoint marked as a table.
@@ -445,6 +466,7 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                     text: String::new(),
                     props: None,
                     table: None,
+                    hidden: false,
                 }),
                 // UTF-16 text.
                 RT_TEXT_CHARS_ATOM => push_text(shapes, decode_utf16le(record.body)),
@@ -466,6 +488,18 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                 // A table is a group of cell shapes. Read as loose shapes
                 // its cells arrive as a column of stray paragraphs, so the
                 // group is taken whole and its children are not walked again.
+                // A shape container states whether it is drawn. The flag
+                // arrives before the shape's text, so it is remembered and
+                // applied once the text has been read.
+                ART_SP_CONTAINER if record.is_container() => {
+                    let before = shapes.len();
+                    walk(record.body, depth + 1, budget, shapes);
+                    if shape_is_hidden(record.body) {
+                        for shape in &mut shapes[before..] {
+                            shape.hidden = true;
+                        }
+                    }
+                }
                 _ if record.is_container() => {
                     if record.kind == ART_SPGR_CONTAINER
                         && let Some(table) = read_table_group(record.body)
@@ -476,6 +510,7 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                             text: String::new(),
                             props: None,
                             table: Some(table),
+                            hidden: false,
                         });
                         continue;
                     }
@@ -695,6 +730,7 @@ fn push_text(shapes: &mut Vec<Shape>, text: String) {
             text,
             props: None,
             table: None,
+            hidden: false,
         }),
     }
 }
@@ -744,12 +780,17 @@ fn read_table_group(body: &[u8]) -> Option<Table> {
     }
 }
 
-/// Whether a group's own shape claims to be a table.
+/// Whether a shape states that it is not drawn.
 ///
-/// The property lives in one of the three property tables a shape may carry,
-/// and PowerPoint writes this one into the tertiary. All three are searched
-/// rather than assuming which, since the choice is the producer's.
-fn is_table_group(body: &[u8]) -> bool {
+/// The `fHidden` bit of `groupShapeBooleans`, which PowerPoint's selection pane
+/// sets. Confirmed against a deck written by PowerPoint itself: the hidden
+/// shape's property read 0x20002 where every visible one read 0x20000.
+fn shape_is_hidden(body: &[u8]) -> bool {
+    property(body, PID_GROUP_SHAPE_BOOLEANS).is_some_and(|value| value & GROUP_SHAPE_HIDDEN != 0)
+}
+
+/// The value of one shape property, from whichever table carries it.
+fn property(body: &[u8], id: u16) -> Option<u32> {
     children(body)
         .filter(|record| {
             matches!(
@@ -757,19 +798,27 @@ fn is_table_group(body: &[u8]) -> bool {
                 ART_FOPT | ART_SECONDARY_FOPT | ART_TERTIARY_FOPT
             )
         })
-        .any(|record| {
+        .find_map(|record| {
             // Each entry is a property id and a value; the count is in the
             // record's instance field, and complex values follow the entries.
-            (0..record.instance() as usize).any(|index| {
+            (0..record.instance() as usize).find_map(|index| {
                 let at = index * 6;
-                let Some(id) = u16_at(record.body, at) else {
-                    return false;
-                };
-                let value = u32_at(record.body, at + 2).unwrap_or(0);
                 // The top two bits flag a complex or blip value, not the id.
-                id & 0x3FFF == PID_TABLE_PROPERTIES && value != 0
+                match u16_at(record.body, at)? & 0x3FFF == id {
+                    true => u32_at(record.body, at + 2),
+                    false => None,
+                }
             })
         })
+}
+
+/// Whether a group's own shape claims to be a table.
+///
+/// The property lives in one of the three property tables a shape may carry,
+/// and PowerPoint writes this one into the tertiary. All three are searched
+/// rather than assuming which, since the choice is the producer's.
+fn is_table_group(body: &[u8]) -> bool {
+    property(body, PID_TABLE_PROPERTIES).is_some_and(|value| value != 0)
 }
 
 /// A shape's rectangle within its group, in the group's own coordinates.
@@ -875,7 +924,12 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
 
     for shape in shapes {
         // Text types 0 and 6 are the title and centred-title placeholders.
-        if matches!(shape.kind, TEXT_TYPE_TITLE | TEXT_TYPE_CENTER_TITLE) && title.is_none() {
+        // A hidden title is not the slide's name: a title becomes a plain
+        // string, which has nowhere to record that it was hidden.
+        if matches!(shape.kind, TEXT_TYPE_TITLE | TEXT_TYPE_CENTER_TITLE)
+            && title.is_none()
+            && !shape.hidden
+        {
             title = Some(clean(&shape.text));
             continue;
         }
@@ -885,7 +939,19 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         }
         // A body placeholder reads as a bulleted list, as it is drawn.
         let bulleted = matches!(shape.kind, TEXT_TYPE_BODY | TEXT_TYPE_CENTER_BODY);
-        push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), bulleted);
+        match shape.hidden {
+            false => push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), bulleted),
+            // Built apart and marked before joining the rest: consecutive
+            // bulleted shapes merge into one list, and a hidden shape's items
+            // would otherwise be indistinguishable from the visible ones they
+            // merged into.
+            true => {
+                let mut hidden = Vec::new();
+                push_shape_blocks(&mut hidden, &shape.text, shape.props.as_ref(), bulleted);
+                crate::doc::mark_hidden(&mut hidden);
+                blocks.append(&mut hidden);
+            }
+        }
     }
 
     Section {
@@ -895,6 +961,39 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         notes: notes_blocks(notes),
         page_size: None,
     }
+}
+
+/// Whether a slide has been dropped from the show.
+///
+/// Such a slide stays in the file with its text fully extractable, which is
+/// exactly the shape of a hidden-text payload. The flag is the `fHidden` bit of
+/// the `SSSlideInfoAtom`'s `slideFlags`; the atom's mere presence is not the
+/// signal, since a slide with a transition and nothing hidden has one too --
+/// confirmed against a deck written by PowerPoint with one slide hidden, one
+/// given a transition, and one given both.
+fn slide_is_hidden(body: &[u8]) -> bool {
+    children(body)
+        .find(|record| record.kind == RT_SS_SLIDE_INFO_ATOM)
+        .and_then(|record| u16_at(record.body, 10))
+        .is_some_and(|flags| flags & SLIDE_FLAG_HIDDEN != 0)
+}
+
+/// Mark everything on a section as hidden, title included.
+fn hide_section(section: &mut Section) {
+    // The title is a plain string with nowhere to say it is hidden, so it
+    // becomes a paragraph, where the flag survives.
+    if let Some(title) = section.title.take() {
+        section.blocks.insert(
+            0,
+            Block::Paragraph {
+                content: vec![Inline::Run(Run::plain(title))],
+                align: Align::Left,
+                indent: 0.0,
+            },
+        );
+    }
+    crate::doc::mark_hidden(&mut section.blocks);
+    crate::doc::mark_hidden(&mut section.notes);
 }
 
 /// Notes are prose, not the bulleted list a slide body is.
@@ -1396,6 +1495,76 @@ mod tests {
         assert_eq!(table.rows[1].cells.len(), 2);
         // Two columns, of the widths the rectangles give.
         assert_eq!(table.column_widths, vec![1600.0, 1600.0]);
+    }
+
+    /// An `SSSlideInfoAtom` with the given `slideFlags`.
+    fn slide_info(flags: u16) -> Vec<u8> {
+        let mut body = vec![0u8; 16];
+        body[10..12].copy_from_slice(&flags.to_le_bytes());
+        art_atom(0, RT_SS_SLIDE_INFO_ATOM, &body)
+    }
+
+    /// A text shape whose `groupShapeBooleans` property carries `value`.
+    fn shape_with_booleans(value: u32, text: &str) -> Vec<u8> {
+        let mut props = PID_GROUP_SHAPE_BOOLEANS.to_le_bytes().to_vec();
+        props.extend_from_slice(&value.to_le_bytes());
+        let mut shape = art_atom(1, ART_FOPT, &props);
+        shape.extend(record(0, RT_TEXT_HEADER_ATOM, &[1]));
+        shape.extend(text_chars(text));
+        art(0, ART_SP_CONTAINER, &shape)
+    }
+
+    /// A shape hidden through PowerPoint's selection pane.
+    ///
+    /// The values are the ones PowerPoint wrote into a real deck: 0x20002 on
+    /// the hidden shape, 0x20000 on every visible one beside it.
+    #[test]
+    fn a_hidden_shape_is_flagged_as_hidden_text() {
+        let mut body = shape_with_booleans(0x0002_0002, "PAYLOAD");
+        body.extend(shape_with_booleans(0x0002_0000, "ordinary"));
+
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let mut document = SemanticDoc::default();
+        document.sections.push(section);
+        let hidden = document.hidden_text();
+        assert!(
+            hidden.iter().any(|(_, text)| text.contains("PAYLOAD")),
+            "{hidden:?}"
+        );
+        assert!(
+            !hidden.iter().any(|(_, text)| text.contains("ordinary")),
+            "{hidden:?}"
+        );
+    }
+
+    /// A slide dropped from the show, and one merely given a transition.
+    ///
+    /// The atom's presence is not the signal: PowerPoint writes one for a
+    /// transition too. Confirmed against a deck with one slide hidden, one
+    /// given a transition, and one given both -- the hidden ones read 0x0005
+    /// and the transition-only one 0x0001.
+    #[test]
+    fn a_slide_dropped_from_the_show_is_flagged_but_a_transition_is_not() {
+        for (flags, expect_hidden) in [(0x0005u16, true), (0x0001u16, false)] {
+            let mut body = slide_info(flags);
+            body.extend(record(0, RT_TEXT_HEADER_ATOM, &[0])); // title
+            body.extend(text_chars("Slide name"));
+            body.extend(record(0, RT_TEXT_HEADER_ATOM, &[1])); // body
+            body.extend(text_chars("PAYLOAD"));
+
+            let sections = read_in_stream_order(&container(RT_SLIDE, &body));
+            let mut document = SemanticDoc::default();
+            document.sections.extend(sections);
+            let hidden = document.hidden_text();
+            assert_eq!(
+                hidden.iter().any(|(_, text)| text.contains("PAYLOAD")),
+                expect_hidden,
+                "flags {flags:#06x}: {hidden:?}"
+            );
+            // A hidden slide's title cannot stay a title, which has nowhere to
+            // record that it was hidden.
+            assert_eq!(document.sections[0].title.is_none(), expect_hidden);
+        }
     }
 
     #[test]

@@ -149,6 +149,50 @@ pub enum Block {
     PageBreak,
 }
 
+/// Mark every run in these blocks as hidden text.
+///
+/// A format may hide a whole region at once rather than a run at a time -- a
+/// PowerPoint shape taken out of the selection pane, a slide dropped from the
+/// show -- and the text inside it stays perfectly extractable. Since the flag
+/// lives on the run, hiding a region means walking it.
+pub(crate) fn mark_hidden(blocks: &mut [Block]) {
+    fn runs(content: &mut [Inline]) {
+        for inline in content {
+            match inline {
+                Inline::Run(run) => run.style.hidden = true,
+                Inline::Link { runs: linked, .. } => {
+                    for run in linked {
+                        run.style.hidden = true;
+                    }
+                }
+                Inline::Image(_) | Inline::Break | Inline::FootnoteRef { .. } => {}
+            }
+        }
+    }
+
+    for block in blocks {
+        match block {
+            Block::Heading { content, .. } | Block::Paragraph { content, .. } => runs(content),
+            Block::Quote(inner) => mark_hidden(inner),
+            Block::List(list) => {
+                for item in &mut list.items {
+                    mark_hidden(&mut item.blocks);
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        mark_hidden(&mut cell.blocks);
+                    }
+                }
+            }
+            // No runs to mark. `Code` holds a bare string, and nothing yet
+            // reads a hidden flag off one.
+            Block::Code { .. } | Block::Figure { .. } | Block::Divider | Block::PageBreak => {}
+        }
+    }
+}
+
 /// A bulleted, numbered or task list.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct List {

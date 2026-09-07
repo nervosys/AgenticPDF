@@ -160,20 +160,32 @@ impl SlideReader<'_> {
         let mut reader = Reader::new(xml);
         let mut title: Option<String> = None;
         let mut blocks: Vec<Block> = Vec::new();
+        // A slide dropped from the show is still in the file, and everything on
+        // it is still extractable. `<p:sld show="0">` is PowerPoint saying so.
+        let mut slide_hidden = false;
 
         while let Some(event) = reader.read_event() {
             let Event::Start(element) = event else {
                 continue;
             };
             match (element.ns.as_str(), element.local.as_str()) {
+                (ns::P, "sld") => {
+                    slide_hidden = matches!(element.attr_local("show"), Some("0") | Some("false"));
+                }
                 (ns::P, "sp") => {
-                    let shape = self.read_shape(&mut reader, &element, notes);
+                    let mut shape = self.read_shape(&mut reader, &element, notes);
                     if shape.blocks.is_empty() || shape.is_furniture {
                         continue;
                     }
+                    if shape.is_hidden {
+                        crate::doc::mark_hidden(&mut shape.blocks);
+                    }
                     // The title placeholder names the slide; everything else is
                     // body content.
-                    if shape.is_title && title.is_none() {
+                    // A hidden slide's title is hidden text too, and a
+                    // title becomes a plain string with nowhere to say so. It
+                    // stays a paragraph instead, where the flag survives.
+                    if shape.is_title && title.is_none() && !slide_hidden && !shape.is_hidden {
                         let text = shape
                             .blocks
                             .iter()
@@ -210,6 +222,9 @@ impl SlideReader<'_> {
                 _ => {}
             }
         }
+        if slide_hidden {
+            crate::doc::mark_hidden(&mut blocks);
+        }
         (title, blocks)
     }
 
@@ -228,6 +243,11 @@ impl SlideReader<'_> {
                 }
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) => match (element.ns.as_str(), element.local.as_str()) {
+                    // PowerPoint's selection pane hides a shape here, and
+                    // its text is as extractable as any other.
+                    (ns::P, "cNvPr") => {
+                        shape.is_hidden = element.attr_local("hidden").is_some_and(truthy);
+                    }
                     // `<p:ph>` identifies what role this shape plays.
                     (ns::P, "ph") => match element.attr_local("type") {
                         Some("title") | Some("ctrTitle") => shape.is_title = true,
@@ -540,6 +560,8 @@ impl SlideReader<'_> {
 #[derive(Default)]
 struct Shape {
     is_title: bool,
+    /// Hidden through the selection pane: not drawn, fully extractable.
+    is_hidden: bool,
     /// A slide-number, date or footer placeholder: repeated page furniture
     /// rather than content.
     is_furniture: bool,

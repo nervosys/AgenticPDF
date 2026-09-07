@@ -862,6 +862,67 @@ fn pptx(slides: &[(&str, &str)], order: &[usize]) -> Vec<u8> {
     build_zip(&members)
 }
 
+/// A shape hidden through PowerPoint's selection pane.
+///
+/// It is not drawn and its text is fully extractable, which is the exact shape
+/// of a prompt-injection payload -- and this reader had no hidden-text
+/// detection at all, so it came back as ordinary slide content. The markup is
+/// what PowerPoint itself writes: `<p:cNvPr ... hidden="1">`.
+#[test]
+fn pptx_flags_a_hidden_shape_as_hidden_text() {
+    let body = r#"<p:sp><p:nvSpPr><p:cNvPr id="4" name="TextBox 3" hidden="1"/></p:nvSpPr>
+           <p:txBody><a:p><a:r><a:t>PAYLOAD</a:t></a:r></a:p></p:txBody></p:sp>
+         <p:sp><p:txBody><a:p><a:r><a:t>ordinary</a:t></a:r></a:p></p:txBody></p:sp>"#;
+    let document = open(&pptx(&[("", body)], &[0]), Format::Pptx);
+    let hidden = document.hidden_text();
+    assert!(
+        hidden.iter().any(|(_, text)| text.contains("PAYLOAD")),
+        "{hidden:?}"
+    );
+    assert!(
+        !hidden.iter().any(|(_, text)| text.contains("ordinary")),
+        "{hidden:?}"
+    );
+    // Still extracted, as hidden text always is -- reported, not dropped.
+    assert!(to_markdown(&document).contains("PAYLOAD"));
+}
+
+/// A slide dropped from the show, which `<p:sld show="0">` states.
+#[test]
+fn pptx_flags_a_slide_dropped_from_the_show() {
+    let presentation = format!(
+        r#"<p:presentation{P_NS}><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/></p:presentation>"#
+    );
+    let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>"#;
+    let slide = format!(
+        r#"<p:sld{P_NS} show="0"><p:cSld><p:spTree>
+             <p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+               <p:txBody><a:p><a:r><a:t>Hidden slide</a:t></a:r></a:p></p:txBody></p:sp>
+             <p:sp><p:txBody><a:p><a:r><a:t>PAYLOAD</a:t></a:r></a:p></p:txBody></p:sp>
+           </p:spTree></p:cSld></p:sld>"#
+    );
+    let root = root_rels("ppt/presentation.xml");
+    let zip = build_zip(&[
+        ("_rels/.rels", root.as_bytes(), true),
+        ("ppt/presentation.xml", presentation.as_bytes(), true),
+        ("ppt/_rels/presentation.xml.rels", rels.as_bytes(), true),
+        ("ppt/slides/slide1.xml", slide.as_bytes(), true),
+    ]);
+    let document = open(&zip, Format::Pptx);
+    let hidden = document.hidden_text();
+    assert!(
+        hidden.iter().any(|(_, text)| text.contains("PAYLOAD")),
+        "{hidden:?}"
+    );
+    // The title is hidden text too, and a section title is a plain string with
+    // nowhere to say so -- so it stays a paragraph rather than naming the slide.
+    assert!(
+        hidden.iter().any(|(_, text)| text.contains("Hidden slide")),
+        "{hidden:?}"
+    );
+    assert_eq!(document.sections[0].title, None);
+}
+
 #[test]
 fn pptx_promotes_the_title_placeholder_to_the_section_title() {
     let zip = pptx(
