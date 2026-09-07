@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::ole::{Ole2, decode_utf16le, u32_at};
 use crate::doc::{
-    Align, Block, Inline, List, ListItem, Run, Section, SectionKind, SemanticDoc, TextStyle,
+    Align, Block, Inline, ListItem, Run, Section, SectionKind, SemanticDoc, TextStyle,
 };
 
 // Record types.
@@ -46,6 +46,7 @@ const RT_NOTES_ATOM: u16 = 0x03F1;
 const RT_TEXT_HEADER_ATOM: u16 = 0x0F9F;
 const RT_TEXT_CHARS_ATOM: u16 = 0x0FA0;
 const RT_TEXT_BYTES_ATOM: u16 = 0x0FA8;
+const RT_STYLE_TEXT_PROP_ATOM: u16 = 0x0FA1;
 const RT_CRYPT_SESSION_10: u16 = 0x2F14;
 
 // Text types, which say what role a text shape plays on its page.
@@ -399,6 +400,8 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
 
 /// A text shape gathered from a slide.
 struct Shape {
+    /// Paragraph and character formatting, where the shape states it.
+    props: Option<TextProps>,
     /// Text type: 0 and 6 are the title placeholders.
     kind: u8,
     text: String,
@@ -423,6 +426,7 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                 RT_TEXT_HEADER_ATOM => shapes.push(Shape {
                     kind: record.body.first().copied().unwrap_or(1),
                     text: String::new(),
+                    props: None,
                 }),
                 // UTF-16 text.
                 RT_TEXT_CHARS_ATOM => push_text(shapes, decode_utf16le(record.body)),
@@ -430,6 +434,16 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                 // the Latin-1 range.
                 RT_TEXT_BYTES_ATOM => {
                     push_text(shapes, record.body.iter().map(|&b| b as char).collect())
+                }
+                // The formatting for the text just read. It follows the text
+                // atoms of the same shape, so the length it must account for
+                // is already known -- which is what makes the parse
+                // self-checking.
+                RT_STYLE_TEXT_PROP_ATOM => {
+                    if let Some(shape) = shapes.last_mut() {
+                        let units = shape.text.encode_utf16().count();
+                        shape.props = read_style_props(record.body, units);
+                    }
                 }
                 _ if record.is_container() => walk(record.body, depth + 1, budget, shapes),
                 _ => {}
@@ -442,11 +456,210 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
     shapes
 }
 
+/// Paragraph and character formatting for one text shape.
+///
+/// PowerPoint states both as runs of characters rather than as markup: the
+/// paragraph runs carry the outline level that makes a bullet a sub-bullet, and
+/// the character runs carry bold and italic. Without them a slide's body is a
+/// flat list of unstyled lines, which is what the .pptx of the same deck
+/// disagreed with.
+#[derive(Debug, Default, Clone)]
+struct TextProps {
+    /// Characters covered, and the outline level, per paragraph run.
+    levels: Vec<(u32, u8)>,
+    /// Characters covered, and the formatting, per character run.
+    runs: Vec<(u32, TextStyle)>,
+}
+
+/// Read a `StyleTextPropAtom`, or nothing if it does not describe this text.
+///
+/// Both run arrays must account for exactly the text plus its terminator. That
+/// total is the check on every optional field's width below: get one wrong and
+/// the walk lands somewhere arbitrary, the totals miss, and the whole atom is
+/// discarded rather than used to mangle text that is currently correct. Real
+/// files exercise this -- a master placeholder carries an atom covering one
+/// character of an eighty-character string, and is rejected here.
+fn read_style_props(body: &[u8], text_units: usize) -> Option<TextProps> {
+    // The terminating carriage return is counted by the runs but is not in the
+    // text, so every total is one more than the text's own length.
+    let want = text_units as u64 + 1;
+    let mut at = 0usize;
+    let mut props = TextProps::default();
+
+    let mut total = 0u64;
+    while total < want {
+        let count = u32_at(body, at)?;
+        let level = u16_at(body, at + 4)?;
+        at = at.checked_add(6)?;
+        at = at.checked_add(paragraph_exception_len(body, at)?)?;
+        if count == 0 {
+            return None;
+        }
+        props.levels.push((count, level.min(8) as u8));
+        total += u64::from(count);
+    }
+    if total != want {
+        return None;
+    }
+
+    let mut total = 0u64;
+    while total < want {
+        let count = u32_at(body, at)?;
+        at = at.checked_add(4)?;
+        let (size, style) = character_exception(body, at)?;
+        at = at.checked_add(size)?;
+        if count == 0 {
+            return None;
+        }
+        props.runs.push((count, style));
+        total += u64::from(count);
+    }
+    match total == want {
+        true => Some(props),
+        false => None,
+    }
+}
+
+/// The size of one `TextPFException`, whose fields are present per its mask.
+///
+/// Nothing here is read; the paragraph's only interesting property, its outline
+/// level, sits *before* this structure. All that is needed is to step over it
+/// to reach the character runs.
+fn paragraph_exception_len(body: &[u8], at: usize) -> Option<usize> {
+    // Mask bit, and the width of the field it guards. The order matters: the
+    // tab-stop array between the two halves is counted rather than fixed, so
+    // its length has to be read from the file at exactly its own offset.
+    const BEFORE_TABS: [(u32, usize); 12] = [
+        (0x0000_0007, 2), // bullet flags
+        (0x0000_0080, 2), // bullet character
+        (0x0000_0010, 2), // bullet font
+        (0x0000_0040, 2), // bullet size
+        (0x0000_0020, 4), // bullet colour
+        (0x0000_0800, 2), // alignment
+        (0x0000_1000, 2), // line spacing
+        (0x0000_2000, 2), // space before
+        (0x0000_4000, 2), // space after
+        (0x0000_0100, 2), // left margin
+        (0x0000_0400, 2), // indent
+        (0x0000_0200, 2), // default tab size
+    ];
+    const AFTER_TABS: [(u32, usize); 3] = [
+        (0x0001_0000, 2), // font alignment
+        (0x0006_0000, 2), // wrap flags
+        (0x0020_0000, 2), // text direction
+    ];
+
+    let masks = u32_at(body, at)?;
+    let mut size = 4usize;
+    for (bit, width) in BEFORE_TABS {
+        if masks & bit != 0 {
+            size = size.checked_add(width)?;
+        }
+    }
+    if masks & 0x0010_0000 != 0 {
+        let count = u16_at(body, at.checked_add(size)?)? as usize;
+        size = size.checked_add(2)?.checked_add(count.checked_mul(4)?)?;
+    }
+    for (bit, width) in AFTER_TABS {
+        if masks & bit != 0 {
+            size = size.checked_add(width)?;
+        }
+    }
+    match at.checked_add(size)? <= body.len() {
+        true => Some(size),
+        false => None,
+    }
+}
+
+/// One `TextCFException`: its size, and the formatting it states.
+fn character_exception(body: &[u8], at: usize) -> Option<(usize, TextStyle)> {
+    /// Mask bit, and the width of the field it guards, after `style`.
+    const FIELDS: [(u32, usize); 7] = [
+        (0x0001_0000, 2), // typeface
+        (0x0020_0000, 2), // old East Asian typeface
+        (0x0040_0000, 2), // ANSI typeface
+        (0x0080_0000, 2), // symbol typeface
+        (0x0002_0000, 2), // size
+        (0x0004_0000, 4), // colour
+        (0x0008_0000, 2), // position
+    ];
+
+    let masks = u32_at(body, at)?;
+    let mut size = 4usize;
+    let mut style = TextStyle::default();
+
+    // The low half of the mask names the character properties; any of them
+    // being claimed means the `style` field that holds their values is present.
+    if masks & 0x0000_FFFF != 0 {
+        let bits = u16_at(body, at.checked_add(size)?)?;
+        // A bit in `style` counts only where the mask claims that property:
+        // the field is shared, and a value for a property nobody claimed is
+        // left over from whatever wrote it.
+        style.bold = masks & 0x1 != 0 && bits & 0x1 != 0;
+        style.italic = masks & 0x2 != 0 && bits & 0x2 != 0;
+        style.underline = masks & 0x4 != 0 && bits & 0x4 != 0;
+        size = size.checked_add(2)?;
+    }
+    for (bit, width) in FIELDS {
+        if masks & bit != 0 {
+            size = size.checked_add(width)?;
+        }
+    }
+    match at.checked_add(size)? <= body.len() {
+        true => Some((size, style)),
+        false => None,
+    }
+}
+
+fn u16_at(data: &[u8], at: usize) -> Option<u16> {
+    let bytes = data.get(at..at.checked_add(2)?)?;
+    Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+/// Walks a run array, reporting what covers the character at the cursor.
+struct Runs<'a, T> {
+    runs: &'a [(u32, T)],
+    index: usize,
+    used: u32,
+}
+
+impl<'a, T> Runs<'a, T> {
+    fn new(runs: &'a [(u32, T)]) -> Self {
+        Runs {
+            runs,
+            index: 0,
+            used: 0,
+        }
+    }
+
+    fn current(&self) -> Option<&'a T> {
+        self.runs.get(self.index).map(|(_, value)| value)
+    }
+
+    /// Step over `units` UTF-16 code units, which is what the counts measure.
+    fn advance(&mut self, units: usize) {
+        for _ in 0..units {
+            let Some((count, _)) = self.runs.get(self.index) else {
+                return;
+            };
+            self.used += 1;
+            if self.used >= *count {
+                self.index += 1;
+                self.used = 0;
+            }
+        }
+    }
+}
+
 /// Append text to the shape being gathered, starting one if none is open.
 fn push_text(shapes: &mut Vec<Shape>, text: String) {
     match shapes.last_mut() {
         Some(shape) => shape.text.push_str(&text),
-        None => shapes.push(Shape { kind: 1, text }),
+        None => shapes.push(Shape {
+            kind: 1,
+            text,
+            props: None,
+        }),
     }
 }
 
@@ -463,7 +676,7 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         }
         // A body placeholder reads as a bulleted list, as it is drawn.
         let bulleted = matches!(shape.kind, TEXT_TYPE_BODY | TEXT_TYPE_CENTER_BODY);
-        push_shape_blocks(&mut blocks, &shape.text, bulleted);
+        push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), bulleted);
     }
 
     Section {
@@ -487,7 +700,7 @@ fn notes_blocks(notes: Vec<Shape>) -> Vec<Block> {
         .into_iter()
         .filter(|shape| shape.kind == TEXT_TYPE_NOTES)
     {
-        push_shape_blocks(&mut blocks, &shape.text, false);
+        push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
     }
     blocks
 }
@@ -496,14 +709,15 @@ fn notes_blocks(notes: Vec<Shape>) -> Vec<Block> {
 ///
 /// PowerPoint separates paragraphs with a carriage return and uses a vertical
 /// tab for a line break inside one.
-fn push_shape_blocks(blocks: &mut Vec<Block>, text: &str, bulleted: bool) {
-    for paragraph in text.split(['\r', '\u{0B}']) {
-        let cleaned = clean(paragraph);
-        if cleaned.is_empty() {
-            continue;
-        }
+fn push_shape_blocks(
+    blocks: &mut Vec<Block>,
+    text: &str,
+    props: Option<&TextProps>,
+    bulleted: bool,
+) {
+    for (level, content) in split_paragraphs(text, props) {
         let block = Block::Paragraph {
-            content: vec![Inline::Run(Run::styled(cleaned, TextStyle::default()))],
+            content,
             align: Align::Left,
             indent: 0.0,
         };
@@ -515,18 +729,101 @@ fn push_shape_blocks(blocks: &mut Vec<Block>, text: &str, bulleted: bool) {
             blocks: vec![block],
             checked: None,
         };
-        match blocks.last_mut() {
-            Some(Block::List(list)) if !list.ordered => list.items.push(item),
-            _ => blocks.push(Block::List(List {
-                ordered: false,
-                start: 1,
-                items: vec![item],
-            })),
+        crate::formats::append_list_item(blocks, item, level, false, 1);
+    }
+}
+
+/// Split a shape's text into paragraphs, each with its level and styled runs.
+///
+/// The formatting is stated as runs of characters counted in UTF-16 code units,
+/// which is what the text was before it was decoded — so the cursors are
+/// advanced by each character's own width in those units, not by one per
+/// character. Where the shape states no properties every paragraph is at level
+/// zero and unstyled, which is what this reader did for all of them before.
+fn split_paragraphs(text: &str, props: Option<&TextProps>) -> Vec<(u8, Vec<Inline>)> {
+    let empty_levels: &[(u32, u8)] = &[];
+    let empty_runs: &[(u32, TextStyle)] = &[];
+    let mut levels = Runs::new(props.map_or(empty_levels, |p| p.levels.as_slice()));
+    let mut styles = Runs::new(props.map_or(empty_runs, |p| p.runs.as_slice()));
+
+    let mut out: Vec<(u8, Vec<Inline>)> = Vec::new();
+    let mut content: Vec<Inline> = Vec::new();
+    let mut buffer = String::new();
+    let mut buffer_style = TextStyle::default();
+    // The level belongs to the paragraph, and is read at its first character.
+    let mut level = levels.current().copied().unwrap_or(0);
+
+    for character in text.chars() {
+        let width = character.len_utf16();
+        if matches!(character, '\r' | '\u{0B}') {
+            flush_run(&mut content, &mut buffer, &buffer_style);
+            finish_paragraph(&mut out, level, std::mem::take(&mut content));
+            levels.advance(width);
+            styles.advance(width);
+            level = levels.current().copied().unwrap_or(0);
+            continue;
         }
+        let style = styles.current().cloned().unwrap_or_default();
+        if !buffer.is_empty() && style != buffer_style {
+            flush_run(&mut content, &mut buffer, &buffer_style);
+        }
+        if buffer.is_empty() {
+            buffer_style = style;
+        }
+        buffer.push(character);
+        levels.advance(width);
+        styles.advance(width);
+    }
+
+    flush_run(&mut content, &mut buffer, &buffer_style);
+    finish_paragraph(&mut out, level, content);
+    out
+}
+
+/// Move the characters gathered so far into a run of their own.
+///
+/// Deliberately not trimmed: the space between a bold word and the one after it
+/// falls at the boundary between two runs, and trimming each one would close it
+/// up. The paragraph is trimmed as a whole instead.
+fn flush_run(content: &mut Vec<Inline>, buffer: &mut String, style: &TextStyle) {
+    let text = strip_controls(&std::mem::take(buffer));
+    if !text.is_empty() {
+        content.push(Inline::Run(Run::styled(text, style.clone())));
+    }
+}
+
+/// File a finished paragraph, trimmed at its ends, dropping an empty one.
+fn finish_paragraph(out: &mut Vec<(u8, Vec<Inline>)>, level: u8, mut content: Vec<Inline>) {
+    while let Some(Inline::Run(run)) = content.first_mut() {
+        run.text = run.text.trim_start().to_string();
+        if !run.text.is_empty() {
+            break;
+        }
+        content.remove(0);
+    }
+    while let Some(Inline::Run(run)) = content.last_mut() {
+        run.text = run.text.trim_end().to_string();
+        if !run.text.is_empty() {
+            break;
+        }
+        content.pop();
+    }
+    if !content.is_empty() {
+        out.push((level, content));
     }
 }
 
 /// Strip the control characters PowerPoint embeds in shape text.
+/// Strip the control characters PowerPoint embeds, leaving the spacing.
+///
+/// A tab is real content; every other control character is PowerPoint's own
+/// bookkeeping, and the two break characters are handled by the splitter.
+fn strip_controls(text: &str) -> String {
+    text.chars()
+        .filter(|&character| !character.is_control() || character == '\t')
+        .collect()
+}
+
 fn clean(text: &str) -> String {
     text.chars()
         .filter(|&character| {
@@ -684,6 +981,125 @@ mod tests {
             matches!(blocks[0], Block::Paragraph { .. }),
             "notes bulleted"
         );
+    }
+
+    /// A `TextPFRun`: the characters it covers, its level, and empty masks.
+    fn pf_run(count: u32, level: u16) -> Vec<u8> {
+        let mut out = count.to_le_bytes().to_vec();
+        out.extend_from_slice(&level.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // TextPFException: no fields
+        out
+    }
+
+    /// A `TextCFRun`. `style` is only read where `masks` claims the property.
+    fn cf_run(count: u32, masks: u32, style: u16) -> Vec<u8> {
+        let mut out = count.to_le_bytes().to_vec();
+        out.extend_from_slice(&masks.to_le_bytes());
+        if masks & 0x0000_FFFF != 0 {
+            out.extend_from_slice(&style.to_le_bytes());
+        }
+        out
+    }
+
+    /// PowerPoint states a slide's outline levels and character formatting as
+    /// runs of characters, not as markup.
+    ///
+    /// Taken from a real deck: a bold top-level bullet, two at the second
+    /// level, and an italic one back at the top. Read without this atom the
+    /// slide is four flat, unstyled lines -- which is what the .pptx of the
+    /// same deck disagreed with.
+    #[test]
+    fn reads_outline_levels_and_character_formatting() {
+        let text = "Revenue grew\rEMEA at 8 percent\rAPAC at 17 percent\rMargin held";
+        // The counts include each paragraph's own carriage return, and the
+        // last one counts a terminator that is not in the text.
+        let mut props = pf_run(13, 0);
+        props.extend(pf_run(37, 1));
+        props.extend(pf_run(12, 0));
+        props.extend(cf_run(13, 0x1, 0x1)); // bold
+        props.extend(cf_run(37, 0x0, 0x0));
+        props.extend(cf_run(12, 0x2, 0x2)); // italic
+
+        let mut body = record(0, RT_TEXT_HEADER_ATOM, &[1]); // body placeholder
+        body.extend(text_chars(text));
+        body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
+
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let mut document = SemanticDoc::default();
+        document.sections.push(section);
+        assert_eq!(
+            crate::doc::to_markdown(&document),
+            "- **Revenue grew**\n  - EMEA at 8 percent\n  - APAC at 17 percent\n- _Margin held_\n"
+        );
+    }
+
+    /// An atom that does not account for the text is not used at all.
+    ///
+    /// Real files carry these: a master placeholder states one character of an
+    /// eighty-character string. Since the run widths are what the walk depends
+    /// on, a total that misses means the walk went wrong somewhere, and using
+    /// what it produced would corrupt text that is otherwise correct.
+    #[test]
+    fn a_style_atom_that_does_not_cover_the_text_is_discarded() {
+        let text = "one\rtwo";
+        // Claims three characters of a seven-character string.
+        let mut props = pf_run(3, 1);
+        props.extend(cf_run(3, 0x1, 0x1));
+        assert!(read_style_props(&props, text.encode_utf16().count()).is_none());
+
+        // And the reader falls back to what it did before: flat and unstyled.
+        let mut body = record(0, RT_TEXT_HEADER_ATOM, &[1]);
+        body.extend(text_chars(text));
+        body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let mut document = SemanticDoc::default();
+        document.sections.push(section);
+        assert_eq!(crate::doc::to_markdown(&document), "- one\n- two\n");
+    }
+
+    /// A property is only set where the mask claims it.
+    ///
+    /// The `style` field is shared by every character property, so a bit set in
+    /// it for one nobody claimed is left over from whatever wrote the file.
+    #[test]
+    fn a_style_bit_without_its_mask_is_ignored() {
+        // Claims bold; the field also has the italic bit set, unclaimed.
+        let props = cf_run(1, 0x1, 0x3);
+        let mut atom = pf_run(1, 0);
+        atom.extend(props);
+        let read = read_style_props(&atom, 0).expect("covers the empty text");
+        assert_eq!(read.runs.len(), 1);
+        assert!(read.runs[0].1.bold);
+        assert!(!read.runs[0].1.italic, "italic was not claimed");
+    }
+
+    /// The space between two differently styled words survives the split.
+    #[test]
+    fn a_run_boundary_does_not_swallow_the_space_across_it() {
+        let text = "bold plain";
+        // "bold" is styled; the space after it belongs to the plain run, and
+        // falls exactly on the boundary between the two.
+        let mut props = pf_run(11, 0);
+        props.extend(cf_run(4, 0x1, 0x1));
+        props.extend(cf_run(7, 0x0, 0x0));
+
+        let mut body = record(0, RT_TEXT_HEADER_ATOM, &[2]); // notes: prose
+        body.extend(text_chars(text));
+        body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
+        let shapes = collect_shapes(&container(RT_NOTES, &body));
+        let mut blocks = Vec::new();
+        for shape in shapes {
+            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
+        }
+        let mut document = SemanticDoc::default();
+        document.sections.push(Section {
+            kind: SectionKind::Slide,
+            title: None,
+            blocks,
+            notes: Vec::new(),
+            page_size: None,
+        });
+        assert_eq!(crate::doc::to_markdown(&document), "**bold** plain\n");
     }
 
     #[test]
