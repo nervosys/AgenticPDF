@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::zip::ZipArchive;
 use crate::doc::{
-    Align, Block, Cell, ImageRef, Inline, List, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
+    Align, Block, Cell, ImageRef, Inline, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
     image_media_type, inline_text,
 };
 use crate::formats::ooxml::{Package, Rels, attr_i64, emu_to_points, is_on, resolve_path};
@@ -639,31 +639,7 @@ fn push_paragraph(blocks: &mut Vec<Block>, paragraph: Paragraph) {
         blocks: vec![block],
         checked: None,
     };
-    append_list_item(blocks, item, reference.level, reference.ordered);
-}
-
-/// Append a list item at `level`, creating or nesting lists as needed.
-fn append_list_item(blocks: &mut Vec<Block>, item: ListItem, level: u8, ordered: bool) {
-    if level > 0
-        && let Some(Block::List(list)) = blocks.last_mut()
-        && let Some(last) = list.items.last_mut()
-    {
-        append_list_item(&mut last.blocks, item, level - 1, ordered);
-        return;
-    }
-
-    if let Some(Block::List(list)) = blocks.last_mut()
-        && list.ordered == ordered
-    {
-        list.items.push(item);
-        return;
-    }
-
-    blocks.push(Block::List(List {
-        ordered,
-        start: 1,
-        items: vec![item],
-    }));
+    crate::formats::append_list_item(blocks, item, reference.level, reference.ordered);
 }
 
 // ============================================================================
@@ -769,22 +745,8 @@ impl Styles {
             self.headings.insert(id.to_string(), 2);
             return;
         }
-        // "List Bullet 2" is the second level of a bulleted list, and the only
-        // place that depth is recorded: Word gives each level its own style
-        // with its own `numId` and writes no `<w:ilvl>` at all, so a reader
-        // that trusts the numbering alone sees every item at the top level and
-        // flattens the list. Word's own HTML export reads the name the same
-        // way, which is how the difference showed up.
-        for prefix in ["listbullet", "listnumber", "listcontinue"] {
-            let Some(rest) = compact.strip_prefix(prefix) else {
-                continue;
-            };
-            // The unsuffixed style is the first level.
-            if let Ok(level) = rest.parse::<u8>()
-                && (2..=9).contains(&level)
-            {
-                self.list_levels.insert(id.to_string(), level - 1);
-            }
+        if let Some(level) = crate::formats::list_style_level(&compact) {
+            self.list_levels.insert(id.to_string(), level);
             return;
         }
         if compact.contains("quote") {

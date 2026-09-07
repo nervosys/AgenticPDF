@@ -205,6 +205,69 @@ fn odt_nests_lists() {
     );
 }
 
+/// Word states a list's depth in the paragraph style and nowhere else.
+///
+/// Its OpenDocument export writes one `<text:list>` per level, side by side
+/// rather than nested, so the markup says every item is at the top. What tells
+/// them apart is the style on the paragraph inside -- `ListBullet` against
+/// `ListBullet2` -- exactly as in the .docx of the same document.
+#[test]
+fn odt_reads_a_lists_depth_from_the_paragraph_style() {
+    let styles = r#"<text:list-style style:name="L1"><text:list-level-style-bullet text:level="1"/></text:list-style>"#;
+    let zip = odt(
+        styles,
+        r#"<text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="ListBullet">one</text:p></text:list-item></text:list>
+           <text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="ListBullet2">under one</text:p></text:list-item></text:list>
+           <text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="ListBullet2">also under</text:p></text:list-item></text:list>
+           <text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="ListBullet">two</text:p></text:list-item></text:list>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "- one\n  - under one\n  - also under\n- two\n"
+    );
+}
+
+/// LibreOffice escapes the spaces in the same style name.
+#[test]
+fn odt_reads_a_depth_from_an_escaped_style_name() {
+    let styles = r#"<text:list-style style:name="L1"><text:list-level-style-bullet text:level="1"/></text:list-style>"#;
+    let zip = odt(
+        styles,
+        r#"<text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="List_20_Bullet">one</text:p></text:list-item></text:list>
+           <text:list text:style-name="L1"><text:list-item>
+             <text:p text:style-name="List_20_Bullet_20_2">under</text:p></text:list-item></text:list>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "- one\n  - under\n"
+    );
+}
+
+/// A list already nested in the markup is not nested a second time.
+///
+/// The depth from the style is relative to where the list sits: a nested
+/// `<text:list>` opens a fresh run of blocks whose last entry is the parent's
+/// paragraph, not a list, so there is nothing above it to descend into.
+#[test]
+fn odt_does_not_double_nest_a_structurally_nested_list() {
+    let zip = odt(
+        "",
+        r#"<text:list><text:list-item><text:p text:style-name="ListBullet">parent</text:p>
+             <text:list><text:list-item>
+               <text:p text:style-name="ListBullet2">child</text:p></text:list-item></text:list>
+           </text:list-item></text:list>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "- parent\n  - child\n"
+    );
+}
+
 #[test]
 fn odt_reads_tables_with_header_rows_and_spans() {
     let zip = odt(

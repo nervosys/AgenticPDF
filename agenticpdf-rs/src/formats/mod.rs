@@ -54,6 +54,72 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
 ///
 /// Formatting the parsed double gives the shortest form that round-trips, which
 /// is what the cell shows and what a reader of the text expects.
+/// The nesting level a built-in list style's name carries, zero-based.
+///
+/// Word records a list's depth here and nowhere else. A "List Bullet 2"
+/// paragraph gets its own style with its own numbering and no explicit level,
+/// in every format Word writes: `ListBullet2` in OOXML, the same id in
+/// OpenDocument, `MsoListBullet2` in HTML, and the style name itself in the
+/// binary formats. A reader that looks only at the numbering sees every item at
+/// the top level and returns a flat list.
+///
+/// Returns `None` for anything that is not one of the three built-in families,
+/// and for the unsuffixed first level, which needs no adjustment.
+pub(crate) fn list_style_level(name: &str) -> Option<u8> {
+    // OpenDocument escapes a space in a style name as `_20_`, so LibreOffice
+    // writes `List_20_Bullet_20_2` where Word writes `ListBullet2`.
+    let compact: String = name
+        .to_ascii_lowercase()
+        .replace("_20_", "")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let rest = ["listbullet", "listnumber", "listcontinue"]
+        .iter()
+        .find_map(|prefix| compact.strip_prefix(prefix))?;
+    rest.parse::<u8>().ok().filter(|l| (2..=9).contains(l)).map(|l| l - 1)
+}
+
+/// Append a list item at `level`, creating or nesting lists as needed.
+///
+/// Every format states a list as a flat run of items each carrying a depth, so
+/// every reader has to rebuild the nesting the same way: a deeper item goes
+/// inside the item above it, and a change of kind starts a new list rather than
+/// continuing the last one.
+pub(crate) fn append_list_item(
+    blocks: &mut Vec<crate::doc::Block>,
+    item: crate::doc::ListItem,
+    level: u8,
+    ordered: bool,
+) {
+    use crate::doc::{Block, List};
+
+    if level > 0
+        && let Some(Block::List(list)) = blocks.last_mut()
+        && let Some(parent) = list.items.last_mut()
+    {
+        append_list_item(&mut parent.blocks, item, level - 1, ordered);
+        return;
+    }
+    // Falling through with `level > 0` is a depth with nothing above it to hang
+    // from: a document that starts below the top level, or one whose first item
+    // was empty. Flattening it to this level keeps the text; dropping it would
+    // not.
+
+    if let Some(Block::List(list)) = blocks.last_mut()
+        && list.ordered == ordered
+    {
+        list.items.push(item);
+        return;
+    }
+
+    blocks.push(Block::List(List {
+        ordered,
+        start: 1,
+        items: vec![item],
+    }));
+}
+
 pub(crate) fn format_number(value: f64) -> String {
     if !value.is_finite() {
         return String::new();

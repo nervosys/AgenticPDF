@@ -532,6 +532,15 @@ impl Parser {
                                     Some((ordered, level)) => {
                                         push_word_list_item(&mut blocks, ordered, level, content);
                                     }
+                                    // A block quotation, likewise: no
+                                    // `<blockquote>`, only the class.
+                                    None if is_word_quote_class(&attrs) => {
+                                        blocks.push(Block::Quote(vec![Block::Paragraph {
+                                            content,
+                                            align: alignment(&attrs),
+                                            indent: 0.0,
+                                        }]));
+                                    }
                                     None => blocks.push(Block::Paragraph {
                                         content,
                                         align: alignment(&attrs),
@@ -979,7 +988,7 @@ fn span(attrs: &[(String, String)], name: &str) -> usize {
 /// `MsoListParagraph` is deliberately not matched: it names no kind, so there is
 /// nothing to recover from it, and guessing would turn indented prose into a
 /// list.
-fn word_list_class(attrs: &[(String, String)]) -> Option<(bool, usize)> {
+fn word_list_class(attrs: &[(String, String)]) -> Option<(bool, u8)> {
     let class = attribute(attrs, "class")?;
     for token in class.split_whitespace() {
         let Some(rest) = token.strip_prefix("MsoList") else {
@@ -999,18 +1008,38 @@ fn word_list_class(attrs: &[(String, String)]) -> Option<(bool, usize)> {
             .chars()
             .next()
             .and_then(|c| c.to_digit(10))
-            .map(|d| d.saturating_sub(1) as usize)
+            .map(|d| d.saturating_sub(1) as u8)
             .unwrap_or(0);
         return Some((ordered, level));
     }
     None
 }
 
+/// Recognise the block quotation Word's HTML export marks only with a class.
+///
+/// `<p class=MsoQuote>` is the whole of it. There is no `<blockquote>` in the
+/// file, and the indent and italic that make it read as a quotation live in a
+/// `<style>` block this parser does not evaluate — so the same document said
+/// "quotation" as .docx and "prose" as .html.
+///
+/// Only Word's own prefixed names count. A bare `class="quote"` belongs to
+/// somebody else's stylesheet and may mean anything at all, including an icon.
+fn is_word_quote_class(attrs: &[(String, String)]) -> bool {
+    let Some(class) = attribute(attrs, "class") else {
+        return false;
+    };
+    class.split_whitespace().any(|token| {
+        token
+            .strip_prefix("Mso")
+            .is_some_and(|rest| rest.to_ascii_lowercase().contains("quote"))
+    })
+}
+
 /// Add one of Word's paragraph-shaped list items to the blocks built so far.
 ///
 /// Consecutive items merge into one list, and a deeper level nests inside the
 /// item above it, so the shape a reader sees matches the shape Word drew.
-fn push_word_list_item(blocks: &mut Vec<Block>, ordered: bool, level: usize, mut content: Vec<Inline>) {
+fn push_word_list_item(blocks: &mut Vec<Block>, ordered: bool, level: u8, mut content: Vec<Inline>) {
     strip_list_marker(&mut content, ordered);
     if crate::doc::inline_text(&content).trim().is_empty() {
         return;
@@ -1023,30 +1052,7 @@ fn push_word_list_item(blocks: &mut Vec<Block>, ordered: bool, level: usize, mut
         }],
         checked: None,
     };
-    insert_list_item(blocks, ordered, level, item);
-}
-
-/// Place an item at `level`, descending through the lists already built.
-fn insert_list_item(blocks: &mut Vec<Block>, ordered: bool, level: usize, item: ListItem) {
-    if level > 0
-        && let Some(Block::List(list)) = blocks.last_mut()
-            && let Some(parent) = list.items.last_mut() {
-                insert_list_item(&mut parent.blocks, ordered, level - 1, item);
-                return;
-            }
-        // A depth with nothing above it to hang from — a document that starts
-        // at the second level, or one whose first item was empty. Flattening it
-        // to this level keeps the text; dropping it would not.
-    match blocks.last_mut() {
-        // A change of kind starts a new list: a numbered run following a
-        // bulleted one is not a continuation of it.
-        Some(Block::List(list)) if list.ordered == ordered => list.items.push(item),
-        _ => blocks.push(Block::List(List {
-            ordered,
-            start: 1,
-            items: vec![item],
-        })),
-    }
+    crate::formats::append_list_item(blocks, item, level, ordered);
 }
 
 /// Remove the marker Word wrote into the item's own text.
@@ -1372,6 +1378,21 @@ mod tests {
     /// `MsoListParagraph` is the class Word writes when the list comes from a
     /// paragraph style, and it says bullet or number nowhere. Treating it as a
     /// list would turn indented prose into one, so it stays a paragraph.
+    /// Word marks a block quotation with a class and nothing else.
+    #[test]
+    fn word_quote_class_becomes_a_quotation() {
+        assert_eq!(
+            markdown_of("<p class=MsoQuote>Growth is not margin.</p>"),
+            "> Growth is not margin.\n"
+        );
+        assert_eq!(markdown_of("<p class=MsoIntenseQuote>Loud.</p>"), "> Loud.\n");
+        // Anyone else's stylesheet says nothing about structure.
+        assert_eq!(
+            markdown_of("<p class=quote-icon>Not a quotation.</p>"),
+            "Not a quotation.\n"
+        );
+    }
+
     #[test]
     fn word_classes_that_name_no_kind_stay_paragraphs() {
         assert_eq!(

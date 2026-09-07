@@ -29,7 +29,7 @@ use crate::PdfError;
 use crate::container::zip::ZipArchive;
 use crate::detect::Format;
 use crate::doc::{
-    Align, Block, Cell, ImageRef, Inline, List, ListItem, PageSize, Row, Run, Section, SectionKind,
+    Align, Block, Cell, ImageRef, Inline, ListItem, PageSize, Row, Run, Section, SectionKind,
     SemanticDoc, Table, TextStyle, image_media_type, inline_text,
 };
 use crate::xml::{self, Element, Event, Reader, ns};
@@ -261,6 +261,24 @@ impl Styles {
         self.headings.get(name).copied()
     }
 
+    /// The nesting level a built-in list style's name carries.
+    ///
+    /// Word's OpenDocument export states depth only here: it emits one
+    /// `<text:list>` per level, side by side rather than nested, and tells them
+    /// apart by the paragraph style inside -- `ListBullet` against
+    /// `ListBullet2`. Read by the markup alone a two-level list came back flat.
+    fn list_level(&self, name: &str) -> Option<u8> {
+        let mut at = name;
+        // A cap rather than a visited set: a cycle is malformed input.
+        for _ in 0..8 {
+            if let Some(level) = crate::formats::list_style_level(at) {
+                return Some(level);
+            }
+            at = self.parents.get(at)?;
+        }
+        None
+    }
+
     fn is_ordered(&self, name: &str) -> bool {
         self.ordered_lists.get(name).copied().unwrap_or(false)
     }
@@ -406,19 +424,25 @@ fn read_body(
         if let Event::Start(element) = event
             && element.is(namespace, root)
         {
-            return read_blocks(&mut reader, &element.qname, package, document, 0);
+            return read_blocks(&mut reader, &element.qname, package, document, 0, &mut None);
         }
     }
     Vec::new()
 }
 
 /// Read block-level content until `closer` closes.
+///
+/// `list_level` reports the nesting level named by the style of the first
+/// paragraph read, for the one caller that needs it: a list item has to know
+/// its own depth, and the only place Word records it is that style's name. Every
+/// other caller passes `&mut None` and ignores it.
 fn read_blocks(
     reader: &mut Reader,
     closer: &str,
     package: &mut Package,
     document: &mut SemanticDoc,
     depth: usize,
+    list_level: &mut Option<u8>,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
     if depth > MAX_DEPTH {
@@ -454,6 +478,11 @@ fn read_blocks(
                         .attr_local("style-name")
                         .unwrap_or_default()
                         .to_string();
+                    if let Some(level) = package.styles.list_level(&style) {
+                        // The first paragraph speaks for the item; a later one
+                        // is a continuation of it, not a new depth.
+                        list_level.get_or_insert(level);
+                    }
                     let content = read_inlines(reader, &element, package, document);
                     if inline_text(&content).trim().is_empty() {
                         continue;
@@ -480,19 +509,14 @@ fn read_blocks(
                     }
                 }
                 (ns::ODF_TEXT, "list") => {
-                    let list = read_list(reader, &element, package, document, depth + 1);
-                    if list.items.is_empty() {
-                        continue;
-                    }
-                    // Producers routinely emit one `<text:list>` per item rather
-                    // than one per list — Word's ODF export does. Merging the
-                    // consecutive ones keeps a bulleted run a single list
-                    // instead of a stack of one-item lists with gaps between.
-                    match blocks.last_mut() {
-                        Some(Block::List(previous)) if previous.ordered == list.ordered => {
-                            previous.items.extend(list.items);
-                        }
-                        _ => blocks.push(Block::List(list)),
+                    // Producers routinely emit one `<text:list>` per item, and
+                    // one per level, rather than one per list — Word's ODF
+                    // export does both. Appending item by item rebuilds the run
+                    // as a single list of the right shape, where merging whole
+                    // lists gave a flat stack of one-item lists.
+                    let (ordered, items) = read_list(reader, &element, package, document, depth + 1);
+                    for (level, item) in items {
+                        crate::formats::append_list_item(&mut blocks, item, level, ordered);
                     }
                 }
                 (ns::ODF_TABLE, "table") => {
@@ -515,14 +539,14 @@ fn read_blocks(
     blocks
 }
 
-/// Read a `<text:list>`.
+/// Read a `<text:list>`, returning its items paired with their nesting levels.
 fn read_list(
     reader: &mut Reader,
     start: &Element,
     package: &mut Package,
     document: &mut SemanticDoc,
     depth: usize,
-) -> List {
+) -> (bool, Vec<(u8, ListItem)>) {
     let ordered = start
         .attr_local("style-name")
         .map(|name| package.styles.is_ordered(name))
@@ -540,23 +564,24 @@ fn read_list(
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
             Event::Start(element) if element.is(ns::ODF_TEXT, "list-item") => {
-                let blocks = read_blocks(reader, &element.qname, package, document, depth);
+                let mut level = None;
+                let blocks =
+                    read_blocks(reader, &element.qname, package, document, depth, &mut level);
                 if !blocks.is_empty() {
-                    items.push(ListItem {
-                        blocks,
-                        checked: None,
-                    });
+                    items.push((
+                        level.unwrap_or(0),
+                        ListItem {
+                            blocks,
+                            checked: None,
+                        },
+                    ));
                 }
             }
             _ => {}
         }
     }
 
-    List {
-        ordered,
-        start: 1,
-        items,
-    }
+    (ordered, items)
 }
 
 /// A cell holding one single-item list is holding a paragraph.
@@ -660,6 +685,7 @@ fn read_row(
                     package,
                     document,
                     depth,
+                    &mut None,
                 ));
 
                 for _ in 0..repeat {
@@ -941,7 +967,7 @@ fn read_slide(
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
             Event::Start(element) if element.is(ns::ODF_PRESENTATION, "notes") => {
-                notes = read_blocks(reader, &element.qname, package, document, 1);
+                notes = read_blocks(reader, &element.qname, package, document, 1, &mut None);
             }
             Event::Start(element) if element.is(ns::ODF_DRAW, "frame") => {
                 // `presentation:class` says what role the frame plays.
@@ -1005,7 +1031,14 @@ fn read_frame_blocks(
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
             Event::Start(element) if element.is(ns::ODF_DRAW, "text-box") => {
-                blocks.extend(read_blocks(reader, &element.qname, package, document, 1));
+                blocks.extend(read_blocks(
+                    reader,
+                    &element.qname,
+                    package,
+                    document,
+                    1,
+                    &mut None,
+                ));
             }
             Event::Start(element) if element.is(ns::ODF_TABLE, "table") => {
                 if let Some(table) = read_table(reader, &element, package, document, 1) {
