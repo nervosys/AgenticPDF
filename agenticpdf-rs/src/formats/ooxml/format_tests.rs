@@ -591,6 +591,89 @@ fn pptx_reads_a_table_on_a_slide() {
     assert!(!markdown.contains("- Region"), "{markdown}");
 }
 
+/// A table states its own header row and column widths.
+///
+/// `<a:tblPr firstRow="1">` is the table saying the first row is a header, and
+/// `<a:gridCol w>` gives the widths in EMU. Both were being ignored: the header
+/// was assumed rather than read, which is wrong for a table that has none, and
+/// the widths were dropped although the typesetter reads them.
+#[test]
+fn pptx_reads_a_tables_header_row_and_column_widths() {
+    let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+             <a:tblPr firstRow="1"/>
+             <a:tblGrid><a:gridCol w="2540000"/><a:gridCol w="1270000"/></a:tblGrid>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>Growth</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>EMEA</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>8%</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+           </a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+    let document = open(&pptx(&[("", frame)], &[0]), Format::Pptx);
+    let table = document
+        .sections
+        .iter()
+        .flat_map(|section| &section.blocks)
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("a table");
+    assert_eq!(table.header_rows, 1);
+    // 12700 EMU to the point, so these are 200 points and 100.
+    assert_eq!(table.column_widths, vec![200.0, 100.0]);
+}
+
+/// A table that claims no header row is not given one.
+///
+/// Markdown always draws a first row as the header, so this shows up only in
+/// the formats that can say otherwise -- HTML writes no `<thead>`.
+#[test]
+fn pptx_does_not_invent_a_header_row() {
+    let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>one</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+           </a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+    let document = open(&pptx(&[("", frame)], &[0]), Format::Pptx);
+    let table = document
+        .sections
+        .iter()
+        .flat_map(|section| &section.blocks)
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("a table");
+    assert_eq!(table.header_rows, 0);
+    assert!(!crate::doc::to_html(&document).contains("<thead>"));
+}
+
+/// Widths that do not match the grid are dropped rather than laid out.
+#[test]
+fn pptx_ignores_column_widths_that_do_not_describe_the_table() {
+    let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+             <a:tblGrid><a:gridCol w="2540000"/></a:tblGrid>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>one</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>two</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+           </a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+    let document = open(&pptx(&[("", frame)], &[0]), Format::Pptx);
+    let table = document
+        .sections
+        .iter()
+        .flat_map(|section| &section.blocks)
+        .find_map(|block| match block {
+            Block::Table(table) => Some(table),
+            _ => None,
+        })
+        .expect("a table");
+    assert!(table.column_widths.is_empty());
+}
+
 #[test]
 fn xlsx_shows_a_number_the_way_the_cell_does() {
     // Excel writes seventeen significant digits so the double round-trips:

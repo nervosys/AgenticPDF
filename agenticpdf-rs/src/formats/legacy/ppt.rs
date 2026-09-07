@@ -30,7 +30,8 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::ole::{Ole2, decode_utf16le, u32_at};
 use crate::doc::{
-    Align, Block, Inline, ListItem, Run, Section, SectionKind, SemanticDoc, TextStyle,
+    Align, Block, Cell, Inline, ListItem, Row, Run, Section, SectionKind, SemanticDoc, Table,
+    TextStyle,
 };
 
 // Record types.
@@ -47,6 +48,17 @@ const RT_TEXT_HEADER_ATOM: u16 = 0x0F9F;
 const RT_TEXT_CHARS_ATOM: u16 = 0x0FA0;
 const RT_TEXT_BYTES_ATOM: u16 = 0x0FA8;
 const RT_STYLE_TEXT_PROP_ATOM: u16 = 0x0FA1;
+
+// The drawing layer. A table has no record of its own in this format: it is a
+// group of ordinary shapes, marked as a table by a property on the group.
+const ART_SPGR_CONTAINER: u16 = 0xF003;
+const ART_SP_CONTAINER: u16 = 0xF004;
+const ART_SECONDARY_FOPT: u16 = 0xF121;
+const ART_TERTIARY_FOPT: u16 = 0xF122;
+const ART_FOPT: u16 = 0xF00B;
+const ART_CHILD_ANCHOR: u16 = 0xF00F;
+/// `tableProperties`: non-zero on the group shape of a table.
+const PID_TABLE_PROPERTIES: u16 = 0x039F;
 const RT_CRYPT_SESSION_10: u16 = 0x2F14;
 
 // Text types, which say what role a text shape plays on its page.
@@ -55,6 +67,9 @@ const TEXT_TYPE_BODY: u8 = 1;
 const TEXT_TYPE_NOTES: u8 = 2;
 const TEXT_TYPE_CENTER_BODY: u8 = 5;
 const TEXT_TYPE_CENTER_TITLE: u8 = 6;
+/// Not a placeholder at all. Used for the shapes this reader synthesises,
+/// which are not the title and are not bulleted.
+const TEXT_TYPE_OTHER: u8 = 0xFF;
 
 /// Cap on records visited, bounding a cyclic or corrupt tree.
 const MAX_RECORDS: usize = 500_000;
@@ -402,6 +417,8 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
 struct Shape {
     /// Paragraph and character formatting, where the shape states it.
     props: Option<TextProps>,
+    /// The grid, where this shape is a group PowerPoint marked as a table.
+    table: Option<Table>,
     /// Text type: 0 and 6 are the title placeholders.
     kind: u8,
     text: String,
@@ -427,6 +444,7 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                     kind: record.body.first().copied().unwrap_or(1),
                     text: String::new(),
                     props: None,
+                    table: None,
                 }),
                 // UTF-16 text.
                 RT_TEXT_CHARS_ATOM => push_text(shapes, decode_utf16le(record.body)),
@@ -445,14 +463,31 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                         shape.props = read_style_props(record.body, units);
                     }
                 }
-                _ if record.is_container() => walk(record.body, depth + 1, budget, shapes),
+                // A table is a group of cell shapes. Read as loose shapes
+                // its cells arrive as a column of stray paragraphs, so the
+                // group is taken whole and its children are not walked again.
+                _ if record.is_container() => {
+                    if record.kind == ART_SPGR_CONTAINER
+                        && let Some(table) = read_table_group(record.body)
+                    {
+                        shapes.push(Shape {
+                            // Not a placeholder of any kind; it is the grid.
+                            kind: TEXT_TYPE_OTHER,
+                            text: String::new(),
+                            props: None,
+                            table: Some(table),
+                        });
+                        continue;
+                    }
+                    walk(record.body, depth + 1, budget, shapes);
+                }
                 _ => {}
             }
         }
     }
 
     walk(data, 0, &mut budget, &mut shapes);
-    shapes.retain(|shape| !shape.text.trim().is_empty());
+    shapes.retain(|shape| !shape.text.trim().is_empty() || shape.table.is_some());
     shapes
 }
 
@@ -659,8 +694,178 @@ fn push_text(shapes: &mut Vec<Shape>, text: String) {
             kind: 1,
             text,
             props: None,
+            table: None,
         }),
     }
+}
+
+/// Read a shape group as a table, if that is what PowerPoint drew.
+///
+/// There is no table record in this format. A table is an `SpgrContainer` whose
+/// first child is the group's own shape, carrying a `tableProperties` property;
+/// the rest are one shape per cell, each with a child anchor giving its
+/// rectangle, plus a set of zero-area shapes that draw the rules. The grid has
+/// to be rebuilt from those rectangles, because nothing else states it.
+fn read_table_group(body: &[u8]) -> Option<Table> {
+    let mut records = children(body);
+    let group = records.next()?;
+    if group.kind != ART_SP_CONTAINER || !is_table_group(group.body) {
+        return None;
+    }
+
+    let mut cells: Vec<(Rect, Cell)> = Vec::new();
+    for record in records {
+        if record.kind != ART_SP_CONTAINER {
+            continue;
+        }
+        let Some(rect) = child_anchor(record.body) else {
+            continue;
+        };
+        // The rules between cells are shapes of no width or no height.
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            continue;
+        }
+        let mut blocks = Vec::new();
+        for shape in collect_shapes(record.body) {
+            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
+        }
+        cells.push((
+            rect,
+            Cell {
+                blocks,
+                ..Cell::default()
+            },
+        ));
+    }
+
+    match cells.is_empty() {
+        true => None,
+        false => Some(build_grid(cells)),
+    }
+}
+
+/// Whether a group's own shape claims to be a table.
+///
+/// The property lives in one of the three property tables a shape may carry,
+/// and PowerPoint writes this one into the tertiary. All three are searched
+/// rather than assuming which, since the choice is the producer's.
+fn is_table_group(body: &[u8]) -> bool {
+    children(body)
+        .filter(|record| {
+            matches!(
+                record.kind,
+                ART_FOPT | ART_SECONDARY_FOPT | ART_TERTIARY_FOPT
+            )
+        })
+        .any(|record| {
+            // Each entry is a property id and a value; the count is in the
+            // record's instance field, and complex values follow the entries.
+            (0..record.instance() as usize).any(|index| {
+                let at = index * 6;
+                let Some(id) = u16_at(record.body, at) else {
+                    return false;
+                };
+                let value = u32_at(record.body, at + 2).unwrap_or(0);
+                // The top two bits flag a complex or blip value, not the id.
+                id & 0x3FFF == PID_TABLE_PROPERTIES && value != 0
+            })
+        })
+}
+
+/// A shape's rectangle within its group, in the group's own coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// Read a shape's `ChildAnchor`, which is what a shape inside a group carries.
+fn child_anchor(body: &[u8]) -> Option<Rect> {
+    let anchor = children(body).find(|record| record.kind == ART_CHILD_ANCHOR)?;
+    Some(Rect {
+        left: u32_at(anchor.body, 0)? as i32,
+        top: u32_at(anchor.body, 4)? as i32,
+        right: u32_at(anchor.body, 8)? as i32,
+        bottom: u32_at(anchor.body, 12)? as i32,
+    })
+}
+
+/// Rebuild the grid from the cells' rectangles.
+///
+/// The distinct left edges are the columns and the distinct top edges the rows,
+/// which is what makes a merged cell recoverable: it starts on one boundary and
+/// covers several, and the count of boundaries it covers is its span.
+fn build_grid(cells: Vec<(Rect, Cell)>) -> Table {
+    let mut lefts: Vec<i32> = cells.iter().map(|(rect, _)| rect.left).collect();
+    lefts.sort_unstable();
+    lefts.dedup();
+    let mut tops: Vec<i32> = cells.iter().map(|(rect, _)| rect.top).collect();
+    tops.sort_unstable();
+    tops.dedup();
+
+    // A column runs from its own left edge to the next one, and the last to
+    // the furthest right edge of any cell.
+    let edge = cells
+        .iter()
+        .map(|(rect, _)| rect.right)
+        .max()
+        .unwrap_or_default();
+    let widths: Vec<f64> = lefts
+        .iter()
+        .enumerate()
+        .map(|(index, left)| f64::from(lefts.get(index + 1).copied().unwrap_or(edge) - left))
+        .filter(|width| *width > 0.0)
+        .collect();
+    let widths = match widths.len() == lefts.len() {
+        true => widths,
+        // A cell reaching left of a column start, or two columns at the same
+        // edge: the widths would not line up with the grid, so state none.
+        false => Vec::new(),
+    };
+
+    let mut rows: Vec<Vec<(i32, Cell)>> = vec![Vec::new(); tops.len()];
+    for (rect, mut cell) in cells {
+        let Ok(row) = tops.binary_search(&rect.top) else {
+            continue;
+        };
+        cell.col_span = span(&lefts, rect.left, rect.right);
+        cell.row_span = span(&tops, rect.top, rect.bottom);
+        rows[row].push((rect.left, cell));
+    }
+
+    let rows = rows
+        .into_iter()
+        .filter(|row| !row.is_empty())
+        .map(|mut row| {
+            row.sort_by_key(|(left, _)| *left);
+            Row {
+                cells: row.into_iter().map(|(_, cell)| cell).collect(),
+            }
+        })
+        .collect();
+
+    Table {
+        rows,
+        // PowerPoint states a header row in the table's style rather than on
+        // the row, and the first row of a slide table is one in every deck
+        // anybody writes -- the same assumption the .pptx reader makes.
+        header_rows: 1,
+        // The rectangles give the real widths, so the typesetter gets the
+        // proportions the author drew rather than an even split.
+        column_widths: widths,
+        caption: None,
+    }
+}
+
+/// How many grid boundaries a cell covers, which is its span.
+fn span(boundaries: &[i32], start: i32, end: i32) -> usize {
+    boundaries
+        .iter()
+        .filter(|at| **at >= start && **at < end)
+        .count()
+        .max(1)
 }
 
 /// Turn a slide's shapes into a section.
@@ -672,6 +877,10 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         // Text types 0 and 6 are the title and centred-title placeholders.
         if matches!(shape.kind, TEXT_TYPE_TITLE | TEXT_TYPE_CENTER_TITLE) && title.is_none() {
             title = Some(clean(&shape.text));
+            continue;
+        }
+        if let Some(table) = shape.table {
+            blocks.push(Block::Table(table));
             continue;
         }
         // A body placeholder reads as a bulleted list, as it is drawn.
@@ -1100,6 +1309,93 @@ mod tests {
             page_size: None,
         });
         assert_eq!(crate::doc::to_markdown(&document), "**bold** plain\n");
+    }
+
+    /// An OfficeArt record: the instance nibble carries a count for property
+    /// tables, so it is spelled out rather than folded into the version.
+    fn art(instance: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+        record((instance << 4) | 0x0F, kind, body)
+    }
+
+    fn art_atom(instance: u16, kind: u16, body: &[u8]) -> Vec<u8> {
+        record(instance << 4, kind, body)
+    }
+
+    /// A property table holding one property id and value.
+    fn fopt(id: u16, value: u32) -> Vec<u8> {
+        let mut body = id.to_le_bytes().to_vec();
+        body.extend_from_slice(&value.to_le_bytes());
+        art_atom(1, ART_TERTIARY_FOPT, &body)
+    }
+
+    /// One cell: its rectangle within the group, and its text.
+    fn table_cell(rect: (i32, i32, i32, i32), text: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        for value in [rect.0, rect.1, rect.2, rect.3] {
+            body.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut cell = art_atom(0, ART_CHILD_ANCHOR, &body);
+        cell.extend(record(0, RT_TEXT_HEADER_ATOM, &[1]));
+        cell.extend(text_chars(text));
+        art(0, ART_SP_CONTAINER, &cell)
+    }
+
+    /// PowerPoint draws a table as a group of shapes and nothing else.
+    ///
+    /// There is no table record: the group's own shape carries a
+    /// `tableProperties` property, each cell is a shape with a rectangle, and
+    /// the rules between them are shapes of no width or no height. Read as
+    /// loose shapes the cells arrive as a column of stray paragraphs, which is
+    /// what the .pptx of the same deck disagreed with.
+    #[test]
+    fn rebuilds_a_table_from_the_shapes_that_draw_it() {
+        let mut group = art(0, ART_SP_CONTAINER, &fopt(PID_TABLE_PROPERTIES, 1));
+        group.extend(table_cell((400, 400, 2000, 800), "Region"));
+        group.extend(table_cell((2000, 400, 3600, 800), "Growth"));
+        group.extend(table_cell((400, 800, 2000, 1200), "EMEA"));
+        group.extend(table_cell((2000, 800, 3600, 1200), "8%"));
+        // A rule: no height, and no text.
+        group.extend(table_cell((400, 800, 3600, 800), ""));
+
+        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        let section = build_slide(shapes, Vec::new());
+        let mut document = SemanticDoc::default();
+        document.sections.push(section);
+        assert_eq!(
+            crate::doc::to_markdown(&document),
+            "| Region | Growth |\n| --- | --- |\n| EMEA | 8% |\n"
+        );
+    }
+
+    /// A group that is not a table is walked as shapes, exactly as before.
+    #[test]
+    fn a_group_without_the_table_property_stays_loose_shapes() {
+        let mut group = art(0, ART_SP_CONTAINER, &fopt(0x0004, 1));
+        group.extend(table_cell((400, 400, 2000, 800), "one"));
+        group.extend(table_cell((2000, 400, 3600, 800), "two"));
+
+        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        assert_eq!(shapes.len(), 2);
+        assert!(shapes.iter().all(|shape| shape.table.is_none()));
+    }
+
+    /// A merged cell covers several boundaries, and that is its span.
+    #[test]
+    fn a_cell_spanning_columns_keeps_its_span() {
+        let mut group = art(0, ART_SP_CONTAINER, &fopt(PID_TABLE_PROPERTIES, 1));
+        group.extend(table_cell((400, 400, 3600, 800), "spans both"));
+        group.extend(table_cell((400, 800, 2000, 1200), "left"));
+        group.extend(table_cell((2000, 800, 3600, 1200), "right"));
+
+        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        let section = build_slide(shapes, Vec::new());
+        let Some(Block::Table(table)) = section.blocks.first() else {
+            panic!("no table: {:?}", section.blocks);
+        };
+        assert_eq!(table.rows[0].cells[0].col_span, 2);
+        assert_eq!(table.rows[1].cells.len(), 2);
+        // Two columns, of the widths the rectangles give.
+        assert_eq!(table.column_widths, vec![1600.0, 1600.0]);
     }
 
     #[test]

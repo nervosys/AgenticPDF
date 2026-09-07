@@ -268,6 +268,8 @@ impl SlideReader<'_> {
     /// rather than an empty table.
     fn read_graphic_frame(&mut self, reader: &mut Reader, start: &Element) -> Option<Table> {
         let mut rows: Vec<Row> = Vec::new();
+        let mut widths: Vec<f64> = Vec::new();
+        let mut header_rows = 0usize;
         let mut depth = 1usize;
 
         while let Some(event) = reader.read_event() {
@@ -279,6 +281,22 @@ impl SlideReader<'_> {
                     }
                 }
                 Event::Start(element) if element.qname == start.qname => depth += 1,
+                // The table says for itself whether its first row is a header,
+                // rather than leaving it to the style it names.
+                Event::Start(element) if element.is(ns::A, "tblPr") => {
+                    header_rows = match element.attr_local("firstRow") {
+                        Some("1" | "true") => 1,
+                        _ => 0,
+                    };
+                }
+                // Column widths, in EMU. The typesetter reads them
+                // proportionally, so a table keeps the shape it was drawn with
+                // instead of being split evenly.
+                Event::Start(element) if element.is(ns::A, "gridCol") => {
+                    if let Some(width) = attr_i64(&element, "w") {
+                        widths.push(emu_to_points(width));
+                    }
+                }
                 Event::Start(element) if element.is(ns::A, "tr") => {
                     rows.push(self.read_table_row(reader, &element));
                 }
@@ -286,19 +304,20 @@ impl SlideReader<'_> {
             }
         }
 
+        // Widths that do not describe this table are worse than none: the
+        // typesetter would lay out columns that are not there.
+        let columns = rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
+        if widths.len() != columns {
+            widths.clear();
+        }
+
         match rows.iter().all(|row| row.cells.is_empty()) {
             true => None,
             false => Some(Table {
                 rows,
-                // DrawingML marks a header row in the table style rather than
-                // on the row, and the first row of a slide table is one in
-                // every deck anybody writes.
-                header_rows: 1,
+                header_rows,
                 caption: None,
-                // The frame's `<a:gridCol>` widths are in EMU and the layout
-                // computes its own; carrying them would only be a second
-                // opinion nothing reads.
-                column_widths: Vec::new(),
+                column_widths: widths,
             }),
         }
     }
