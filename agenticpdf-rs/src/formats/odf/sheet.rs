@@ -267,6 +267,13 @@ fn read_cell(reader: &mut Reader, start: &Element) -> String {
                 }
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
+            // A comment on a cell is a remark about it, not its contents. Its
+            // paragraphs sit inside the cell, so reading every paragraph read
+            // the comment as part of the value -- where the .xlsx and .xls of
+            // the same workbook leave it out.
+            Event::Start(element) if element.is(ns::ODF_OFFICE, "annotation") => {
+                let _ = crate::xml::text_of(reader, &element.qname);
+            }
             Event::Start(element) if element.is(ns::ODF_TEXT, "p") => {
                 let paragraph = crate::xml::text_of(reader, &element.qname);
                 if !paragraph.trim().is_empty() {

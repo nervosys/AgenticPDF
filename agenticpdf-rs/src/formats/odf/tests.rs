@@ -240,6 +240,25 @@ fn odt_nests_lists() {
 /// This one emitted its contents as an ordinary section, so a payload two
 /// readers of the same workbook excluded came through the third. OpenDocument
 /// hides a sheet through its table style rather than on the table itself.
+/// A comment on a cell is a remark about it, not its contents.
+///
+/// Its paragraphs sit inside the cell, so reading every paragraph read the
+/// comment as part of the value: a cell holding "Value" came back as
+/// "A reviewer note. Value", where the .xlsx and .xls of the same workbook both
+/// leave the comment out.
+#[test]
+fn ods_keeps_a_cell_comment_out_of_the_cell() {
+    let body = r#"<table:table table:name="Cells">
+           <table:table-row>
+             <table:table-cell office:value-type="string">
+               <office:annotation><text:p>A reviewer note.</text:p></office:annotation>
+               <text:p>Value</text:p></table:table-cell>
+           </table:table-row></table:table>"#;
+    let markdown = to_markdown(&parse(&ods(body), Format::Ods).unwrap());
+    assert!(!markdown.contains("reviewer note"), "{markdown}");
+    assert!(markdown.contains("| Value |"), "{markdown}");
+}
+
 #[test]
 fn ods_skips_a_hidden_sheet() {
     let styles = r#"<style:style style:name="ta1" style:family="table">
