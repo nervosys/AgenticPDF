@@ -23,16 +23,16 @@ inside the plain-text family, where the bytes genuinely are ambiguous.
 | Word (OOXML) | `.docx` `.docm` | ✅ styles, headings, numbering, tables + table styles, hyperlinks, images, text boxes, footnotes and endnotes, hidden text; typeset + rendered |
 | Excel (OOXML) | `.xlsx` `.xlsm` | ✅ sheets, shared strings, sparse cells, cell types, dates, formula results; hidden sheets, rows and columns skipped; typeset + rendered |
 | PowerPoint (OOXML) | `.pptx` `.pptm` | ✅ slides in presentation order, titles, bullets, tables + table styles, speaker notes, images; hidden shapes and slides flagged; one page per slide |
-| EPUB | `.epub` | ✅ spine order, Dublin Core metadata, per-chapter sections, images |
-| Rich Text Format | `.rtf` | ✅ stylesheet headings and list depth, tables incl. nested, lists, footnotes, fields and hyperlinks, colour table, per-font code pages, `\u` escapes, tracked deletions excluded, hidden text |
+| EPUB | `.epub` | ✅ spine order, Dublin Core metadata, per-chapter sections, images, the stylesheets the package carries |
+| Rich Text Format | `.rtf` | ✅ stylesheet headings and list depth, tables incl. nested, lists, footnotes, text boxes, fields and hyperlinks, colour table, per-font code pages, `\u` escapes, tracked deletions excluded, hidden text |
 | HTML / XHTML | `.html` `.htm` `.xhtml` | ✅ structure, tables, links, images, declared charset, entities, the document's own `<style>` rules for emphasis and hidden-text scan |
 | Markdown | `.md` `.markdown` | ✅ round-trips through the model |
 | Delimited text | `.csv` `.tsv` | ✅ RFC 4180 quoting, inferred delimiter |
 | Plain text | `.txt` | ✅ |
-| OpenDocument Text | `.odt` | ✅ named styles + parent chains, headings, lists, tables + table templates, text boxes, footnotes, hidden text |
+| OpenDocument Text | `.odt` | ✅ named styles + parent chains, headings, lists incl. inherited depth, tables + table templates, text boxes and shapes, footnotes, tracked deletions excluded, hidden text |
 | OpenDocument Sheet | `.ods` | ✅ sheets, repeat-count expansion, typed and displayed values; hidden sheets, rows and columns skipped; cell comments excluded |
-| OpenDocument Slides | `.odp` | ✅ slides, title placeholders, tables + table templates, notes, one page per slide |
-| Word 97-2003 | `.doc` | ✅ piece table, style chains, SPRM deltas, lists, tables, footnotes and endnotes, text boxes, fields and hyperlinks, run colour, tracked deletions excluded, hidden text |
+| OpenDocument Slides | `.odp` | ✅ slides, title placeholders, tables + table templates, notes, one page per slide; page numbers, dates and running heads skipped |
+| Word 97-2003 | `.doc` | ✅ piece table, style chains, SPRM deltas, lists, tables, footnotes and endnotes, text boxes placed at their anchor, fields and hyperlinks, run colour, tracked deletions excluded, hidden text |
 | Excel 97-2003 | `.xls` | ✅ BIFF8 records, shared strings, RK values, dates, formula results; hidden sheets, rows and columns skipped |
 | PowerPoint 97-2003 | `.ppt` | ✅ persist-resolved slide order, titles, outline levels and character formatting, tables, hyperlinks, pictures, notes; hidden shapes and slides flagged |
 
