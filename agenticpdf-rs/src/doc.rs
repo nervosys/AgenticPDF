@@ -1171,6 +1171,47 @@ fn render_table(table: &Table, out: &mut String) {
 }
 
 /// Flatten merged cells into a rectangular grid of rendered strings.
+/// A cell's contents as the single line a pipe table allows.
+///
+/// A pipe table cannot nest, so a table inside a cell is rendered as its own
+/// cells' text rather than as more pipe syntax. Rendered as syntax and then
+/// escaped to survive the outer row, a nested table came out as a run of
+/// literal pipes and dashes -- while the .doc of the same document flattened it
+/// and the .rtf turned it into extra rows.
+///
+/// Whitespace is collapsed for the same reason the text is trimmed: the pipes
+/// delimit the cell, so the gap a paragraph break leaves inside one is not
+/// content, and carrying it through made the same table differ between formats.
+fn cell_contents(blocks: &[Block]) -> String {
+    fn gather(blocks: &[Block], out: &mut String) {
+        for block in blocks {
+            match block {
+                Block::Table(inner) => {
+                    for row in &inner.rows {
+                        for cell in &row.cells {
+                            gather(&cell.blocks, out);
+                        }
+                    }
+                }
+                other => {
+                    let mut body = String::new();
+                    render_blocks(std::slice::from_ref(other), 0, &mut body);
+                    out.push(' ');
+                    out.push_str(&body);
+                }
+            }
+        }
+    }
+
+    let mut gathered = String::new();
+    gather(blocks, &mut gathered);
+    gathered
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "\\|")
+}
+
 fn expand_spans(table: &Table) -> Vec<Vec<String>> {
     let mut grid: Vec<Vec<String>> = Vec::with_capacity(table.rows.len());
 
@@ -1185,9 +1226,7 @@ fn expand_spans(table: &Table) -> Vec<Vec<String>> {
                 column += 1;
             }
 
-            let mut body = String::new();
-            render_blocks(&cell.blocks, 0, &mut body);
-            let text = body.trim().replace('\n', " ").replace('|', "\\|");
+            let text = cell_contents(&cell.blocks);
 
             for row_offset in 0..cell.row_span.max(1) {
                 let target = row_index + row_offset;
@@ -1768,6 +1807,83 @@ mod tests {
             to_markdown(&doc),
             "| name | age |\n| --- | --- |\n| ada | 36 |\n"
         );
+    }
+
+    /// A pipe table cannot nest, so a table inside a cell is flattened.
+    ///
+    /// Rendered as pipe syntax and then escaped to survive the outer row, a
+    /// nested table came out as a run of literal pipes and dashes. Word's own
+    /// .doc and .odt of the same document flattened it, so this is also what
+    /// makes the three agree.
+    #[test]
+    fn a_table_nested_in_a_cell_is_flattened() {
+        let inner = Block::Table(Table {
+            header_rows: 0,
+            rows: vec![Row {
+                cells: vec![Cell::text("Inner X"), Cell::text("Inner Y")],
+            }],
+            ..Table::default()
+        });
+        let doc = doc_with(vec![Block::Table(Table {
+            header_rows: 1,
+            rows: vec![
+                Row {
+                    cells: vec![Cell::text("Outer A"), Cell::text("Outer B")],
+                },
+                Row {
+                    cells: vec![
+                        Cell {
+                            blocks: vec![inner],
+                            ..Cell::default()
+                        },
+                        Cell::text("Outer D"),
+                    ],
+                },
+            ],
+            ..Table::default()
+        })]);
+        assert_eq!(
+            to_markdown(&doc),
+            "| Outer A | Outer B |
+| --- | --- |
+| Inner X Inner Y | Outer D |
+"
+        );
+    }
+
+    /// A cell holding several paragraphs is one line, with one space between.
+    #[test]
+    fn a_multi_paragraph_cell_collapses_to_one_line() {
+        let doc = doc_with(vec![Block::Table(Table {
+            header_rows: 1,
+            rows: vec![
+                Row {
+                    cells: vec![Cell::text("head")],
+                },
+                Row {
+                    cells: vec![Cell {
+                        blocks: vec![
+                            Block::Paragraph {
+                                content: vec![Inline::Run(Run::plain("first"))],
+                                align: Align::Left,
+                                indent: 0.0,
+                            },
+                            Block::Paragraph {
+                                content: vec![Inline::Run(Run::plain("second"))],
+                                align: Align::Left,
+                                indent: 0.0,
+                            },
+                        ],
+                        ..Cell::default()
+                    }],
+                },
+            ],
+            ..Table::default()
+        })]);
+        assert_eq!(to_markdown(&doc), "| head |
+| --- |
+| first second |
+");
     }
 
     #[test]
