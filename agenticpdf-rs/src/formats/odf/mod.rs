@@ -1111,6 +1111,67 @@ fn is_generated_page_name(name: &str) -> bool {
         )
 }
 
+/// Read the frames of a page, or of the notes page beside it.
+///
+/// Anything that is not a frame is read as blocks, so a table or a picture
+/// placed directly on the page is not lost.
+fn read_page_frames(
+    reader: &mut Reader,
+    closer: &str,
+    package: &mut Package,
+    document: &mut SemanticDoc,
+    title: &mut Option<String>,
+) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    while let Some(event) = reader.read_event() {
+        match event {
+            Event::End(name) if name == closer => break,
+            Event::Start(element) if element.is(ns::ODF_DRAW, "frame") => {
+                blocks.extend(read_frame(reader, &element, package, document, title));
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+/// Read one frame, taking the title from it if that is the role it plays.
+///
+/// `presentation:class` says what the frame is for. A page number, a date or a
+/// running header repeats on every page and is furniture rather than content.
+fn read_frame(
+    reader: &mut Reader,
+    element: &Element,
+    package: &mut Package,
+    document: &mut SemanticDoc,
+    title: &mut Option<String>,
+) -> Vec<Block> {
+    let class = element.attr_local("class").unwrap_or_default().to_string();
+    let content = read_frame_blocks(reader, element, package, document);
+
+    match class.as_str() {
+        "title" | "subtitle" if title.is_none() => {
+            let text = content
+                .iter()
+                .map(|block| {
+                    let mut out = String::new();
+                    crate::doc::block_text_into(block, &mut out);
+                    out
+                })
+                .collect::<String>();
+            match text.trim().is_empty() {
+                true => content,
+                false => {
+                    *title = Some(text.trim().to_string());
+                    Vec::new()
+                }
+            }
+        }
+        "page-number" | "date-time" | "footer" | "header" => Vec::new(),
+        _ => content,
+    }
+}
+
 /// Read one slide, separating its title placeholder and its notes.
 fn read_slide(
     reader: &mut Reader,
@@ -1132,34 +1193,15 @@ fn read_slide(
                 }
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
+            // A notes page is a page: it holds frames playing the same roles,
+            // and LibreOffice puts a slide-number placeholder on every one of
+            // them. Read as plain blocks, each slide's notes ended with the
+            // literal text `<number>`, which is not what anybody wrote.
             Event::Start(element) if element.is(ns::ODF_PRESENTATION, "notes") => {
-                notes = read_blocks(reader, &element.qname, package, document, 1, &mut None);
+                notes = read_page_frames(reader, &element.qname, package, document, &mut None);
             }
             Event::Start(element) if element.is(ns::ODF_DRAW, "frame") => {
-                // `presentation:class` says what role the frame plays.
-                let class = element.attr_local("class").unwrap_or_default().to_string();
-                let content = read_frame_blocks(reader, &element, package, document);
-
-                match class.as_str() {
-                    "title" | "subtitle" if title.is_none() => {
-                        let text = content
-                            .iter()
-                            .map(|block| {
-                                let mut out = String::new();
-                                crate::doc::block_text_into(block, &mut out);
-                                out
-                            })
-                            .collect::<String>();
-                        if text.trim().is_empty() {
-                            blocks.extend(content);
-                        } else {
-                            title = Some(text.trim().to_string());
-                        }
-                    }
-                    // Page numbers, dates and footers repeat on every slide.
-                    "page-number" | "date-time" | "footer" | "header" => {}
-                    _ => blocks.extend(content),
-                }
+                blocks.extend(read_frame(reader, &element, package, document, &mut title));
             }
             _ => {}
         }

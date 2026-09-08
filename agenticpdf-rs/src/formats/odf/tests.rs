@@ -852,6 +852,31 @@ fn odp_makes_a_section_per_slide_with_its_title() {
     assert_eq!(markdown.matches("First Slide").count(), 1, "{markdown}");
 }
 
+/// A notes page is a page, and carries the same furniture.
+///
+/// LibreOffice puts a slide-number placeholder on every notes page. The frame
+/// roles were filtered on the slide but not on the notes beside it, so each
+/// slide's notes ended with the literal text `<number>`.
+#[test]
+fn odp_skips_a_placeholder_frame_on_the_notes_page() {
+    let body = r#"<office:presentation><draw:page draw:name="page1">
+        <draw:frame presentation:class="title"><draw:text-box>
+          <text:p>Title</text:p></draw:text-box></draw:frame>
+        <presentation:notes>
+          <draw:frame presentation:class="notes"><draw:text-box>
+            <text:p>Say this aloud.</text:p></draw:text-box></draw:frame>
+          <draw:frame presentation:class="page-number"><draw:text-box>
+            <text:p><text:page-number>&lt;number&gt;</text:page-number></text:p>
+          </draw:text-box></draw:frame>
+        </presentation:notes>
+      </draw:page></office:presentation>"#;
+    let zip = package(MIME_ODP, "", body, &[]);
+    let document = parse(&zip, Format::Odp).unwrap();
+    let markdown = to_markdown(&document);
+    assert!(markdown.contains("Say this aloud."), "{markdown}");
+    assert!(!markdown.contains("number"), "{markdown}");
+}
+
 #[test]
 fn odp_keeps_speaker_notes_separate() {
     let zip = odp(r#"<draw:page draw:name="page1">

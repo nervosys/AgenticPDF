@@ -230,7 +230,7 @@ fn layout<'a>(stream: &'a [u8], current_user: &[u8]) -> Option<Layout<'a>> {
     let mut offset = u32_at(current_user, 0x10).map(|value| value as usize)?;
 
     let mut persist: HashMap<u32, usize> = HashMap::new();
-    let mut document_offset = None;
+    let mut document_id = None;
     let mut visited = 0usize;
 
     // Walk the edit chain backwards. Earlier fragments must not overwrite
@@ -242,8 +242,15 @@ fn layout<'a>(stream: &'a [u8], current_user: &[u8]) -> Option<Layout<'a>> {
             break;
         }
         let body = record.body;
-        if document_offset.is_none() {
-            document_offset = u32_at(body, 0).map(|value| value as usize);
+        if document_id.is_none() {
+            // The document container is named by `docPersistIdRef`, sixteen
+            // bytes into the atom. Reading it from the front took
+            // `lastSlideIdRef` instead, which PowerPoint writes as zero and
+            // which resolved to stream offset zero -- where PowerPoint happens
+            // to put the container. LibreOffice writes a slide id there, and
+            // the whole persist-resolved path fell away to the stream-order
+            // fallback, which pairs notes with slides by position.
+            document_id = u32_at(body, 16);
         }
         let directory = u32_at(body, 12).map(|value| value as usize);
         let previous = u32_at(body, 8).map(|value| value as usize).unwrap_or(0);
@@ -258,15 +265,19 @@ fn layout<'a>(stream: &'a [u8], current_user: &[u8]) -> Option<Layout<'a>> {
         offset = previous;
     }
 
-    // The document container is itself addressed by persist id.
-    let document_at = persist
-        .get(&(document_offset? as u32))
-        .copied()
-        .or(document_offset)?;
+    // The document container is itself addressed by persist id -- but not
+    // every producer writes an id that is in the directory, so the id is a
+    // hint and the record type is the test. There is one document container,
+    // so finding it among the persisted records costs nothing when the hint is
+    // right and saves the file when it is not.
+    let is_document = |offset: usize| {
+        matches!(record_at(stream, offset), Some((record, _)) if record.kind == RT_DOCUMENT)
+    };
+    let named = document_id.and_then(|id| persist.get(&id)).copied();
+    let document_at = named
+        .filter(|&offset| is_document(offset))
+        .or_else(|| persist.values().copied().find(|&offset| is_document(offset)))?;
     let (document, _) = record_at(stream, document_at)?;
-    if document.kind != RT_DOCUMENT {
-        return None;
-    }
 
     // Instance 0 is the slide list; instance 2 is the notes list.
     let mut slide_list = None;
@@ -1508,6 +1519,47 @@ mod tests {
         body.extend(record(0, RT_TEXT_HEADER_ATOM, &[2])); // 2: the notes body
         body.extend(text_chars(text));
         container(RT_NOTES, &body)
+    }
+
+    /// The document container is the one the edit atom names, wherever it sits.
+    ///
+    /// `docPersistIdRef` is sixteen bytes into a `UserEditAtom`; the first four
+    /// are `lastSlideIdRef`. Reading the wrong one still worked on every file
+    /// PowerPoint writes, because PowerPoint leaves `lastSlideIdRef` at zero
+    /// and puts the container at stream offset zero. LibreOffice writes a real
+    /// slide id there and the container somewhere else, and the whole
+    /// persist-resolved path fell away to reading the stream in order -- which
+    /// pairs notes with slides by position, so a deck lost a note.
+    #[test]
+    fn the_document_container_is_found_behind_a_used_slide_id() {
+        let mut stream = vec![0u8; 8]; // anything but the container at zero
+        let document_at = stream.len();
+        stream.extend(container(
+            RT_DOCUMENT,
+            &record(0x0000, RT_SLIDE_LIST_WITH_TEXT, &persist_atom(16, 256)),
+        ));
+
+        // One fragment: ids 1 and 2, the second being the document.
+        let mut fragment = ((2u32 << 20) | 1).to_le_bytes().to_vec();
+        fragment.extend_from_slice(&0u32.to_le_bytes());
+        fragment.extend_from_slice(&(document_at as u32).to_le_bytes());
+        let directory_at = stream.len();
+        stream.extend(record(0, RT_PERSIST_DIRECTORY_ATOM, &fragment));
+
+        let edit_at = stream.len();
+        let mut edit = 256u32.to_le_bytes().to_vec(); // lastSlideIdRef, not the id
+        edit.extend_from_slice(&[0u8; 4]); // version
+        edit.extend_from_slice(&0u32.to_le_bytes()); // no earlier edit
+        edit.extend_from_slice(&(directory_at as u32).to_le_bytes());
+        edit.extend_from_slice(&2u32.to_le_bytes()); // docPersistIdRef
+        edit.extend_from_slice(&[0u8; 8]);
+        stream.extend(record(0, RT_USER_EDIT_ATOM, &edit));
+
+        let mut current_user = vec![0u8; 0x14];
+        current_user[0x10..0x14].copy_from_slice(&(edit_at as u32).to_le_bytes());
+
+        let resolved = layout(&stream, &current_user).expect("the container is reachable");
+        assert_eq!(resolved.persist.get(&2).copied(), Some(document_at));
     }
 
     /// Notes go to the slide their `NotesAtom` names, not to the slide in the
