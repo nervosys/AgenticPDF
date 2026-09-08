@@ -23,6 +23,49 @@ use crate::doc::SemanticDoc;
 /// the geometric path through [`crate::engine`] and has its structure inferred
 /// by [`crate::layout`] instead.
 pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
+    let mut document = read(data, format)?;
+    flag_unreadable_text(&mut document);
+    Ok(document)
+}
+
+/// Flag text too small to read as hidden.
+///
+/// Type at a point or less is not small print, it is text put in a document to
+/// be extracted rather than read -- the same trick as `font-size:0` in HTML,
+/// which this reader has always caught, written in a way every other format
+/// allows too. A document saved by Word as .docx, .doc, .rtf and .odt reported
+/// the size faithfully through all four readers and flagged it in none.
+///
+/// Applied here rather than in each reader, so every format gets it and gets
+/// the same rule. This is the one path documents are opened through.
+///
+/// The threshold is where it is because a point is the smallest size Word will
+/// set and nothing at or below it can be read, while raising it starts catching
+/// legitimate fine print.
+///
+/// Colour is deliberately not judged here. White text is invisible on a white
+/// page and perfectly ordinary on a dark one, and the model carries no
+/// background to tell those apart: in the same document above, the white text
+/// of a table header styled by Word itself is indistinguishable from the white
+/// text of a payload. Calling both hidden would report every such table as an
+/// injection.
+fn flag_unreadable_text(document: &mut SemanticDoc) {
+    /// Points at or below which text cannot be read at all.
+    const UNREADABLE: f64 = 1.0;
+
+    for section in &mut document.sections {
+        let mut flag = |run: &mut crate::doc::Run| {
+            if run.style.size.is_some_and(|size| size <= UNREADABLE) {
+                run.style.hidden = true;
+            }
+        };
+        crate::doc::walk_runs_mut(&mut section.blocks, &mut flag);
+        crate::doc::walk_runs_mut(&mut section.notes, &mut flag);
+    }
+}
+
+/// Parse bytes of a known format, before the checks every format shares.
+fn read(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
     match format {
         Format::Text => Ok(text::parse_text(data)),
         Format::Csv => Ok(text::parse_csv(data, None)),

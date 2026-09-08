@@ -156,13 +156,18 @@ pub enum Block {
 /// show -- and the text inside it stays perfectly extractable. Since the flag
 /// lives on the run, hiding a region means walking it.
 pub(crate) fn mark_hidden(blocks: &mut [Block]) {
-    fn runs(content: &mut [Inline]) {
-        for inline in content {
+    walk_runs_mut(blocks, &mut |run| run.style.hidden = true);
+}
+
+/// Apply `visit` to every run in these blocks, however deeply nested.
+pub(crate) fn walk_runs_mut(blocks: &mut [Block], visit: &mut impl FnMut(&mut Run)) {
+    fn content(inlines: &mut [Inline], visit: &mut impl FnMut(&mut Run)) {
+        for inline in inlines {
             match inline {
-                Inline::Run(run) => run.style.hidden = true,
-                Inline::Link { runs: linked, .. } => {
-                    for run in linked {
-                        run.style.hidden = true;
+                Inline::Run(run) => visit(run),
+                Inline::Link { runs, .. } => {
+                    for run in runs {
+                        visit(run);
                     }
                 }
                 Inline::Image(_) | Inline::Break | Inline::FootnoteRef { .. } => {}
@@ -172,22 +177,24 @@ pub(crate) fn mark_hidden(blocks: &mut [Block]) {
 
     for block in blocks {
         match block {
-            Block::Heading { content, .. } | Block::Paragraph { content, .. } => runs(content),
-            Block::Quote(inner) => mark_hidden(inner),
+            Block::Heading { content: c, .. } | Block::Paragraph { content: c, .. } => {
+                content(c, visit)
+            }
+            Block::Quote(inner) => walk_runs_mut(inner, visit),
             Block::List(list) => {
                 for item in &mut list.items {
-                    mark_hidden(&mut item.blocks);
+                    walk_runs_mut(&mut item.blocks, visit);
                 }
             }
             Block::Table(table) => {
                 for row in &mut table.rows {
                     for cell in &mut row.cells {
-                        mark_hidden(&mut cell.blocks);
+                        walk_runs_mut(&mut cell.blocks, visit);
                     }
                 }
             }
-            // No runs to mark. `Code` holds a bare string, and nothing yet
-            // reads a hidden flag off one.
+            // No runs to visit. `Code` holds a bare string, and nothing yet
+            // reads a style off one.
             Block::Code { .. } | Block::Figure { .. } | Block::Divider | Block::PageBreak => {}
         }
     }
