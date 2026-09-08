@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use crate::PdfError;
 use crate::container::ole::{Ole2, decode_utf16le, u32_at};
 use crate::doc::{
-    Align, Block, Cell, Inline, ListItem, Row, Run, Section, SectionKind, SemanticDoc, Table,
+    Align, Block, Cell, ImageRef, Inline, ListItem, Row, Run, Section, SectionKind, SemanticDoc, Table,
     TextStyle,
 };
 
@@ -67,6 +67,17 @@ const ART_SECONDARY_FOPT: u16 = 0xF121;
 const ART_TERTIARY_FOPT: u16 = 0xF122;
 const ART_FOPT: u16 = 0xF00B;
 const ART_CHILD_ANCHOR: u16 = 0xF00F;
+const ART_FSP: u16 = 0xF00A;
+/// A picture's bytes live in a stream of their own; the shape names an index
+/// into it, and the alt text sits beside that as a property of the shape.
+const SHAPE_TYPE_PICTURE: u16 = 75;
+const PID_BLIP_INDEX: u16 = 0x0104;
+const PID_DESCRIPTION: u16 = 0x0381;
+/// Names a figure whose bytes are still to be registered: the shapes are
+/// read before there is a document to register them in, so the blip is
+/// named here and resolved once there is.
+const BLIP_PREFIX: &str = "ppt-blip-";
+
 /// `tableProperties`: non-zero on the group shape of a table.
 const PID_TABLE_PROPERTIES: u16 = 0x039F;
 /// `groupShapeBooleans`, whose `fHidden` bit takes a shape off the slide.
@@ -107,6 +118,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
 
     // The targets are listed once for the document; a shape names one.
     let links = read_hyperlinks(&stream);
+    let blips = read_pictures(&ole.read_optional("Pictures").unwrap_or_default());
 
     let mut document = SemanticDoc::default();
     let sections = match layout(&stream, &current_user) {
@@ -115,6 +127,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         None => read_in_stream_order(&stream, &links),
     };
     document.sections = sections;
+    register_pictures(&mut document, &blips);
 
     if document.sections.is_empty() {
         return Err(PdfError::MissingPart("ppt contains no slides".into()));
@@ -463,6 +476,8 @@ struct Shape {
     hidden: bool,
     /// The characters a hyperlink covers, and its target.
     link: Option<(u32, u32, String)>,
+    /// The blip a picture shape names, and its alt text.
+    picture: Option<(usize, Option<String>)>,
     /// Paragraph and character formatting, where the shape states it.
     props: Option<TextProps>,
     /// The grid, where this shape is a group PowerPoint marked as a table.
@@ -501,6 +516,7 @@ fn collect_shapes(data: &[u8], links: &HashMap<u32, String>) -> Vec<Shape> {
                     table: None,
                     hidden: false,
                     link: None,
+                    picture: None,
                 }),
                 // UTF-16 text.
                 RT_TEXT_CHARS_ATOM => push_text(shapes, decode_utf16le(record.body)),
@@ -538,6 +554,21 @@ fn collect_shapes(data: &[u8], links: &HashMap<u32, String>) -> Vec<Shape> {
                             shape.link = Some(link.clone());
                         }
                     }
+                    // A picture carries no text, so the walk above produced no
+                    // shape for it and it needs one of its own.
+                    if shapes.len() == before
+                        && let Some(picture) = shape_picture(record.body)
+                    {
+                        shapes.push(Shape {
+                            kind: TEXT_TYPE_OTHER,
+                            text: String::new(),
+                            props: None,
+                            table: None,
+                            hidden: false,
+                            link: None,
+                            picture: Some(picture),
+                        });
+                    }
                 }
                 _ if record.is_container() => {
                     if record.kind == ART_SPGR_CONTAINER
@@ -551,6 +582,7 @@ fn collect_shapes(data: &[u8], links: &HashMap<u32, String>) -> Vec<Shape> {
                             table: Some(table),
                             hidden: false,
                             link: None,
+                            picture: None,
                         });
                         continue;
                     }
@@ -562,7 +594,9 @@ fn collect_shapes(data: &[u8], links: &HashMap<u32, String>) -> Vec<Shape> {
     }
 
     walk(data, 0, &mut budget, &mut shapes, links);
-    shapes.retain(|shape| !shape.text.trim().is_empty() || shape.table.is_some());
+    shapes.retain(|shape| {
+        !shape.text.trim().is_empty() || shape.table.is_some() || shape.picture.is_some()
+    });
     shapes
 }
 
@@ -772,8 +806,138 @@ fn push_text(shapes: &mut Vec<Shape>, text: String) {
             table: None,
             hidden: false,
             link: None,
+            picture: None,
         }),
     }
+}
+
+/// Attach the bytes to the figures naming them, now that there is a document.
+///
+/// The shapes are read before the document exists, so each picture names its
+/// blip and this resolves the names. A blip the stream does not hold leaves the
+/// figure without bytes rather than pointing at the wrong picture.
+fn register_pictures(document: &mut SemanticDoc, blips: &[(String, Vec<u8>)]) {
+    let mut registered: HashMap<usize, String> = HashMap::new();
+    let mut sections = std::mem::take(&mut document.sections);
+
+    for section in &mut sections {
+        for block in &mut section.blocks {
+            let Block::Figure { image, .. } = block else {
+                continue;
+            };
+            let Some(index) = image.asset_id.strip_prefix(BLIP_PREFIX) else {
+                continue;
+            };
+            let Ok(index) = index.parse::<usize>() else {
+                continue;
+            };
+            // The index is one-based, and names the blips in stream order.
+            let asset = match registered.get(&index) {
+                Some(id) => Some(id.clone()),
+                None => blips.get(index.wrapping_sub(1)).map(|(media, bytes)| {
+                    let added = document.add_asset(media.clone(), bytes.clone());
+                    registered.insert(index, added.asset_id.clone());
+                    added.asset_id
+                }),
+            };
+            image.asset_id = asset.unwrap_or_default();
+        }
+    }
+    document.sections = sections;
+}
+
+/// Read the `Pictures` stream into the blips a shape can name.
+///
+/// Each blip is a record whose type says what it holds, preceded by an
+/// identifier the shape does not use. The stream is padded to a boundary, so
+/// the walk stops at the first empty record rather than reading the padding as
+/// more pictures.
+fn read_pictures(pictures: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut blips = Vec::new();
+    let mut at = 0usize;
+
+    while at + 8 <= pictures.len() {
+        let Some((record, next)) = record_at(pictures, at) else {
+            break;
+        };
+        if record.kind == 0 || record.body.is_empty() {
+            break;
+        }
+        at = next;
+
+        // The header is an identifier and a tag; an odd instance means the
+        // identifier is written twice. Metafiles carry a larger header this
+        // reader has no use for, since it cannot draw them either.
+        let media = match record.kind {
+            0xF01D | 0xF018 => "image/jpeg",
+            0xF01E => "image/png",
+            0xF01F => "image/bmp",
+            _ => continue,
+        };
+        let uids = match record.instance() & 1 == 1 {
+            true => 2,
+            false => 1,
+        };
+        let header = uids * 16 + 1;
+        if let Some(bytes) = record.body.get(header..) {
+            blips.push((media.to_string(), bytes.to_vec()));
+        }
+    }
+    blips
+}
+
+/// The picture a shape names, as an index into the blips and its alt text.
+///
+/// The index is one-based and the description is a complex property, whose
+/// bytes follow the property table in the order the properties appear.
+fn shape_picture(body: &[u8]) -> Option<(usize, Option<String>)> {
+    let is_picture = children(body).any(|record| {
+        record.kind == ART_FSP && record.instance() == SHAPE_TYPE_PICTURE
+    });
+    if !is_picture {
+        return None;
+    }
+    let index = property(body, PID_BLIP_INDEX)? as usize;
+    Some((index, shape_description(body)))
+}
+
+/// The alt text a shape carries, from its complex properties.
+fn shape_description(body: &[u8]) -> Option<String> {
+    for record in children(body) {
+        if !matches!(
+            record.kind,
+            ART_FOPT | ART_SECONDARY_FOPT | ART_TERTIARY_FOPT
+        ) {
+            continue;
+        }
+        let count = record.instance() as usize;
+        // Complex values follow the table, one after another in the order
+        // their properties appear in it.
+        let mut at = count * 6;
+        for index in 0..count {
+            let Some(id) = u16_at(record.body, index * 6) else {
+                break;
+            };
+            let Some(length) = u32_at(record.body, index * 6 + 2) else {
+                break;
+            };
+            if id & 0x8000 == 0 {
+                continue;
+            }
+            let length = length as usize;
+            if id & 0x3FFF == PID_DESCRIPTION
+                && let Some(bytes) = record.body.get(at..at + length)
+            {
+                let text = decode_utf16le(bytes);
+                let text = text.trim_end_matches('\0').trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+            at = at.saturating_add(length);
+        }
+    }
+    None
 }
 
 /// Read the document's list of hyperlink targets, by the id a shape names.
@@ -1051,6 +1215,20 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         }
         if let Some(table) = shape.table {
             blocks.push(Block::Table(table));
+            continue;
+        }
+        // The bytes are registered once the document exists, so the blip is
+        // named here and resolved there.
+        if let Some((blip, alt)) = shape.picture {
+            blocks.push(Block::Figure {
+                image: ImageRef {
+                    asset_id: format!("{BLIP_PREFIX}{blip}"),
+                    alt,
+                    width: None,
+                    height: None,
+                },
+                caption: None,
+            });
             continue;
         }
         // A body placeholder reads as a bulleted list, as it is drawn.
@@ -1599,6 +1777,44 @@ mod tests {
     /// The document lists its targets, an atom on the shape names which target,
     /// and another gives the characters it covers. Read no further than the
     /// text, the .ppt of a deck lost every link the .pptx and .odp of it kept.
+    /// A picture's bytes live in a stream of its own, named by index.
+    ///
+    /// The shape carries the index and the alt text, and nothing else -- so a
+    /// reader that looks only at the drawing loses both, as the .ppt of a deck
+    /// did where the .pptx and .odp of it kept them.
+    #[test]
+    fn reads_a_picture_and_its_alt_text() {
+        // One blip: an identifier, a tag, then the bytes.
+        let mut blip = vec![0u8; 17];
+        blip.extend_from_slice(b"\x89PNG\r\n\x1a\nBODY");
+        let pictures = art_atom(0x6E0, 0xF01E, &blip);
+        assert_eq!(
+            read_pictures(&pictures),
+            vec![("image/png".to_string(), b"\x89PNG\r\n\x1a\nBODY".to_vec())]
+        );
+
+        // The shape: a picture frame naming blip one, with a description.
+        let mut fsp = 0u32.to_le_bytes().to_vec();
+        fsp.extend_from_slice(&0u32.to_le_bytes());
+        let mut shape = record(SHAPE_TYPE_PICTURE << 4, ART_FSP, &fsp);
+        let alt: Vec<u8> = "A green pixel."
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let mut props = PID_BLIP_INDEX.to_le_bytes().to_vec();
+        props.extend_from_slice(&1u32.to_le_bytes());
+        props.extend_from_slice(&(PID_DESCRIPTION | 0x8000).to_le_bytes());
+        props.extend_from_slice(&(alt.len() as u32).to_le_bytes());
+        props.extend_from_slice(&alt);
+        shape.extend(art_atom(2, ART_FOPT, &props));
+
+        assert_eq!(
+            shape_picture(&shape),
+            Some((1, Some("A green pixel.".to_string())))
+        );
+    }
+
     #[test]
     fn reads_a_hyperlink_over_the_characters_it_covers() {
         // The target list, as it sits at the top of the document.
