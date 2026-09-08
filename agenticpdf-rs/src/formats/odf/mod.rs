@@ -515,6 +515,15 @@ fn read_blocks(
         match event {
             Event::End(name) if name == closer => break,
             Event::Start(element) => match (element.ns.as_str(), element.local.as_str()) {
+                // What the author deleted, kept in the file so the change can
+                // be rejected. LibreOffice collects it in a block of its own at
+                // the top of the body and leaves a marker where it stood; read
+                // as body text it came back as a paragraph before the document.
+                // The insertions are the other half and need nothing: their
+                // text is in place, wrapped in markers this reader ignores.
+                (ns::ODF_TEXT, "tracked-changes") => {
+                    let _ = xml::text_of(reader, &element.qname);
+                }
                 (ns::ODF_TEXT, "h") => {
                     // The outline level is stated on the element itself, which
                     // is more reliable than deducing it from the style name.
@@ -951,6 +960,16 @@ fn read_inline_run(
                 // text box. The picture belongs in the sentence; the text box
                 // is content of its own, and reading only the picture case
                 // dropped it -- as all four readers of one document did.
+                // The same text box, drawn by the other producer. LibreOffice
+                // writes a shape whose paragraphs are its own children rather
+                // than a frame around a `<draw:text-box>`, and anchors it in
+                // the heading -- so the box's text arrived spliced into the
+                // title, which is neither where nor what it is.
+                (ns::ODF_DRAW, "custom-shape") => {
+                    let blocks =
+                        read_blocks(reader, &element.qname, package, document, 1, &mut None);
+                    package.deferred.extend(blocks);
+                }
                 (ns::ODF_DRAW, "frame") => {
                     for block in read_frame_blocks(reader, &element, package, document) {
                         match block {

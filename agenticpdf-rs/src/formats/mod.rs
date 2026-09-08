@@ -117,10 +117,28 @@ pub(crate) fn list_style_level(name: &str) -> Option<u8> {
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    let rest = ["listbullet", "listnumber", "listcontinue"]
-        .iter()
-        .find_map(|prefix| compact.strip_prefix(prefix))?;
-    rest.parse::<u8>().ok().filter(|l| (2..=9).contains(l)).map(|l| l - 1)
+    // The two producers name the same depth differently. Word writes
+    // `ListBullet2` for the second level and `ListBullet` for the first, so the
+    // number is one more than the depth. LibreOffice writes `List 2` and
+    // `List 1`, which comes to the same arithmetic. Longer prefixes are tried
+    // first, or `list` would swallow `listbullet2` and find no number after it.
+    let rest = [
+        "listbullet",
+        "listnumber",
+        "listcontinue",
+        "numbering",
+        "list",
+    ]
+    .iter()
+    .find_map(|prefix| {
+        compact
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.parse::<u8>().ok())
+    })?;
+    match (2..=9).contains(&rest) {
+        true => Some(rest - 1),
+        false => None,
+    }
 }
 
 /// Append a list item at `level`, creating or nesting lists as needed.

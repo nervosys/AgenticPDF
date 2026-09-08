@@ -341,6 +341,62 @@ fn odt_reads_a_depth_from_an_escaped_style_name() {
     );
 }
 
+/// The other producer's spelling of the same depth.
+///
+/// LibreOffice does not name the list style on the paragraph: it names an
+/// automatic style whose *parent* is the built-in one, and it calls the levels
+/// `List 1` and `List 2` where Word calls them `ListBullet` and `ListBullet2`.
+/// Converting a Word document with LibreOffice and diffing the two came back
+/// flat, which is what a rule written from the specification and never run
+/// against the producer it describes buys you.
+#[test]
+fn odt_reads_a_depth_a_paragraph_style_inherits() {
+    let styles = r#"<style:style style:name="P1" style:family="paragraph" style:parent-style-name="List_20_1"/>
+        <style:style style:name="P2" style:family="paragraph" style:parent-style-name="List_20_2"/>"#;
+    let zip = odt(
+        styles,
+        r#"<text:list><text:list-item>
+             <text:p text:style-name="P1">one</text:p></text:list-item></text:list>
+           <text:list><text:list-item>
+             <text:p text:style-name="P2">under</text:p></text:list-item></text:list>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "- one\n  - under\n"
+    );
+}
+
+/// What the author deleted is in the file but is not in the document.
+#[test]
+fn odt_leaves_a_tracked_deletion_out() {
+    let zip = odt(
+        "",
+        r#"<text:tracked-changes><text:changed-region text:id="c1"><text:deletion>
+             <text:p>original wording</text:p></text:deletion></text:changed-region>
+           </text:tracked-changes>
+           <text:p>The <text:change-start text:change-id="c2"/>revised<text:change-end
+             text:change-id="c2"/><text:change text:change-id="c1"/> wording.</text:p>"#,
+    );
+    let markdown = to_markdown(&parse(&zip, Format::Odt).unwrap());
+    assert_eq!(markdown, "The revised wording.\n");
+}
+
+/// A text box LibreOffice drew as a shape is content of its own.
+#[test]
+fn odt_reads_a_text_box_drawn_as_a_shape() {
+    let zip = odt(
+        "",
+        r#"<text:h text:outline-level="1"><draw:custom-shape text:anchor-type="char"
+             draw:name="Text Box 1"><text:p>Text box content.</text:p>
+             <draw:enhanced-geometry draw:type="ooxml-rect"/></draw:custom-shape>Title</text:h>"#,
+    );
+    // Not spliced into the title, and not lost either.
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "# Title\n\nText box content.\n"
+    );
+}
+
 /// A list already nested in the markup is not nested a second time.
 ///
 /// The depth from the style is relative to where the list sits: a nested
