@@ -876,21 +876,9 @@ fn read_pictures(pictures: &[u8]) -> Vec<(String, Vec<u8>)> {
         }
         at = next;
 
-        // The header is an identifier and a tag; an odd instance means the
-        // identifier is written twice. Metafiles carry a larger header this
-        // reader has no use for, since it cannot draw them either.
-        let media = match record.kind {
-            0xF01D | 0xF018 => "image/jpeg",
-            0xF01E => "image/png",
-            0xF01F => "image/bmp",
-            _ => continue,
-        };
-        let uids = match record.instance() & 1 == 1 {
-            true => 2,
-            false => 1,
-        };
-        let header = uids * 16 + 1;
-        if let Some(bytes) = record.body.get(header..) {
+        if let Some((media, bytes)) =
+            super::blip_payload(record.kind, record.instance(), record.body)
+        {
             blips.push((media.to_string(), bytes.to_vec()));
         }
     }

@@ -148,6 +148,9 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         note_bodies: Vec::new(),
         notes: Vec::new(),
         boxes: Vec::new(),
+        data: data_stream.clone(),
+        assets: Vec::new(),
+        seen_pictures: HashMap::new(),
     };
 
     // Built before the body, so a reference found there resolves to one.
@@ -197,14 +200,20 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     if !anchored && let Some((lo, hi)) = textbox_range {
         blocks.extend(assembler.build(lo, hi));
     }
-    Ok(SemanticDoc {
+    let mut document = SemanticDoc {
         sections: vec![Section {
             blocks,
             ..Section::default()
         }],
         footnotes: std::mem::take(&mut assembler.notes),
         ..SemanticDoc::default()
-    })
+    };
+    // Registered in the order they were met, which is the order the ids handed
+    // out while reading assumed.
+    for (media, bytes) in std::mem::take(&mut assembler.assets) {
+        document.add_asset(media, bytes);
+    }
+    Ok(document)
 }
 
 /// The character positions a reference table names.
@@ -223,6 +232,56 @@ fn reference_positions(word: &[u8], table: &[u8], fib_offset: usize) -> Vec<u32>
     (0..count)
         .filter_map(|index| u32_at(table, fc + index * 4))
         .collect()
+}
+
+/// The picture at an offset in the `Data` stream.
+///
+/// A `PICF` header says how long the whole record is and how long the header
+/// itself is; what follows is OfficeArt, the same drawing format PowerPoint
+/// stores its pictures in. The bytes sit inside a `BLIP` record, which in a
+/// document is wrapped in the store entry that would name it if the file kept
+/// its pictures in one place.
+fn picture_at(data: &[u8], offset: usize) -> Option<(&'static str, Vec<u8>)> {
+    let length = u32_at(data, offset)? as usize;
+    let header = u16_at(data, offset + 4)? as usize;
+    let art = data.get(offset + header..offset.checked_add(length)?)?;
+    find_blip(art, 0).map(|(media, bytes)| (media, bytes.to_vec()))
+}
+
+/// Walk OfficeArt records for the first `BLIP`.
+fn find_blip(data: &[u8], depth: usize) -> Option<(&'static str, &[u8])> {
+    /// `msofbtBSE`: a store entry whose fixed header precedes the blip itself.
+    const ART_BSE: u16 = 0xF007;
+    const BSE_HEADER: usize = 36;
+
+    if depth > 8 {
+        return None;
+    }
+    let mut at = 0usize;
+    while at + 8 <= data.len() {
+        let version = u16_at(data, at)?;
+        let kind = u16_at(data, at + 2)?;
+        let length = u32_at(data, at + 4)? as usize;
+        let body = data.get(at + 8..at + 8 + length)?;
+
+        if let Some(found) = super::blip_payload(kind, version >> 4, body) {
+            return Some(found);
+        }
+        // A container holds records; a store entry holds one behind a header
+        // of its own, which is why its body is entered at an offset.
+        let inner = match (version & 0x0F == 0x0F, kind == ART_BSE) {
+            (_, true) => body.get(BSE_HEADER..),
+            (true, false) => Some(body),
+            _ => None,
+        };
+        if let Some(inner) = inner
+            && let Some(found) = find_blip(inner, depth + 1)
+        {
+            return Some(found);
+        }
+        at += 8 + length;
+    }
+    None
 }
 
 /// The shapes anchored in the main text, as position and shape id.
@@ -846,6 +905,12 @@ struct Assembler {
     /// Text boxes waiting for the paragraph they are anchored in to end,
     /// ordered by that anchor.
     boxes: Vec<(usize, Vec<Block>)>,
+    /// The `Data` stream, where a picture's bytes are.
+    data: Vec<u8>,
+    /// Pictures registered so far, and the offset each was read from, so a
+    /// picture used twice is stored once.
+    assets: Vec<(String, Vec<u8>)>,
+    seen_pictures: HashMap<usize, String>,
 }
 
 /// A paragraph's resolved properties.
@@ -974,6 +1039,15 @@ impl Assembler {
                             let (_, box_blocks) = self.boxes.remove(0);
                             blocks.extend(box_blocks);
                         }
+                    }
+                }
+                // The character a picture is anchored at. It stands in for
+                // the picture and carries only the offset to it, so read as a
+                // character it is nothing at all -- which is what the .doc of
+                // a document with a figure in it reported.
+                '\u{01}' => {
+                    if let Some(image) = self.place_picture(fc, index) {
+                        content.push(Inline::Image(image));
                     }
                 }
                 // A line break inside a paragraph.
@@ -1202,6 +1276,24 @@ impl Assembler {
     /// State is keyed by list identity rather than by the reference, so every
     /// override of the same list continues one sequence — which is what makes
     /// a list interrupted by a paragraph resume at the right number.
+    /// The picture a character stands in for, registered once per offset.
+    fn place_picture(&mut self, fc: u32, index: usize) -> Option<crate::doc::ImageRef> {
+        let offset = self.char_props(fc, index).picture? as usize;
+        let reference = |id: String| crate::doc::ImageRef {
+            asset_id: id,
+            ..crate::doc::ImageRef::default()
+        };
+        if let Some(id) = self.seen_pictures.get(&offset) {
+            return Some(reference(id.clone()));
+        }
+        let (media, bytes) = picture_at(&self.data, offset)?;
+        // The ids the document will hand out, in the order these are added.
+        let id = format!("asset{}", self.assets.len() + 1);
+        self.assets.push((media.to_string(), bytes));
+        self.seen_pictures.insert(offset, id.clone());
+        Some(reference(id))
+    }
+
     fn next_number(&mut self, list: &ListDef, level: usize) -> u64 {
         let values = self.counters.entry(list.lsid).or_insert([0; LEVELS]);
         let value = if values[level] == 0 {
@@ -1355,6 +1447,58 @@ mod tests {
         word[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
         word[offset + 4..offset + 8].copy_from_slice(&(len as u32).to_le_bytes());
         word
+    }
+
+    /// A picture's bytes are behind a `PICF`, in the drawing format.
+    ///
+    /// The layout was read out of the same document written by Word and by
+    /// LibreOffice: both put the blip 61 bytes into the store entry -- its own
+    /// 36-byte header, then an 8-byte record header, one 16-byte identifier
+    /// and a tag. Without following it the .doc of a document with a figure in
+    /// it was the one form of that document reporting no figure.
+    #[test]
+    fn follows_a_picture_header_to_the_bytes_behind_it() {
+        // A record: version and instance, type, length, body.
+        let record = |version: u16, kind: u16, body: &[u8]| {
+            let mut out = version.to_le_bytes().to_vec();
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+
+        // One identifier and a tag, because the instance is even.
+        let mut blip_body = vec![0u8; 17];
+        blip_body.extend_from_slice(b"PNGBYTES");
+        let blip = record(0x6E0, 0xF01E, &blip_body);
+
+        let mut store = vec![0u8; 36]; // the entry's own header
+        store.extend_from_slice(&blip);
+        let art = record(0x000F, 0xF002, &record(0x0000, 0xF007, &store));
+
+        // The `PICF`: total length, then the length of the header itself.
+        const HEADER: usize = 68;
+        let mut data = vec![0u8; 8]; // the picture does not start at zero
+        let offset = data.len();
+        let total = HEADER + art.len();
+        data.extend_from_slice(&(total as u32).to_le_bytes());
+        data.extend_from_slice(&(HEADER as u16).to_le_bytes());
+        data.resize(offset + HEADER, 0);
+        data.extend_from_slice(&art);
+
+        assert_eq!(
+            picture_at(&data, offset),
+            Some(("image/png", b"PNGBYTES".to_vec()))
+        );
+    }
+
+    /// A header claiming more than the stream holds reads as no picture.
+    #[test]
+    fn a_picture_header_running_past_the_stream_is_not_read() {
+        let mut data = 4096u32.to_le_bytes().to_vec();
+        data.extend_from_slice(&68u16.to_le_bytes());
+        data.resize(80, 0);
+        assert_eq!(picture_at(&data, 0), None);
     }
 
     /// A text box says where it belongs in two tables, not one.

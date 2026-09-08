@@ -18,6 +18,27 @@
 pub mod doc;
 pub mod ppt;
 pub mod sprm;
+
+/// The bytes an OfficeArt `BLIP` record holds, and the type they are.
+///
+/// The record opens with one or two 16-byte identifiers -- the odd instance
+/// values are the ones that write it twice -- and then a tag byte, before the
+/// file itself. Only the forms a reader can hand on: a metafile is a drawing
+/// to be executed rather than an image, and the two formats that embed one
+/// carry a larger header this reader has no use for either way.
+pub(crate) fn blip_payload(kind: u16, instance: u16, body: &[u8]) -> Option<(&'static str, &[u8])> {
+    let media = match kind {
+        0xF01D | 0xF018 => "image/jpeg",
+        0xF01E => "image/png",
+        0xF01F => "image/bmp",
+        _ => return None,
+    };
+    let identifiers = match instance & 1 == 1 {
+        true => 2,
+        false => 1,
+    };
+    Some((media, body.get(identifiers * 16 + 1..)?))
+}
 pub mod stsh;
 pub mod xls;
 

@@ -85,6 +85,9 @@ pub struct CharProps {
     /// the file, and showing it presents wording the author removed as though
     /// it stood.
     pub deleted: bool,
+    /// `sprmCPicLocation`: where in the `Data` stream this character's
+    /// picture is. Set only on the 0x01 that stands in for the picture.
+    pub picture: Option<u32>,
     /// `sprmCIss`: raised or lowered off the baseline. Not decoration -- it is
     /// what tells `H2O` from `H<sub>2</sub>O` and `m2` from `m<sup>2</sup>`.
     pub superscript: bool,
@@ -160,6 +163,10 @@ pub fn apply_chpx(grpprl: &[u8], current: CharProps, style_base: CharProps) -> C
                 props.deleted = value;
             }
         }
+        // sprmCPicLocation: an offset into the `Data` stream, where the
+        // picture's header and its bytes are. The character itself is a 0x01
+        // standing in for the picture, and carries nothing else about it.
+        0x6A03 => props.picture = crate::container::ole::u32_at(operand, 0),
         // sprmCIss: 1 raises the run off the baseline and 2 lowers it, which
         // is what both producers write for a superscript and a subscript.
         0x2A48 => {
