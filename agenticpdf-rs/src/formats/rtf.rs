@@ -127,6 +127,8 @@ struct Parser<'a> {
     /// automatic colour, which the table's first entry always is.
     /// Whether the next character must begin a run of its own.
     break_run: bool,
+    /// Notes being captured, innermost last. A note may hold a note.
+    notes: Vec<NoteCapture>,
     /// The instruction of the field being read, if any.
     field_instruction: String,
     /// The field result being gathered, so its runs can become a link.
@@ -183,6 +185,7 @@ impl<'a> Parser<'a> {
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
             list_styles: HashMap::new(),
+            notes: Vec::new(),
             break_run: false,
             field_instruction: String::new(),
             field: None,
@@ -217,6 +220,11 @@ impl<'a> Parser<'a> {
                 }
                 b'}' => {
                     self.at += 1;
+                    // The note's group is ending, so what it produced is its
+                    // body and the reference belongs where it started.
+                    if self.notes.last().is_some_and(|n| n.depth == self.stack.len()) {
+                        self.finish_note();
+                    }
                     // The result group is ending, so the runs it produced are
                     // the link's text.
                     if self.field.as_ref().is_some_and(|f| f.depth == self.stack.len()) {
@@ -342,10 +350,22 @@ impl<'a> Parser<'a> {
             // -- Destinations ------------------------------------------
             "listtable" | "listoverridetable" | "pict" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
-            | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr" | "footnote"
+            | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr"
             | "annotation" | "bkmkstart" | "bkmkend" | "filetbl"
             | "revtbl" | "upr" => {
                 self.state.destination = Destination::Discard;
+            }
+            // A note is written inline, in the group following its marker,
+            // rather than in a stream of its own. Discarding the group threw
+            // the note away; what belongs in the sentence is a reference to it,
+            // and the text belongs in the document's notes -- which is where
+            // the .docx and .odt of the same document now put theirs.
+            "footnote" => {
+                self.notes.push(NoteCapture {
+                    depth: self.stack.len(),
+                    runs: std::mem::take(&mut self.runs),
+                    blocks: std::mem::take(&mut self.blocks),
+                });
             }
             // A field's instruction says what it is; its result is the text
             // the reader should show. Discarding the whole group threw the
@@ -617,6 +637,31 @@ impl<'a> Parser<'a> {
                 )));
             }
         }
+    }
+
+    /// Close a note: its blocks become the body, and a reference takes its
+    /// place in the sentence that held it.
+    fn finish_note(&mut self) {
+        // Whatever the note's last paragraph gathered is part of the body.
+        self.end_paragraph();
+        let Some(capture) = self.notes.pop() else {
+            return;
+        };
+        let body = std::mem::replace(&mut self.blocks, capture.blocks);
+        self.runs = capture.runs;
+
+        if body.is_empty() {
+            return;
+        }
+        let index = self.document.footnotes.len();
+        self.document.footnotes.push(crate::doc::Footnote {
+            label: None,
+            blocks: body,
+        });
+        // The reference is text of its own, so it must not be swallowed by the
+        // run before it.
+        self.break_run = true;
+        self.runs.push(Inline::FootnoteRef { index });
     }
 
     /// Turn the runs a field result produced into a link, where it is one.
@@ -901,6 +946,18 @@ fn parse_leading_number(text: &str) -> Option<u64> {
 /// The range 0x80-0x9F is where it differs from Latin-1 — those are the curly
 /// quotes and dashes that dominate real documents, so getting them right
 /// matters more than the rest of the table.
+/// A note being captured, and what the document was building before it.
+///
+/// Held on a stack because a note may hold a note, and because the paragraph
+/// interrupted by one has to be given back exactly as it was.
+#[derive(Debug)]
+struct NoteCapture {
+    /// Group depth the note opened at, so the right `}` closes it.
+    depth: usize,
+    runs: Vec<Inline>,
+    blocks: Vec<Block>,
+}
+
 /// The field result being gathered, and where its runs began.
 #[derive(Debug, Clone)]
 struct FieldResult {
@@ -1250,6 +1307,48 @@ mod tests {
     /// The whole `\field` group was discarded, which threw the result away with
     /// the instruction: a hyperlink's text vanished entirely, where the .docx
     /// and .odt of the same document both produced a link.
+    /// A note is written inline, in the group following its marker.
+    ///
+    /// Discarding that group along with the headers and footers threw the note
+    /// away entirely. What belongs in the sentence is a reference; the text
+    /// belongs in the document's notes, which is where the .docx and .odt of
+    /// the same document put theirs.
+    #[test]
+    fn reads_a_footnote() {
+        let rtf = format!(
+            r"{HEADER}\pard A claim{{\super\chftn}}{{\footnote \pard The source.\par}} stands.\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+        assert_eq!(document.footnotes.len(), 1);
+        assert_eq!(
+            crate::doc::to_markdown(&document),
+            "A claim[^1] stands.\n\n[^1]: The source.\n"
+        );
+    }
+
+    /// The paragraph a note interrupts is given back exactly as it was.
+    #[test]
+    fn a_note_does_not_disturb_the_paragraph_holding_it() {
+        let rtf = format!(
+            r"{HEADER}\pard Before{{\footnote \pard Note one.\par}} between{{\footnote \pard Note two.\par}} after.\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+        assert_eq!(document.footnotes.len(), 2);
+        assert_eq!(
+            crate::doc::to_markdown(&document),
+            "Before[^1] between[^2] after.\n\n[^1]: Note one.\n[^2]: Note two.\n"
+        );
+    }
+
+    /// An empty note is no note at all.
+    #[test]
+    fn an_empty_note_adds_nothing() {
+        let rtf = format!(r"{HEADER}\pard Text{{\footnote }} more.\par}}");
+        let document = parse_rtf(rtf.as_bytes());
+        assert!(document.footnotes.is_empty());
+        assert_eq!(crate::doc::to_markdown(&document), "Text more.\n");
+    }
+
     #[test]
     fn reads_a_hyperlink_field() {
         let rtf = format!(
