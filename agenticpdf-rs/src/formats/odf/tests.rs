@@ -637,6 +637,48 @@ fn odp(body: &str) -> Vec<u8> {
     )
 }
 
+/// A table template formats the header row, not the runs.
+///
+/// OpenDocument's answer to `<w:tblStylePr>` and `<a:tblStyle>`, and the third
+/// way one deck states the same thing: PowerPoint's .odp export writes a
+/// `<table:table-template>` and the table names it, so the .odp of a deck
+/// reported a plain header where the .pptx and .ppt both reported a bold one.
+#[test]
+fn odp_resolves_a_table_template() {
+    let styles = r#"
+        <style:style style:name="hdr" style:family="table-cell">
+          <style:text-properties fo:font-weight="bold"/></style:style>
+        <style:style style:name="col" style:family="table-cell">
+          <style:text-properties fo:font-style="italic"/></style:style>
+        <table:table-template table:name="T">
+          <table:first-row table:style-name="hdr"/>
+          <table:first-column table:style-name="col"/>
+        </table:table-template>"#;
+    // The template declares a first-column italic that this table does not ask
+    // for, so it must not appear.
+    // A table on a slide sits inside a frame, as PowerPoint's export writes it.
+    let body = r#"<office:presentation><draw:page draw:name="One"><draw:frame>
+        <table:table table:template-name="T" table:use-first-row-styles="true"
+                     table:use-first-column-styles="false">
+          <table:table-row>
+            <table:table-cell office:value-type="string"><text:p>Region</text:p></table:table-cell>
+            <table:table-cell office:value-type="string"><text:p>Growth</text:p></table:table-cell>
+          </table:table-row>
+          <table:table-row>
+            <table:table-cell office:value-type="string"><text:p>EMEA</text:p></table:table-cell>
+            <table:table-cell office:value-type="string"><text:p>8%</text:p></table:table-cell>
+          </table:table-row>
+        </table:table></draw:frame></draw:page></office:presentation>"#;
+    let zip = package(MIME_ODP, styles, body, &[]);
+    let markdown = to_markdown(&parse(&zip, Format::Odp).unwrap());
+    assert!(
+        markdown.contains("| **Region** | **Growth** |"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("| EMEA | 8% |"), "{markdown}");
+    assert!(!markdown.contains("_EMEA_"), "column not asked for: {markdown}");
+}
+
 #[test]
 fn odp_makes_a_section_per_slide_with_its_title() {
     let zip = odp(r#"<draw:page draw:name="page1">

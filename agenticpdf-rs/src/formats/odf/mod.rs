@@ -163,6 +163,32 @@ pub struct Styles {
     parents: HashMap<String, String>,
     /// List style name → whether level 0 is numbered.
     ordered_lists: HashMap<String, bool>,
+    /// Table template name → the cell styles it names for each position.
+    templates: HashMap<String, TableTemplate>,
+}
+
+/// The cell styles a `<table:table-template>` names, by position.
+///
+/// OpenDocument's answer to `<w:tblStylePr>` and `<a:tblStyle>`: the same
+/// header row formatted by the table rather than on the runs. PowerPoint's .odp
+/// export writes one, so the .odp of a deck reported a plain header where the
+/// .pptx and .ppt of that deck both reported a bold one.
+#[derive(Debug, Default, Clone)]
+struct TableTemplate {
+    first_row: Option<String>,
+    last_row: Option<String>,
+    first_column: Option<String>,
+    last_column: Option<String>,
+    body: Option<String>,
+}
+
+/// Which of a template's parts a table asks for, from its own attributes.
+#[derive(Debug, Default, Clone, Copy)]
+struct TemplateParts {
+    first_row: bool,
+    last_row: bool,
+    first_column: bool,
+    last_column: bool,
 }
 
 impl Styles {
@@ -171,6 +197,7 @@ impl Styles {
         let mut reader = Reader::new(xml_bytes);
         let mut current: Option<String> = None;
         let mut list_style: Option<String> = None;
+        let mut template: Option<String> = None;
 
         while let Some(event) = reader.read_event() {
             let Event::Start(element) = event else {
@@ -208,6 +235,29 @@ impl Styles {
                         && let Some(value) = element.attr_local("text-align")
                     {
                         self.align.insert(name.clone(), parse_align(value));
+                    }
+                }
+                (ns::ODF_TABLE, "table-template") => {
+                    template = element.attr_local("name").map(str::to_string);
+                }
+                // The parts are the template's own children, each naming a
+                // cell style. Banding and the corner cells are not read: they
+                // state fills, which have nowhere to go in this model.
+                (ns::ODF_TABLE, "first-row" | "last-row" | "first-column" | "last-column"
+                    | "body") => {
+                    if let Some(name) = &template
+                        && let Some(style) = element.attr_local("style-name")
+                        && !style.is_empty()
+                    {
+                        let entry = self.templates.entry(name.clone()).or_default();
+                        let slot = match element.local.as_str() {
+                            "first-row" => &mut entry.first_row,
+                            "last-row" => &mut entry.last_row,
+                            "first-column" => &mut entry.first_column,
+                            "last-column" => &mut entry.last_column,
+                            _ => &mut entry.body,
+                        };
+                        *slot = Some(style.to_string());
                     }
                 }
                 (ns::ODF_TEXT, "list-style") => {
@@ -614,6 +664,14 @@ fn read_table(
     let mut in_header = false;
     let mut nesting = 1usize;
 
+    let template = start.attr_local("template-name").map(str::to_string);
+    let parts = TemplateParts {
+        first_row: uses(start, "use-first-row-styles"),
+        last_row: uses(start, "use-last-row-styles"),
+        first_column: uses(start, "use-first-column-styles"),
+        last_column: uses(start, "use-last-column-styles"),
+    };
+
     while let Some(event) = reader.read_event() {
         match event {
             Event::End(name) if name == start.qname => {
@@ -648,12 +706,67 @@ fn read_table(
     if rows.is_empty() {
         return None;
     }
-    Some(Table {
+    // A table that asks for first-row styling is saying its first row is a
+    // header, which is how the other two formats' equivalent flags are read.
+    if header_rows == 0 && parts.first_row {
+        header_rows = 1;
+    }
+    let mut table = Table {
         caption: None,
         header_rows,
         rows,
         column_widths: Vec::new(),
-    })
+    };
+    if let Some(template) = template.and_then(|name| package.styles.templates.get(&name).cloned()) {
+        apply_table_template(&mut table, &template, parts, &package.styles);
+    }
+    Some(table)
+}
+
+/// Whether a table asks for one of its template's parts.
+fn uses(element: &Element, attribute: &str) -> bool {
+    matches!(element.attr_local(attribute), Some("true") | Some("1"))
+}
+
+/// Lay a template's formatting under the runs a table already holds.
+///
+/// Applied once the table is built rather than while reading it, because the
+/// last row is not knowable until the rows have been counted.
+fn apply_table_template(
+    table: &mut Table,
+    template: &TableTemplate,
+    parts: TemplateParts,
+    styles: &Styles,
+) {
+    let resolve = |name: &Option<String>| name.as_ref().map(|name| styles.text_style(name));
+    let rows = table.rows.len();
+
+    for (row_index, row) in table.rows.iter_mut().enumerate() {
+        let columns = row.cells.len();
+        for (column, cell) in row.cells.iter_mut().enumerate() {
+            let mut base = resolve(&template.body).unwrap_or_default();
+            // Weakest first, so a header row beats the column it crosses.
+            for (applies, layer) in [
+                (parts.first_column && column == 0, &template.first_column),
+                (
+                    parts.last_column && columns > 0 && column + 1 == columns,
+                    &template.last_column,
+                ),
+                (parts.first_row && row_index == 0, &template.first_row),
+                (
+                    parts.last_row && rows > 0 && row_index + 1 == rows,
+                    &template.last_row,
+                ),
+            ] {
+                if applies && let Some(layer) = resolve(layer) {
+                    base = crate::doc::layer_style(&base, &layer);
+                }
+            }
+            crate::doc::walk_runs_mut(&mut cell.blocks, &mut |run| {
+                run.style = crate::doc::layer_style(&base, &run.style);
+            });
+        }
+    }
 }
 
 fn read_row(
