@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 794 Rust, 950 TypeScript |
+| Tests | 803 Rust, 950 TypeScript |
 | Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -98,6 +98,16 @@ Not every difference is a defect: a converter loses things of its own, and each
 one has to be read out of the file before it is attributed. LibreOffice's EPUB
 export writes headings as paragraphs and bullets as `<ol>`; Calibre flattens
 nested lists. Those are recorded, not fixed.
+
+**A third oracle, needing no second implementation.** Render a document to
+Markdown, read that Markdown, render it again: any difference is something the
+writer emits and the reader does not understand. Markdown is the form this tool
+most often hands to a caller, so a caller reading it back should get the
+document rather than an approximation. The check found footnotes and inline
+HTML unreadable by our own reader, and two places where the writer emitted
+whitespace that re-rendering did not reproduce. 107 of 111 real-producer files
+now render identically twice over; the four that do not differ only in blank
+lines between adjacent lists, which Markdown cannot keep apart.
 
 **Agreement is not correctness.** A differential between readers is blind to
 anything they all get wrong together, and no amount of extra formats or extra
