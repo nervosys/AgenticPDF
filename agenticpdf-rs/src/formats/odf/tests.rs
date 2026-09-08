@@ -211,6 +211,56 @@ fn odt_nests_lists() {
 /// rather than nested, so the markup says every item is at the top. What tells
 /// them apart is the style on the paragraph inside -- `ListBullet` against
 /// `ListBullet2` -- exactly as in the .docx of the same document.
+/// The .xlsx and .xls readers of the same workbook both drop a hidden sheet.
+///
+/// This one emitted its contents as an ordinary section, so a payload two
+/// readers of the same workbook excluded came through the third. OpenDocument
+/// hides a sheet through its table style rather than on the table itself.
+#[test]
+fn ods_skips_a_hidden_sheet() {
+    let styles = r#"<style:style style:name="ta1" style:family="table">
+           <style:table-properties table:display="false"/></style:style>
+         <style:style style:name="ta2" style:family="table">
+           <style:table-properties table:display="true"/></style:style>"#;
+    let body = r#"<table:table table:name="Secret" table:style-name="ta1">
+           <table:table-row><table:table-cell office:value-type="string">
+             <text:p>SHEET PAYLOAD</text:p></table:table-cell></table:table-row></table:table>
+         <table:table table:name="Main" table:style-name="ta2">
+           <table:table-row><table:table-cell office:value-type="string">
+             <text:p>visible</text:p></table:table-cell></table:table-row></table:table>"#;
+    let zip = package(
+        MIME_ODS,
+        styles,
+        &format!("<office:spreadsheet>{body}</office:spreadsheet>"),
+        &[],
+    );
+    let document = parse(&zip, Format::Ods).unwrap();
+    assert_eq!(document.sections.len(), 1);
+    assert_eq!(document.sections[0].title.as_deref(), Some("Main"));
+    assert!(!to_markdown(&document).contains("PAYLOAD"));
+}
+
+/// A hidden row or column, which OpenDocument marks `collapse`.
+#[test]
+fn ods_skips_hidden_rows_and_columns() {
+    let body = r#"<table:table table:name="Main">
+           <table:table-column/>
+           <table:table-column table:visibility="collapse"/>
+           <table:table-row>
+             <table:table-cell office:value-type="string"><text:p>visible</text:p></table:table-cell>
+             <table:table-cell office:value-type="string"><text:p>COLUMN PAYLOAD</text:p></table:table-cell>
+           </table:table-row>
+           <table:table-row table:visibility="collapse">
+             <table:table-cell office:value-type="string"><text:p>ROW PAYLOAD</text:p></table:table-cell>
+           </table:table-row>
+           <table:table-row>
+             <table:table-cell office:value-type="string"><text:p>after</text:p></table:table-cell>
+           </table:table-row></table:table>"#;
+    let markdown = to_markdown(&parse(&ods(body), Format::Ods).unwrap());
+    assert!(!markdown.contains("PAYLOAD"), "{markdown}");
+    assert_eq!(markdown, "## Main\n\n| visible |\n| --- |\n| after |\n");
+}
+
 #[test]
 fn odt_reads_a_lists_depth_from_the_paragraph_style() {
     let styles = r#"<text:list-style style:name="L1"><text:list-level-style-bullet text:level="1"/></text:list-style>"#;

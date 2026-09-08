@@ -44,6 +44,19 @@ const XF: u16 = 0x00E0;
 /// A custom number-format string, for indices at 164 and above.
 const FORMAT: u16 = 0x041E;
 const FILEPASS: u16 = 0x002F;
+const ROW: u16 = 0x0208;
+const COLINFO: u16 = 0x007D;
+
+/// `fDyZero` in a `ROW` record's flags: the row is hidden.
+///
+/// Pinned against a workbook Excel wrote with one row hidden: the hidden row's
+/// flags read 0x0120 where every visible row's read 0x0100.
+const ROW_HIDDEN: u16 = 0x0020;
+/// `fHidden` in a `COLINFO` record's flags.
+///
+/// Pinned the same way, against a visible column with a set width in another
+/// workbook: the hidden column read 0x0003 and the visible one 0x0006.
+const COLUMN_HIDDEN: u16 = 0x0001;
 
 /// Caps on the grid a single sheet may produce.
 const MAX_COLUMNS: usize = 1_024;
@@ -372,12 +385,39 @@ fn read_sheet(
     let mut records = Records::new(stream);
     records.pos = offset;
     let mut started = false;
+    // A hidden row or column is content the author chose not to show, as a
+    // hidden sheet is. Both are stated in records of their own rather than on
+    // the cells, so they are collected here and applied once the grid is built.
+    let mut hidden_rows: Vec<usize> = Vec::new();
+    let mut hidden_columns: Vec<usize> = Vec::new();
 
     for record in records {
         match record.kind {
             BOF if started => break,
             BOF => started = true,
             EOF_RECORD if started => break,
+
+            ROW => {
+                if let (Some(row), Some(flags)) = (u16_at(record.data, 0), u16_at(record.data, 12))
+                    && flags & ROW_HIDDEN != 0
+                {
+                    hidden_rows.push(row as usize);
+                }
+            }
+            COLINFO => {
+                if let (Some(first), Some(last), Some(flags)) = (
+                    u16_at(record.data, 0),
+                    u16_at(record.data, 2),
+                    u16_at(record.data, 8),
+                ) && flags & COLUMN_HIDDEN != 0
+                {
+                    // The range is inclusive, and a whole-sheet range is
+                    // bounded before being materialised.
+                    for column in first as usize..=(last as usize).min(MAX_COLUMNS) {
+                        hidden_columns.push(column);
+                    }
+                }
+            }
 
             LABELSST => {
                 if let (Some(row), Some(column), Some(index)) = (
@@ -521,8 +561,31 @@ fn read_sheet(
         }
     }
 
-    square(&mut grid);
+    remove_hidden(&mut grid, &hidden_rows, &hidden_columns);
+    crate::formats::square_grid(&mut grid);
     grid
+}
+
+/// Drop the rows and columns the sheet marked hidden.
+///
+/// Applied at the end rather than while reading: the records that state them
+/// need not precede every cell they cover, and a row block states its rows just
+/// before its own cells but says nothing about the blocks after it.
+fn remove_hidden(grid: &mut Vec<Vec<String>>, rows: &[usize], columns: &[usize]) {
+    for row in grid.iter_mut() {
+        for column in columns.iter().copied().collect::<std::collections::BTreeSet<_>>().iter().rev() {
+            if *column < row.len() {
+                row.remove(*column);
+            }
+        }
+    }
+    let drop: std::collections::BTreeSet<usize> = rows.iter().copied().collect();
+    let mut index = 0usize;
+    grid.retain(|_| {
+        let keep = !drop.contains(&index);
+        index += 1;
+        keep
+    });
 }
 
 /// The most recently written position, for attaching a formula's string result.
@@ -544,20 +607,6 @@ fn place(grid: &mut Vec<Vec<String>>, row: usize, column: usize, value: String) 
         grid[row].resize(column + 1, String::new());
     }
     grid[row][column] = value;
-}
-
-/// Trim trailing empty rows and make every row the same width.
-fn square(grid: &mut Vec<Vec<String>>) {
-    while grid
-        .last()
-        .is_some_and(|row| row.iter().all(String::is_empty))
-    {
-        grid.pop();
-    }
-    let width = grid.iter().map(Vec::len).max().unwrap_or(0);
-    for row in grid.iter_mut() {
-        row.resize(width, String::new());
-    }
 }
 
 /// Decode an RK value.
@@ -729,7 +778,7 @@ mod tests {
         let mut grid = Vec::new();
         place(&mut grid, 4, 2, "far".into());
         place(&mut grid, 0, 0, "near".into());
-        square(&mut grid);
+        crate::formats::square_grid(&mut grid);
 
         assert_eq!(grid.len(), 5, "the gap rows are kept");
         assert_eq!(grid[0][0], "near");

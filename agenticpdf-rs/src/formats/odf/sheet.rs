@@ -13,6 +13,8 @@
 //! advances rather than materialised, and only cells that actually carry a
 //! value are stored.
 
+use std::collections::HashSet;
+
 use crate::doc::{Block, Cell, Row, Section, SectionKind, SemanticDoc, Table};
 use crate::xml::{Element, Event, Reader, ns};
 
@@ -32,14 +34,41 @@ const MAX_CELLS: usize = 250_000;
 /// Read `<office:spreadsheet>`: one section per sheet.
 pub fn read(content: &[u8], document: &mut SemanticDoc) {
     let mut reader = Reader::new(content);
+    // A sheet is hidden by its table style rather than by an attribute of its
+    // own, so the styles have to be gathered on the way past. They are declared
+    // before the body, so one forward pass is enough.
+    let mut hidden_styles: HashSet<String> = HashSet::new();
+    let mut style_name: Option<String> = None;
 
     while let Some(event) = reader.read_event() {
         let Event::Start(element) = event else {
             continue;
         };
+        if element.is(ns::ODF_STYLE, "style") {
+            style_name = match element.attr_local("family") {
+                Some("table") => element.attr_local("name").map(str::to_string),
+                _ => None,
+            };
+            continue;
+        }
+        if element.is(ns::ODF_STYLE, "table-properties") {
+            if element.attr_local("display") == Some("false")
+                && let Some(name) = style_name.take()
+            {
+                hidden_styles.insert(name);
+            }
+            continue;
+        }
         if !element.is(ns::ODF_TABLE, "table") {
             continue;
         }
+
+        // The .xlsx and .xls readers of the same workbook both drop a hidden
+        // sheet; this one emitted its contents as an ordinary section, so a
+        // payload two readers excluded came through the third.
+        let sheet_hidden = element
+            .attr_local("style-name")
+            .is_some_and(|name| hidden_styles.contains(name));
 
         let name = element
             .attr_local("name")
@@ -47,6 +76,9 @@ pub fn read(content: &[u8], document: &mut SemanticDoc) {
             .unwrap_or("Sheet")
             .to_string();
         let grid = read_sheet(&mut reader, &element);
+        if sheet_hidden {
+            continue;
+        }
 
         let blocks = if grid.is_empty() {
             Vec::new()
@@ -79,6 +111,10 @@ pub fn read(content: &[u8], document: &mut SemanticDoc) {
 fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
     let mut grid: Vec<Vec<String>> = Vec::new();
     let mut nesting = 1usize;
+    // Columns are declared before the rows; the hidden ones are removed once
+    // the grid is built.
+    let mut column = 0usize;
+    let mut hidden_columns: Vec<usize> = Vec::new();
     // Empty rows seen since the last row with content. They are only worth
     // keeping if something follows: an interior gap is part of the sheet's
     // shape, while the trailing run — which spans the rest of the million-row
@@ -96,9 +132,24 @@ fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
                 }
             }
             Event::Start(element) if element.qname == start.qname => nesting += 1,
+            Event::Start(element) if element.is(ns::ODF_TABLE, "table-column") => {
+                let repeat = repeat_count(&element, "number-columns-repeated");
+                if is_collapsed(&element) {
+                    for offset in 0..repeat.min(MAX_REPEAT) {
+                        hidden_columns.push(column.saturating_add(offset));
+                    }
+                }
+                column = column.saturating_add(repeat);
+            }
             Event::Start(element) if element.is(ns::ODF_TABLE, "table-row") => {
                 let cells = read_row(reader, &element);
                 let repeat = repeat_count(&element, "number-rows-repeated");
+
+                // A hidden row is content the author chose not to show, as a
+                // hidden sheet is.
+                if is_collapsed(&element) {
+                    continue;
+                }
 
                 if cells.iter().all(String::is_empty) {
                     pending_empty = pending_empty.saturating_add(repeat);
@@ -126,26 +177,27 @@ fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
         }
     }
 
-    // Trim trailing empty rows and columns, then square the grid.
-    while grid
-        .last()
-        .is_some_and(|row| row.iter().all(String::is_empty))
-    {
-        grid.pop();
-    }
-    let width = grid
-        .iter()
-        .map(|row| {
-            row.iter()
-                .rposition(|cell| !cell.is_empty())
-                .map_or(0, |at| at + 1)
-        })
-        .max()
-        .unwrap_or(0);
     for row in &mut grid {
-        row.resize(width, String::new());
+        for at in hidden_columns.iter().rev() {
+            if *at < row.len() {
+                row.remove(*at);
+            }
+        }
     }
+
+    crate::formats::square_grid(&mut grid);
     grid
+}
+
+/// Whether a row or column states that it is not displayed.
+///
+/// `collapse` is hidden outright; `filter` is hidden by a filter, which is the
+/// same thing as far as a reader is concerned.
+fn is_collapsed(element: &Element) -> bool {
+    matches!(
+        element.attr_local("visibility"),
+        Some("collapse") | Some("filter")
+    )
 }
 
 /// Read one `<table:table-row>` into its cell values.

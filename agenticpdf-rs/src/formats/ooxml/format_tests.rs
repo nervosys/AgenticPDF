@@ -772,6 +772,42 @@ fn xlsx_skips_hidden_sheets() {
     assert_eq!(document.sections[0].title.as_deref(), Some("Visible"));
 }
 
+/// A workbook of one sheet named `S`, with the given `<worksheet>` XML.
+fn xlsx_with_sheet(sheet: &str) -> Vec<u8> {
+    let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let root = root_rels("xl/workbook.xml");
+    build_zip(&[
+        ("_rels/.rels", root.as_bytes(), true),
+        ("xl/workbook.xml", workbook.as_bytes(), true),
+        ("xl/_rels/workbook.xml.rels", rels.as_bytes(), true),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes(), true),
+    ])
+}
+
+/// A hidden row and a hidden column are content the author chose not to show.
+///
+/// The same reasoning that already skips a hidden sheet, one division down.
+/// Excel writes `<row hidden="1">` and `<col ... hidden="1">`, and both were
+/// read as ordinary cells -- so a payload in a row nobody can see came through
+/// as visible content.
+#[test]
+fn xlsx_skips_hidden_rows_and_columns() {
+    let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <cols><col min="3" max="3" hidden="1"/></cols>
+        <sheetData>
+          <row r="1"><c r="A1" t="inlineStr"><is><t>visible</t></is></c>
+                     <c r="C1" t="inlineStr"><is><t>COLUMN PAYLOAD</t></is></c></row>
+          <row r="2" hidden="1"><c r="A2" t="inlineStr"><is><t>ROW PAYLOAD</t></is></c></row>
+          <row r="3"><c r="A3" t="inlineStr"><is><t>after</t></is></c></row>
+        </sheetData></worksheet>"#;
+    let markdown = to_markdown(&open(&xlsx_with_sheet(sheet), Format::Xlsx));
+    assert!(!markdown.contains("PAYLOAD"), "{markdown}");
+    assert!(markdown.contains("visible"), "{markdown}");
+    // The hidden row is gone, not left as a gap.
+    assert_eq!(markdown, "## S\n\n| visible |\n| --- |\n| after |\n");
+}
+
 #[test]
 fn xlsx_concatenates_rich_text_shared_strings() {
     let shared = r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">

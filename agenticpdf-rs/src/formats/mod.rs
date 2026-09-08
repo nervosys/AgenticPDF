@@ -127,6 +127,35 @@ pub(crate) fn append_list_item(
     }));
 }
 
+/// Trim a sheet's empty edges and make it rectangular.
+///
+/// Every spreadsheet reader produces a ragged grid and has to square it before
+/// it can be a table, and all three had their own copy. Two of them measured
+/// the width as the longest row, which counts a trailing empty column as a
+/// column: removing a hidden column at the right-hand edge left the same
+/// workbook one column wider through `.xlsx` and `.xls` than through `.ods`.
+pub(crate) fn square_grid(grid: &mut Vec<Vec<String>>) {
+    while grid
+        .last()
+        .is_some_and(|row| row.iter().all(String::is_empty))
+    {
+        grid.pop();
+    }
+    // The last column holding anything, rather than the longest row.
+    let width = grid
+        .iter()
+        .map(|row| {
+            row.iter()
+                .rposition(|cell| !cell.is_empty())
+                .map_or(0, |at| at + 1)
+        })
+        .max()
+        .unwrap_or(0);
+    for row in grid.iter_mut() {
+        row.resize(width, String::new());
+    }
+}
+
 pub(crate) fn format_number(value: f64) -> String {
     if !value.is_finite() {
         return String::new();

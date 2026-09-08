@@ -133,23 +133,48 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Ve
     let mut reader = Reader::new(xml);
     let mut cells_read = 0usize;
     let mut row_index = 0usize;
+    // A hidden row or column is content the author chose not to show, and its
+    // text is as extractable as any other -- the same reasoning that already
+    // skips a hidden sheet, one division down. Columns are stated before the
+    // rows and removed once the grid is built.
+    let mut row_hidden = false;
+    let mut hidden_columns: Vec<usize> = Vec::new();
+    let mut hidden_rows: Vec<usize> = Vec::new();
 
     while let Some(event) = reader.read_event() {
         let Event::Start(element) = event else {
             continue;
         };
         match element.local.as_str() {
+            "col" => {
+                if matches!(element.attr_local("hidden"), Some("1") | Some("true")) {
+                    let first = attr_i64(&element, "min").unwrap_or(1).max(1) as usize;
+                    let last = attr_i64(&element, "max").unwrap_or(0).max(1) as usize;
+                    // The range is inclusive and 1-based, and may span the
+                    // whole sheet, so it is bounded before being materialised.
+                    for column in first..=last.min(MAX_COLUMNS) {
+                        hidden_columns.push(column - 1);
+                    }
+                }
+            }
             "row" => {
                 // `r` is 1-based; a missing one means "the next row".
                 row_index = attr_i64(&element, "r")
                     .map(|r| (r.max(1) as usize) - 1)
                     .unwrap_or(grid.len());
+                row_hidden = matches!(element.attr_local("hidden"), Some("1") | Some("true"));
+                if row_hidden {
+                    hidden_rows.push(row_index);
+                }
             }
             "c" => {
                 if cells_read >= MAX_CELLS_PER_SHEET {
                     break;
                 }
                 cells_read += 1;
+                if row_hidden {
+                    continue;
+                }
 
                 let (column, row) = cell_position(&element, row_index, &grid);
                 if column >= MAX_COLUMNS {
@@ -172,18 +197,24 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Ve
         }
     }
 
-    // Trim wholly empty trailing rows, then square the grid so every row has
-    // the same width — a GFM table has to be rectangular.
-    while grid
-        .last()
-        .is_some_and(|row| row.iter().all(|c| c.is_empty()))
-    {
-        grid.pop();
-    }
-    let width = grid.iter().map(Vec::len).max().unwrap_or(0);
     for row in &mut grid {
-        row.resize(width, String::new());
+        for column in hidden_columns.iter().rev() {
+            if *column < row.len() {
+                row.remove(*column);
+            }
+        }
     }
+    // Dropped outright rather than left blank: skipping only the cells would
+    // leave a gap where the row was, and the other two readers of the same
+    // workbook remove the row itself.
+    let mut index = 0usize;
+    grid.retain(|_| {
+        let keep = !hidden_rows.contains(&index);
+        index += 1;
+        keep
+    });
+
+    crate::formats::square_grid(&mut grid);
     grid
 }
 
