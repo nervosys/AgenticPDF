@@ -373,6 +373,39 @@ fn odt_reads_hyperlinks() {
     );
 }
 
+/// A text box anchored in a paragraph is content, not part of the sentence.
+///
+/// The inline frame reader looked only for a picture, so a text box's text was
+/// dropped -- as it was by all four readers of one document. It cannot go
+/// inline either: it is a box beside the text, not a word in it.
+#[test]
+fn odt_reads_a_text_box_anchored_in_a_paragraph() {
+    let zip = odt(
+        "",
+        r#"<text:p>Before the box.<draw:frame text:anchor-type="paragraph" draw:name="Text Box 1">
+             <draw:text-box><text:p>Box content.</text:p></draw:text-box></draw:frame></text:p>
+           <text:p>After the box.</text:p>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "Before the box.\n\nBox content.\n\nAfter the box.\n"
+    );
+}
+
+/// A picture in the same position is still part of the sentence.
+#[test]
+fn odt_keeps_an_anchored_picture_inline() {
+    let zip = package(
+        MIME_ODT,
+        "",
+        r#"<office:text><text:p>See <draw:frame draw:name="Chart">
+             <draw:image xlink:href="Pictures/one.png"/></draw:frame> there.</text:p></office:text>"#,
+        &[("Pictures/one.png", b"\x89PNG\r\n\x1a\n", false)],
+    );
+    let markdown = to_markdown(&parse(&zip, Format::Odt).unwrap());
+    assert!(markdown.contains("See !["), "inline, not a block: {markdown}");
+}
+
 #[test]
 fn odt_registers_embedded_pictures() {
     let image = png_header(640, 480);

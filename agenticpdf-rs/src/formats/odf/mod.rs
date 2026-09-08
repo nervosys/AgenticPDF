@@ -56,6 +56,7 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
         archive: &archive,
         styles,
         images: HashMap::new(),
+        deferred: Vec::new(),
     };
 
     match format {
@@ -96,6 +97,10 @@ pub struct Package<'a> {
     styles: Styles,
     /// Archive path → registered asset id, so an image used twice is stored once.
     images: HashMap<String, String>,
+    /// Blocks a frame produced while a paragraph was being read, to be emitted
+    /// after it. A text box is anchored inside a paragraph but is not part of
+    /// the sentence, so its content cannot go inline and must not be lost.
+    deferred: Vec<Block>,
 }
 
 impl Package<'_> {
@@ -585,6 +590,13 @@ fn read_blocks(
             },
             _ => {}
         }
+
+        // A text box anchored inside the paragraph just read is content of its
+        // own, and belongs after it rather than inside the sentence.
+        if !package.deferred.is_empty() {
+            let deferred = std::mem::take(&mut package.deferred);
+            blocks.extend(deferred);
+        }
     }
     blocks
 }
@@ -921,9 +933,19 @@ fn read_inline_run(
                 }
                 (ns::ODF_TEXT, "tab") => push_run(into, Run::styled("\t", inherited.clone())),
                 (ns::ODF_TEXT, "line-break") => into.push(Inline::Break),
+                // A frame anchored inside a paragraph wraps a picture or a
+                // text box. The picture belongs in the sentence; the text box
+                // is content of its own, and reading only the picture case
+                // dropped it -- as all four readers of one document did.
                 (ns::ODF_DRAW, "frame") => {
-                    if let Some(image) = read_frame(reader, &element, package, document) {
-                        into.push(Inline::Image(image));
+                    for block in read_frame_blocks(reader, &element, package, document) {
+                        match block {
+                            Block::Figure {
+                                image,
+                                caption: None,
+                            } => into.push(Inline::Image(image)),
+                            other => package.deferred.push(other),
+                        }
                     }
                 }
                 // A note's text is not body text -- spliced into the
@@ -990,60 +1012,6 @@ fn read_note(
     Some(index)
 }
 
-/// Read a `<draw:frame>`, registering the picture it wraps.
-fn read_frame(
-    reader: &mut Reader,
-    start: &Element,
-    package: &mut Package,
-    document: &mut SemanticDoc,
-) -> Option<ImageRef> {
-    let width = start.attr_local("width").and_then(parse_length);
-    let height = start.attr_local("height").and_then(parse_length);
-    let alt_from_name = start
-        .attr_local("name")
-        .filter(|name| !name.trim().is_empty())
-        .map(str::to_string);
-
-    let mut href: Option<String> = None;
-    let mut alt: Option<String> = None;
-    let mut nesting = 1usize;
-
-    while let Some(event) = reader.read_event() {
-        match event {
-            Event::End(name) if name == start.qname => {
-                nesting -= 1;
-                if nesting == 0 {
-                    break;
-                }
-            }
-            Event::Start(element) if element.qname == start.qname => nesting += 1,
-            Event::Start(element) => match (element.ns.as_str(), element.local.as_str()) {
-                (ns::ODF_DRAW, "image") => {
-                    href = element
-                        .attr_local("href")
-                        .filter(|value| !value.is_empty())
-                        .map(|value| value.trim_start_matches("./").to_string());
-                }
-                (ns::ODF_TEXT, "desc") | (ns::SVG, "title") | (ns::SVG, "desc") => {
-                    let text = xml::text_of(reader, &element.qname).trim().to_string();
-                    if !text.is_empty() {
-                        alt = Some(text);
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-
-    let asset_id = package.register_image(&href?, document)?;
-    Some(ImageRef {
-        asset_id,
-        alt: alt.or(alt_from_name),
-        width,
-        height,
-    })
-}
 
 fn push_run(into: &mut Vec<Inline>, run: Run) {
     if run.text.is_empty() {
