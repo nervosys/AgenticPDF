@@ -133,7 +133,7 @@ impl DocxReader<'_> {
                         // Read before the call: `read_run` borrows self.
                         // A cell's table style sits under the paragraph's own,
                         // which sits under the run's direct properties.
-                        let inherited = layer_over(
+                        let inherited = crate::doc::layer_style(
                             &self.cell_style,
                             &self.styles.text_style(&properties.style_id),
                         );
@@ -747,26 +747,6 @@ impl CellPosition {
     }
 }
 
-/// Lay one set of character properties over another.
-///
-/// A property nobody states is `false` or `None` here, which is why this is an
-/// overlay rather than a replacement: the layer only adds what it declares.
-fn layer_over(base: &TextStyle, over: &TextStyle) -> TextStyle {
-    TextStyle {
-        bold: base.bold || over.bold,
-        italic: base.italic || over.italic,
-        underline: base.underline || over.underline,
-        strikethrough: base.strikethrough || over.strikethrough,
-        code: base.code || over.code,
-        superscript: base.superscript || over.superscript,
-        subscript: base.subscript || over.subscript,
-        hidden: base.hidden || over.hidden,
-        font: over.font.clone().or_else(|| base.font.clone()),
-        size: over.size.or(base.size),
-        color: over.color.or(base.color),
-    }
-}
-
 // ============================================================================
 // Styles and numbering
 // ============================================================================
@@ -914,7 +894,7 @@ impl Styles {
         let mut style = self.text.get(id).cloned().unwrap_or_default();
         for kind in position.conditionals() {
             if let Some(layer) = self.conditional.get(&(id.to_string(), kind.to_string())) {
-                style = layer_over(&style, layer);
+                style = crate::doc::layer_style(&style, layer);
             }
         }
         style

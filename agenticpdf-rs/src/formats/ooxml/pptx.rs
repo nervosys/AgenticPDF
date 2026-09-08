@@ -45,6 +45,9 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
     let (slide_ids, page_size) = read_presentation(&presentation);
     let mut document = SemanticDoc::default();
     let mut images: HashMap<String, String> = HashMap::new();
+    // One part for the whole presentation, so it is read once rather than
+    // per slide.
+    let table_styles = read_table_styles(archive, &base);
 
     for relationship in slide_ids.into_iter().take(MAX_SLIDES) {
         let Some(path) = package.main_rels.resolve(&base, &relationship) else {
@@ -63,6 +66,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
             base: slide_base,
             document: &mut document,
             images: &mut images,
+            table_styles: &table_styles,
         };
         let (title, blocks) = slide.read_slide(&bytes, false);
 
@@ -81,6 +85,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
                     base: crate::formats::ooxml::split_path(&path).0,
                     document: &mut document,
                     images: &mut images,
+                    table_styles: &table_styles,
                 };
                 reader.read_slide(&bytes, true).1
             })
@@ -149,6 +154,132 @@ struct SlideReader<'a> {
     base: String,
     document: &'a mut SemanticDoc,
     images: &'a mut HashMap<String, String>,
+    /// The presentation's table styles, by the id a table names.
+    table_styles: &'a HashMap<String, TableStyle>,
+}
+
+/// The character formatting a DrawingML table style states, by position.
+///
+/// The same idea as WordprocessingML's `<w:tblStylePr>`: a header row and a
+/// first column are formatted by the style rather than on the runs. PowerPoint
+/// resolves it when it writes the binary format, so the .ppt of a deck reported
+/// a bold header where the .pptx of the same deck reported none.
+///
+/// Only what maps to a run's own properties is read. A cell's fill and borders
+/// have nowhere to go in this model, and the text colour is a theme reference
+/// rather than a value, which would need the theme part to resolve.
+#[derive(Debug, Default, Clone)]
+struct TableStyle {
+    whole: TextStyle,
+    first_row: TextStyle,
+    last_row: TextStyle,
+    first_column: TextStyle,
+    last_column: TextStyle,
+}
+
+/// Which of a table style's parts a table asks for, from `<a:tblPr>`.
+#[derive(Debug, Default, Clone, Copy)]
+struct TableParts {
+    first_row: bool,
+    last_row: bool,
+    first_column: bool,
+    last_column: bool,
+}
+
+/// Read `ppt/tableStyles.xml`, which every deck with a table carries.
+fn read_table_styles(archive: &ZipArchive, base: &str) -> HashMap<String, TableStyle> {
+    let mut styles: HashMap<String, TableStyle> = HashMap::new();
+    let Some(bytes) = archive.read_optional(&format!("{base}tableStyles.xml")) else {
+        return styles;
+    };
+
+    let mut reader = Reader::new(&bytes);
+    let mut current: Option<String> = None;
+    // Which part of the style the walk is inside. The parts are siblings, so
+    // each one's start replaces the last.
+    let mut part: Option<String> = None;
+
+    while let Some(event) = reader.read_event() {
+        let Event::Start(element) = event else {
+            continue;
+        };
+        if !element.in_ns(ns::A) {
+            continue;
+        }
+        match element.local.as_str() {
+            "tblStyle" => {
+                current = element.attr_local("styleId").map(str::to_string);
+                part = None;
+            }
+            "wholeTbl" | "firstRow" | "lastRow" | "firstCol" | "lastCol" | "band1H"
+            | "band2H" | "band1V" | "band2V" | "seCell" | "swCell" | "neCell" | "nwCell" => {
+                part = Some(element.local.clone());
+            }
+            "tcTxStyle" => {
+                let (Some(id), Some(part)) = (&current, &part) else {
+                    continue;
+                };
+                let style = TextStyle {
+                    bold: on(element.attr_local("b")),
+                    italic: on(element.attr_local("i")),
+                    underline: on(element.attr_local("u")),
+                    ..TextStyle::default()
+                };
+                let entry = styles.entry(id.clone()).or_default();
+                match part.as_str() {
+                    "wholeTbl" => entry.whole = style,
+                    "firstRow" => entry.first_row = style,
+                    "lastRow" => entry.last_row = style,
+                    "firstCol" => entry.first_column = style,
+                    "lastCol" => entry.last_column = style,
+                    // Banding and the corner cells state fills rather than
+                    // text in every built-in style, so nothing here reads them.
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    styles
+}
+
+/// `ST_OnOffStyleType`, which is "on" or "off" rather than the usual 1 or 0.
+fn on(value: Option<&str>) -> bool {
+    matches!(value, Some("on") | Some("1") | Some("true"))
+}
+
+/// Lay a table style's formatting under the runs a table already holds.
+///
+/// Applied once the table is built rather than while reading it, because the
+/// last row is not knowable until the rows have been counted.
+fn apply_table_style(table: &mut Table, style: &TableStyle, parts: TableParts) {
+    let rows = table.rows.len();
+    for (row_index, row) in table.rows.iter_mut().enumerate() {
+        let columns = row.cells.len();
+        for (column, cell) in row.cells.iter_mut().enumerate() {
+            let mut base = style.whole.clone();
+            // Weakest first, so a header row beats the column it crosses.
+            for (applies, layer) in [
+                (parts.first_column && column == 0, &style.first_column),
+                (
+                    parts.last_column && columns > 0 && column + 1 == columns,
+                    &style.last_column,
+                ),
+                (parts.first_row && row_index == 0, &style.first_row),
+                (
+                    parts.last_row && rows > 0 && row_index + 1 == rows,
+                    &style.last_row,
+                ),
+            ] {
+                if applies {
+                    base = crate::doc::layer_style(&base, layer);
+                }
+            }
+            crate::doc::walk_runs_mut(&mut cell.blocks, &mut |run| {
+                run.style = crate::doc::layer_style(&base, &run.style);
+            });
+        }
+    }
 }
 
 impl SlideReader<'_> {
@@ -290,6 +421,8 @@ impl SlideReader<'_> {
         let mut rows: Vec<Row> = Vec::new();
         let mut widths: Vec<f64> = Vec::new();
         let mut header_rows = 0usize;
+        let mut style_id: Option<String> = None;
+        let mut parts = TableParts::default();
         let mut depth = 1usize;
 
         while let Some(event) = reader.read_event() {
@@ -308,6 +441,17 @@ impl SlideReader<'_> {
                         Some("1" | "true") => 1,
                         _ => 0,
                     };
+                    // The same element says which parts of the style apply.
+                    parts = TableParts {
+                        first_row: header_rows == 1,
+                        last_row: on(element.attr_local("lastRow")),
+                        first_column: on(element.attr_local("firstCol")),
+                        last_column: on(element.attr_local("lastCol")),
+                    };
+                }
+                Event::Start(element) if element.is(ns::A, "tableStyleId") => {
+                    let id = crate::xml::text_of(reader, &element.qname);
+                    style_id = Some(id.trim().to_string()).filter(|id| !id.is_empty());
                 }
                 // Column widths, in EMU. The typesetter reads them
                 // proportionally, so a table keeps the shape it was drawn with
@@ -331,15 +475,19 @@ impl SlideReader<'_> {
             widths.clear();
         }
 
-        match rows.iter().all(|row| row.cells.is_empty()) {
-            true => None,
-            false => Some(Table {
-                rows,
-                header_rows,
-                caption: None,
-                column_widths: widths,
-            }),
+        if rows.iter().all(|row| row.cells.is_empty()) {
+            return None;
         }
+        let mut table = Table {
+            rows,
+            header_rows,
+            caption: None,
+            column_widths: widths,
+        };
+        if let Some(style) = style_id.and_then(|id| self.table_styles.get(&id)) {
+            apply_table_style(&mut table, style, parts);
+        }
+        Some(table)
     }
 
     /// Read one `<a:tr>`, whose cells hold text bodies like any shape's.

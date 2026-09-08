@@ -159,6 +159,29 @@ pub(crate) fn mark_hidden(blocks: &mut [Block]) {
     walk_runs_mut(blocks, &mut |run| run.style.hidden = true);
 }
 
+/// Lay one set of character properties over another.
+///
+/// A property nobody states is `false` or `None` here, which is why this is an
+/// overlay rather than a replacement: the layer only adds what it declares. Both
+/// Word and PowerPoint state a table's formatting in layers this way -- the
+/// table, then its banding, then its header row -- with a run's own properties
+/// over all of them.
+pub(crate) fn layer_style(base: &TextStyle, over: &TextStyle) -> TextStyle {
+    TextStyle {
+        bold: base.bold || over.bold,
+        italic: base.italic || over.italic,
+        underline: base.underline || over.underline,
+        strikethrough: base.strikethrough || over.strikethrough,
+        code: base.code || over.code,
+        superscript: base.superscript || over.superscript,
+        subscript: base.subscript || over.subscript,
+        hidden: base.hidden || over.hidden,
+        font: over.font.clone().or_else(|| base.font.clone()),
+        size: over.size.or(base.size),
+        color: over.color.or(base.color),
+    }
+}
+
 /// Apply `visit` to every run in these blocks, however deeply nested.
 pub(crate) fn walk_runs_mut(blocks: &mut [Block], visit: &mut impl FnMut(&mut Run)) {
     fn content(inlines: &mut [Inline], visit: &mut impl FnMut(&mut Run)) {

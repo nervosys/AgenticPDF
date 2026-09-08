@@ -673,6 +673,53 @@ fn pptx_reads_a_table_on_a_slide() {
 /// `<a:gridCol w>` gives the widths in EMU. Both were being ignored: the header
 /// was assumed rather than read, which is wrong for a table that has none, and
 /// the widths were dropped although the typesetter reads them.
+/// A DrawingML table style formats the header row, not the runs.
+///
+/// The same arrangement as WordprocessingML's `<w:tblStylePr>`: the style lives
+/// in `ppt/tableStyles.xml` and the table names it, while `<a:tblPr>` says which
+/// of its parts apply. PowerPoint resolves it when it writes the binary format,
+/// so the .ppt of a deck reported a bold header where the .pptx reported none.
+#[test]
+fn pptx_resolves_a_table_style() {
+    let table_styles = br#"<a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" def="{S}">
+        <a:tblStyle styleId="{S}" styleName="Test">
+          <a:firstRow><a:tcTxStyle b="on"/></a:firstRow>
+          <a:firstCol><a:tcTxStyle i="on"/></a:firstCol>
+          <a:lastRow><a:tcTxStyle u="on"/></a:lastRow>
+        </a:tblStyle></a:tblStyleLst>"#;
+    // `firstRow` is asked for and `firstCol` is not, so the column's italic
+    // must not appear even though the style declares it.
+    let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
+             <a:tblPr firstRow="1"><a:tableStyleId>{S}</a:tableStyleId></a:tblPr>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>Region</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>Growth</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+             <a:tr>
+               <a:tc><a:txBody><a:p><a:r><a:t>EMEA</a:t></a:r></a:p></a:txBody></a:tc>
+               <a:tc><a:txBody><a:p><a:r><a:t>8%</a:t></a:r></a:p></a:txBody></a:tc>
+             </a:tr>
+           </a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#;
+    let presentation = format!(
+        r#"<p:presentation{P_NS}><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/></p:presentation>"#
+    );
+    let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>"#;
+    let slide = format!(r#"<p:sld{P_NS}><p:cSld><p:spTree>{frame}</p:spTree></p:cSld></p:sld>"#);
+    let root = root_rels("ppt/presentation.xml");
+    let zip = build_zip(&[
+        ("_rels/.rels", root.as_bytes(), true),
+        ("ppt/presentation.xml", presentation.as_bytes(), true),
+        ("ppt/_rels/presentation.xml.rels", rels.as_bytes(), true),
+        ("ppt/tableStyles.xml", table_styles, true),
+        ("ppt/slides/slide1.xml", slide.as_bytes(), true),
+    ]);
+    let document = open(&zip, Format::Pptx);
+    assert_eq!(
+        to_markdown(&document),
+        "| **Region** | **Growth** |\n| --- | --- |\n| EMEA | 8% |\n"
+    );
+}
+
 #[test]
 fn pptx_reads_a_tables_header_row_and_column_widths() {
     let frame = r#"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>
