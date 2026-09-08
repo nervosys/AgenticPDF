@@ -350,6 +350,10 @@ impl<'a> Parser<'a> {
             // -- Destinations ------------------------------------------
             "listtable" | "listoverridetable" | "pict" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
+            // The group holding what a reader that cannot manage nested
+            // tables should show instead. A reader that can must skip it,
+            // or read the same content twice.
+            | "nonesttables"
             | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr"
             | "annotation" | "bkmkstart" | "bkmkend" | "filetbl"
             | "revtbl" | "upr" => {
@@ -535,7 +539,17 @@ impl<'a> Parser<'a> {
             "intbl" => self.state.in_table = true,
             "trowd" => self.state.in_table = true,
             "cell" => self.end_cell(),
-            "row" | "nestrow" => self.end_row(),
+            "row" => self.end_row(),
+            // A nested table's cells and rows. The nested row marker was
+            // ending a row of the *outer* table, which is how a nested
+            // table's cells came to sit in a row of their own.
+            //
+            // A pipe table cannot nest, and the writer flattens one into
+            // the cell that holds it, so the nested content stays where it
+            // is: a cell boundary is a space, and the nested row ends the
+            // paragraph.
+            "nestcell" => self.push_char(' '),
+            "nestrow" => self.end_paragraph(),
 
             // -- Unicode -----------------------------------------------
             "uc" => self.state.unicode_skip = parameter.unwrap_or(1).clamp(0, 32) as usize,
@@ -1313,6 +1327,34 @@ mod tests {
     /// away entirely. What belongs in the sentence is a reference; the text
     /// belongs in the document's notes, which is where the .docx and .odt of
     /// the same document put theirs.
+    /// A nested table's cells belong in the cell that holds them.
+    ///
+    /// The nested row marker was ending a row of the outer table, so the inner
+    /// cells came out as a row of their own -- where the .docx, .doc and .odt
+    /// of the same document all kept them inside the cell.
+    #[test]
+    fn a_nested_table_stays_inside_the_cell_holding_it() {
+        let rtf = format!(
+            r"{HEADER}\pard\intbl Outer A\cell Outer B\cell\row \pard\intbl\itap2 Inner X\nestcell Inner Y\nestcell\nestrow \pard\intbl Outer D\cell\row}}"
+        );
+        let markdown = markdown_of(&rtf);
+        assert!(markdown.contains("| Inner X Inner Y"), "{markdown}");
+        assert!(!markdown.contains("| Inner X | Inner Y |"), "{markdown}");
+    }
+
+    /// The group a reader without nested tables would show is not read twice.
+    #[test]
+    fn the_no_nested_tables_fallback_is_skipped() {
+        // A nested table always sits inside an outer one, and its content is
+        // only flushed when that outer row ends.
+        let rtf = format!(
+            r"{HEADER}\pard\intbl\itap2 Inner X\nestcell{{\nonesttables \par Fallback text.}}\nestrow \pard\intbl Outer\cell\row}}"
+        );
+        let markdown = markdown_of(&rtf);
+        assert!(markdown.contains("Inner X"), "{markdown}");
+        assert!(!markdown.contains("Fallback text."), "{markdown}");
+    }
+
     #[test]
     fn reads_a_footnote() {
         let rtf = format!(
