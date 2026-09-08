@@ -58,6 +58,8 @@ struct State {
     list_level: Option<u8>,
     /// The font in force, which decides how its bytes are decoded.
     font: Option<i64>,
+    /// Whether the text being read was struck out by a tracked change.
+    deleted: bool,
     in_table: bool,
     /// Characters still to skip after a `\uN`, from `\ucN`.
     unicode_skip: usize,
@@ -123,8 +125,6 @@ struct Parser<'a> {
     /// stylesheet — as a reader that treats it purely as a resource does —
     /// loses every heading in every document Word produced.
     heading_styles: HashMap<i64, u8>,
-    /// The `\colortbl` entries, indexed as `\cf` names them. `None` is the
-    /// automatic colour, which the table's first entry always is.
     /// Whether the next character must begin a run of its own.
     break_run: bool,
     /// Notes being captured, innermost last. A note may hold a note.
@@ -139,6 +139,8 @@ struct Parser<'a> {
     font_number: Option<i64>,
     /// The document's `\ansicpg`, used where a font names no page of its own.
     default_page: Option<u16>,
+    /// The `\colortbl` entries, indexed as `\cf` names them. `None` is the
+    /// automatic colour, which the table's first entry always is.
     colors: Vec<Option<[f64; 3]>>,
     /// Channels gathered for the entry being read.
     pending_color: Option<[u8; 3]>,
@@ -491,7 +493,10 @@ impl<'a> Parser<'a> {
                     self.state.style_ref = number;
                 }
             }
-            "plain" => self.state.style = TextStyle::default(),
+            "plain" => {
+                self.state.style = TextStyle::default();
+                self.state.deleted = false;
+            }
             "line" => self.runs.push(Inline::Break),
             "page" => {
                 self.end_paragraph();
@@ -519,6 +524,10 @@ impl<'a> Parser<'a> {
             }
 
             // -- Character formatting ----------------------------------
+            // Struck out by a tracked change: still in the file, and not
+            // part of what the document says. The .docx and .odt of the
+            // same document leave it out.
+            "deleted" => self.state.deleted = on,
             "b" => self.state.style.bold = on,
             "i" => self.state.style.italic = on,
             "strike" | "striked" => self.state.style.strikethrough = on,
@@ -635,6 +644,7 @@ impl<'a> Parser<'a> {
             Destination::Author => push_meta(&mut self.document.author, ch),
             Destination::Subject => push_meta(&mut self.document.subject, ch),
             Destination::Company => push_meta(&mut self.document.creator, ch),
+            Destination::Body if self.state.deleted => {}
             Destination::Body => {
                 // Extend the last run when the style is unchanged, so a
                 // paragraph does not become one run per character.
@@ -1353,6 +1363,25 @@ mod tests {
         let markdown = markdown_of(&rtf);
         assert!(markdown.contains("Inner X"), "{markdown}");
         assert!(!markdown.contains("Fallback text."), "{markdown}");
+    }
+
+    /// Text struck out by a tracked change is still in the file.
+    ///
+    /// Showing it presents wording the author removed as though it stood.
+    /// The .docx and .odt of the same document leave it out.
+    #[test]
+    fn tracked_deletions_are_not_shown() {
+        let rtf = format!(
+            r"{HEADER}\pard The {{\deleted old}}{{\revised new}} wording.\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "The new wording.\n");
+    }
+
+    /// `\plain` resets it, as it resets every other run property.
+    #[test]
+    fn plain_clears_the_deletion_mark() {
+        let rtf = format!(r"{HEADER}\pard \deleted gone\plain kept.\par}}");
+        assert_eq!(markdown_of(&rtf), "kept.\n");
     }
 
     #[test]

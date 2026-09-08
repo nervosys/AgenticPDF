@@ -919,6 +919,9 @@ impl Assembler {
                 // Field markers, picture placeholders and other control
                 // characters carry no text of their own.
                 character if character.is_control() => {}
+                // Struck out by a tracked change: still in the file, and not
+                // part of what the document says.
+                _ if self.is_deleted(fc, index) => {}
                 character => {
                     // An instruction names the field rather than showing text.
                     if let Some(field) = fields.last_mut()
@@ -958,7 +961,18 @@ impl Assembler {
 
     /// Character formatting in specification order: style chain, then the
     /// character grpprl, then any piece-level modifier.
+    /// Whether the character at this position was struck out by a tracked
+    /// change. Such text is still in the file but is not what it says.
+    fn is_deleted(&self, fc: u32, index: usize) -> bool {
+        self.char_props(fc, index).deleted
+    }
+
     fn char_style(&self, fc: u32, index: usize) -> TextStyle {
+        to_text_style(self.char_props(fc, index))
+    }
+
+    /// The character properties in force, before they become a text style.
+    fn char_props(&self, fc: u32, index: usize) -> CharProps {
         let para_istd = self.papx.lookup(fc).map(|props| props.istd).unwrap_or(0);
         let chpx = self
             .chpx
@@ -975,7 +989,7 @@ impl Assembler {
         {
             props = apply_chpx(prm, props, base);
         }
-        to_text_style(props)
+        props
     }
 
     fn piece_prm(&self, piece: usize) -> Option<&[u8]> {

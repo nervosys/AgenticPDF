@@ -81,6 +81,10 @@ pub struct CharProps {
     /// Text colour, where the run states one. `None` is Word's "automatic",
     /// which is the reader's default rather than a colour the document names.
     pub color: Option<[u8; 3]>,
+    /// `sprmCFRMarkDel`: struck out by a tracked change. Such text is still in
+    /// the file, and showing it presents wording the author removed as though
+    /// it stood.
+    pub deleted: bool,
 }
 
 /// The sixteen colours `sprmCIco` indexes, with "automatic" at zero.
@@ -144,6 +148,12 @@ pub fn apply_chpx(grpprl: &[u8], current: CharProps, style_base: CharProps) -> C
         0x083C => {
             if let Some(value) = toggle(operand, style_base.hidden) {
                 props.hidden = value;
+            }
+        }
+        // sprmCFRMarkDel: the run is a tracked deletion.
+        0x0800 => {
+            if let Some(value) = toggle(operand, style_base.deleted) {
+                props.deleted = value;
             }
         }
         // sprmCKul: underline kind, where 0 means none.
@@ -410,6 +420,32 @@ mod tests {
             CharProps::default(),
         );
         assert_eq!(index_zero.color, None);
+    }
+
+    /// Text struck out by a tracked change is still in the file.
+    ///
+    /// Showing it presents wording the author removed as though it stood: a
+    /// document whose .docx and .odt read "The revisedys here." read "The
+    /// revisedoriginal wording stays here." as .doc and .rtf.
+    #[test]
+    fn reads_the_tracked_deletion_mark() {
+        let marked = apply_chpx(
+            &grpprl(&[(0x0800, &[1])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert!(marked.deleted);
+
+        let plain = apply_chpx(&grpprl(&[]), CharProps::default(), CharProps::default());
+        assert!(!plain.deleted);
+
+        // It is a toggle, so it inverts what the style already said.
+        let base = CharProps {
+            deleted: true,
+            ..CharProps::default()
+        };
+        let off = apply_chpx(&grpprl(&[(0x0800, &[0])]), base, base);
+        assert!(!off.deleted);
     }
 
     #[test]
