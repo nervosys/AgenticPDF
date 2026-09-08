@@ -14,6 +14,8 @@
 //! faithful document model, not a conforming CommonMark implementation.
 
 use crate::container::zip::decode_utf8_lossy;
+use std::collections::HashMap;
+
 use crate::doc::{
     Align, Block, Cell, Inline, List, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
 };
@@ -153,8 +155,14 @@ pub fn parse_markdown(data: &[u8]) -> SemanticDoc {
     let text = decode_utf8_lossy(data);
     let lines: Vec<&str> = text.lines().collect();
     let mut doc = SemanticDoc::new();
-    let blocks = parse_blocks(&lines, 0);
+
+    // The definitions are taken out before the body is read, both because they
+    // are not body text and because a reference has to know which note it
+    // names before the paragraph holding it is built.
+    let (lines, notes) = take_footnotes(&lines);
+    let blocks = parse_blocks(&lines, 0, &notes);
     doc.body().blocks = blocks;
+    doc.footnotes = notes.definitions();
 
     // A document whose first block is a level-1 heading takes it as the title,
     // matching how the other format parsers populate metadata.
@@ -162,6 +170,96 @@ pub fn parse_markdown(data: &[u8]) -> SemanticDoc {
         doc.title = Some(crate::doc::inline_text(content));
     }
     doc
+}
+
+/// The footnotes a document defines, by the label a reference uses.
+///
+/// `[^1]: text` is not Markdown proper, but it is what this writer emits and
+/// what every Markdown that has footnotes at all spells them as.
+#[derive(Debug, Default)]
+struct Notes {
+    /// Label to position, which is the index a reference resolves to.
+    index_of: HashMap<String, usize>,
+    /// Each note's text, in the order the labels were first defined.
+    bodies: Vec<(String, String)>,
+}
+
+impl Notes {
+    fn index(&self, label: &str) -> Option<usize> {
+        self.index_of.get(label).copied()
+    }
+
+    fn definitions(&self) -> Vec<crate::doc::Footnote> {
+        self.bodies
+            .iter()
+            .map(|(label, text)| crate::doc::Footnote {
+                label: Some(label.clone()),
+                blocks: vec![Block::Paragraph {
+                    content: parse_inlines_with(text, &Notes::default()),
+                    align: crate::doc::Align::Left,
+                    indent: 0.0,
+                }],
+            })
+            .collect()
+    }
+}
+
+/// Split the footnote definitions out of a document's lines.
+///
+/// A definition runs to the end of its line; a continuation indented under it
+/// belongs to the same note, which is how the writer wraps a long one.
+fn take_footnotes<'a>(lines: &[&'a str]) -> (Vec<&'a str>, Notes) {
+    /// More labels than this is not a document with footnotes in it.
+    const MAX_NOTES: usize = 4096;
+
+    let mut kept = Vec::with_capacity(lines.len());
+    let mut notes = Notes::default();
+    let mut open: Option<usize> = None;
+
+    for line in lines {
+        if let Some((label, text)) = footnote_definition(line)
+            && notes.bodies.len() < MAX_NOTES
+        {
+            open = Some(notes.bodies.len());
+            notes
+                .index_of
+                .entry(label.to_string())
+                .or_insert(notes.bodies.len());
+            notes.bodies.push((label.to_string(), text.to_string()));
+            continue;
+        }
+        // A blank line ends the note; anything else at the left margin is the
+        // document again.
+        let continues = open.is_some()
+            && line.starts_with(&[' ', '\t'][..])
+            && !line.trim().is_empty();
+        match continues {
+            true => {
+                if let Some(at) = open
+                    && let Some((_, body)) = notes.bodies.get_mut(at)
+                {
+                    body.push(' ');
+                    body.push_str(line.trim());
+                }
+            }
+            false => {
+                open = None;
+                kept.push(*line);
+            }
+        }
+    }
+    (kept, notes)
+}
+
+/// A `[^label]: text` line, as its label and its text.
+fn footnote_definition(line: &str) -> Option<(&str, &str)> {
+    let rest = line.strip_prefix("[^")?;
+    let close = rest.find("]:")?;
+    let label = &rest[..close];
+    if label.is_empty() || label.contains('[') {
+        return None;
+    }
+    Some((label, rest[close + 2..].trim()))
 }
 
 /// Maximum nesting of lists and block quotes.
@@ -174,7 +272,7 @@ const MAX_BLOCK_DEPTH: usize = 64;
 
 /// Parse a run of lines into blocks. Recursion handles nested list content and
 /// block quotes.
-fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
+fn parse_blocks(lines: &[&str], depth: usize, notes: &Notes) -> Vec<Block> {
     let mut blocks = Vec::new();
     if depth > MAX_BLOCK_DEPTH {
         // Past the limit the content is flattened into paragraphs rather than
@@ -226,7 +324,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
         if let Some((level, content)) = atx_heading(trimmed) {
             blocks.push(Block::Heading {
                 level,
-                content: parse_inlines(content),
+                content: parse_inlines_with(content, notes),
             });
             at += 1;
             continue;
@@ -238,7 +336,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
         {
             blocks.push(Block::Heading {
                 level,
-                content: parse_inlines(trimmed),
+                content: parse_inlines_with(trimmed, notes),
             });
             at += 2;
             continue;
@@ -254,7 +352,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
                 inner.push(stripped);
                 at += 1;
             }
-            blocks.push(Block::Quote(parse_blocks(&inner, depth + 1)));
+            blocks.push(Block::Quote(parse_blocks(&inner, depth + 1, notes)));
             continue;
         }
 
@@ -263,7 +361,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
             && at + 1 < lines.len()
             && is_table_delimiter(lines[at + 1].trim())
         {
-            let (table, consumed) = parse_table(&lines[at..]);
+            let (table, consumed) = parse_table(&lines[at..], notes);
             blocks.push(Block::Table(table));
             at += consumed;
             continue;
@@ -271,7 +369,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
 
         // Lists.
         if list_marker(line).is_some() {
-            let (list, consumed) = parse_list(&lines[at..], depth + 1);
+            let (list, consumed) = parse_list(&lines[at..], depth + 1, notes);
             blocks.push(Block::List(list));
             at += consumed;
             continue;
@@ -331,7 +429,7 @@ fn parse_blocks(lines: &[&str], depth: usize) -> Vec<Block> {
         }
         if !paragraph.is_empty() {
             blocks.push(Block::Paragraph {
-                content: parse_inlines(&paragraph.join(" ")),
+                content: parse_inlines_with(&paragraph.join(" "), notes),
                 align: Align::Left,
                 indent: 0.0,
             });
@@ -394,7 +492,7 @@ fn is_table_delimiter(line: &str) -> bool {
 }
 
 /// Parse a GFM pipe table, returning it and the number of lines consumed.
-fn parse_table(lines: &[&str]) -> (Table, usize) {
+fn parse_table(lines: &[&str], notes: &Notes) -> (Table, usize) {
     let split_row = |line: &str| -> Vec<String> {
         // Split on unescaped pipes, dropping the leading and trailing ones.
         let mut cells = Vec::new();
@@ -421,7 +519,7 @@ fn parse_table(lines: &[&str]) -> (Table, usize) {
             .into_iter()
             .map(|text| Cell {
                 blocks: vec![Block::Paragraph {
-                    content: parse_inlines(&text),
+                    content: parse_inlines_with(&text, notes),
                     align: Align::Left,
                     indent: 0.0,
                 }],
@@ -441,7 +539,7 @@ fn parse_table(lines: &[&str]) -> (Table, usize) {
                 .into_iter()
                 .map(|text| Cell {
                     blocks: vec![Block::Paragraph {
-                        content: parse_inlines(&text),
+                        content: parse_inlines_with(&text, notes),
                         align: Align::Left,
                         indent: 0.0,
                     }],
@@ -488,7 +586,7 @@ fn list_marker(line: &str) -> Option<(usize, bool, u64, usize)> {
 
 /// Parse a list and everything nested inside it, returning it and the number of
 /// lines consumed.
-fn parse_list(lines: &[&str], depth: usize) -> (List, usize) {
+fn parse_list(lines: &[&str], depth: usize, notes: &Notes) -> (List, usize) {
     let (base_indent, ordered, start, _) = list_marker(lines[0]).expect("caller checked");
     let mut list = List {
         ordered,
@@ -507,7 +605,7 @@ fn parse_list(lines: &[&str], depth: usize) -> (List, usize) {
         }
         let owned: Vec<&str> = item_lines.iter().map(String::as_str).collect();
         list.items.push(ListItem {
-            blocks: parse_blocks(&owned, depth),
+            blocks: parse_blocks(&owned, depth, notes),
             checked: checked.take(),
         });
         item_lines.clear();
@@ -609,6 +707,10 @@ fn task_marker(content: &str) -> (Option<bool>, &str) {
 
 /// Parse inline spans: emphasis, code, links, images and hard breaks.
 pub fn parse_inlines(text: &str) -> Vec<Inline> {
+    parse_inlines_with(text, &Notes::default())
+}
+
+fn parse_inlines_with(text: &str, notes: &Notes) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut buffer = String::new();
     let chars: Vec<char> = text.chars().collect();
@@ -649,6 +751,42 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             }
         }
 
+        // A footnote reference, which must be tested before a link: `[^1]`
+        // is bracketed like one and is not one. Written by this writer and,
+        // until now, read back by nothing -- so a document that went out as
+        // Markdown and came back had `\[^1\]` in place of its notes.
+        if ch == '['
+            && chars.get(at + 1) == Some(&'^')
+            && let Some((label, next)) = footnote_reference(&chars, at)
+            && let Some(index) = notes.index(&label)
+        {
+            flush(&mut buffer, &mut out);
+            out.push(Inline::FootnoteRef { index });
+            at = next;
+            continue;
+        }
+
+        // The inline HTML Markdown has always used for what it has no mark
+        // for. Only the tags this model has a meaning for: everything else is
+        // left as the text it appears as, which is what Markdown says to do
+        // with HTML a reader does not handle.
+        if ch == '<'
+            && let Some((style, inner, next)) = html_span(&chars, at)
+        {
+            flush(&mut buffer, &mut out);
+            for mut run in runs_of(&parse_inlines_with(&inner, notes)) {
+                run.style.subscript |= style.subscript;
+                run.style.superscript |= style.superscript;
+                run.style.strikethrough |= style.strikethrough;
+                run.style.underline |= style.underline;
+                run.style.bold |= style.bold;
+                run.style.italic |= style.italic;
+                out.push(Inline::Run(run));
+            }
+            at = next;
+            continue;
+        }
+
         // Image, then link — `![` must be tested before `[`.
         if ch == '!'
             && chars.get(at + 1) == Some(&'[')
@@ -670,7 +808,7 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             flush(&mut buffer, &mut out);
             out.push(Inline::Link {
                 href: target,
-                runs: runs_of(&parse_inlines(&label)),
+                runs: runs_of(&parse_inlines_with(&label, notes)),
             });
             at = next;
             continue;
@@ -683,7 +821,7 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
             let inner: String = chars[at + marker.len()..end].iter().collect();
             if !inner.trim().is_empty() {
                 flush(&mut buffer, &mut out);
-                for mut run in runs_of(&parse_inlines(&inner)) {
+                for mut run in runs_of(&parse_inlines_with(&inner, notes)) {
                     run.style.bold |= style.bold;
                     run.style.italic |= style.italic;
                     run.style.strikethrough |= style.strikethrough;
@@ -715,6 +853,56 @@ fn runs_of(inlines: &[Inline]) -> Vec<Run> {
         }
     }
     runs
+}
+
+/// A `[^label]` reference at `at`, as its label and where it ends.
+fn footnote_reference(chars: &[char], at: usize) -> Option<(String, usize)> {
+    let close = chars[at + 2..].iter().position(|&c| c == ']')? + at + 2;
+    let label: String = chars[at + 2..close].iter().collect();
+    match label.is_empty() || label.contains('[') {
+        true => None,
+        false => Some((label, close + 1)),
+    }
+}
+
+/// An inline HTML span at `at`, as the style it sets and what it wraps.
+///
+/// Only the tags the model can hold, and only in their simple form: a tag with
+/// attributes is markup this reader has no use for, and passing it through as
+/// text is both honest and what Markdown prescribes.
+fn html_span(chars: &[char], at: usize) -> Option<(TextStyle, String, usize)> {
+    /// A tag name and what it turns on.
+    type Tag = (&'static str, fn(&mut TextStyle));
+
+    const TAGS: [Tag; 10] = [
+        ("sub", |style| style.subscript = true),
+        ("sup", |style| style.superscript = true),
+        ("del", |style| style.strikethrough = true),
+        ("s", |style| style.strikethrough = true),
+        ("u", |style| style.underline = true),
+        ("ins", |style| style.underline = true),
+        ("b", |style| style.bold = true),
+        ("strong", |style| style.bold = true),
+        ("i", |style| style.italic = true),
+        ("em", |style| style.italic = true),
+    ];
+
+    let rest: String = chars[at..].iter().take(16).collect::<String>().to_lowercase();
+    for (tag, apply) in TAGS {
+        let open = format!("<{tag}>");
+        if !rest.starts_with(&open) {
+            continue;
+        }
+        let close = format!("</{tag}>");
+        let Some(end) = find_from(chars, at + open.chars().count(), &close) else {
+            continue;
+        };
+        let inner: String = chars[at + open.chars().count()..end].iter().collect();
+        let mut style = TextStyle::default();
+        apply(&mut style);
+        return Some((style, inner, end + close.chars().count()));
+    }
+    None
 }
 
 /// Match an emphasis opener at `at`, returning its marker and the style it sets.
@@ -843,6 +1031,67 @@ mod tests {
         let list = format!("{}- deep\n", "  ".repeat(depth));
         let document = parse_markdown(list.as_bytes());
         assert!(document.text().contains("deep"));
+    }
+
+    /// A footnote written by this writer is read back as one.
+    ///
+    /// `[^1]` is bracketed like a link and is not one, so it was read as
+    /// literal text and then escaped on the way out: a document that left as
+    /// Markdown and came back had `\[^1\]` where its notes had been.
+    #[test]
+    fn markdown_reads_the_footnotes_it_writes() {
+        let doc = parse_markdown(
+            b"Body text with[^1] a note.\n\n[^1]: The note itself.\n",
+        );
+        assert_eq!(doc.footnotes.len(), 1);
+        assert_eq!(doc.footnotes[0].label.as_deref(), Some("1"));
+
+        let markdown = to_markdown(&doc);
+        assert!(markdown.contains("Body text with[^1] a note."), "{markdown}");
+        assert!(markdown.contains("[^1]: The note itself."), "{markdown}");
+    }
+
+    /// A reference to a note that was never defined stays as it was written.
+    #[test]
+    fn an_undefined_footnote_reference_is_left_as_text() {
+        let doc = parse_markdown(b"See[^missing] here.\n");
+        assert!(doc.footnotes.is_empty());
+        assert!(doc.text().contains("[^missing]"), "{}", doc.text());
+    }
+
+    /// Markdown has no mark for these, and takes HTML for what it lacks.
+    #[test]
+    fn markdown_reads_the_inline_html_it_writes() {
+        let doc = parse_markdown(b"Water is H<sub>2</sub>O and 5m<sup>2</sup>.\n");
+        assert_eq!(
+            to_markdown(&doc),
+            "Water is H<sub>2</sub>O and 5m<sup>2</sup>.\n"
+        );
+
+        // A tag the model has no meaning for is text, which is what Markdown
+        // says to do with HTML a reader does not handle.
+        let passed = parse_markdown(b"a <span class=x>b</span> c\n");
+        assert!(passed.text().contains("<span class=x>"), "{}", passed.text());
+    }
+
+    /// Rendering, reading back and rendering again gives the same Markdown.
+    ///
+    /// The property that found the two gaps above: whatever the writer emits,
+    /// the reader has to understand, or a document loses something by passing
+    /// through the form this tool most often hands to a caller.
+    #[test]
+    fn rendering_markdown_is_idempotent() {
+        let source = concat!(
+            "# Title\n\n",
+            "Body with[^1] a note, H<sub>2</sub>O, ~~struck~~ and **bold**.\n\n",
+            "> A quotation.\n>\n> Second paragraph of it.\n\n",
+            "- one\n  - under one\n- two\n\n",
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n",
+            "[^1]: The note itself.\n",
+        );
+        let once = to_markdown(&parse_markdown(source.as_bytes()));
+        let twice = to_markdown(&parse_markdown(once.as_bytes()));
+        assert_eq!(once, twice, "left is the first rendering");
     }
 
     #[test]

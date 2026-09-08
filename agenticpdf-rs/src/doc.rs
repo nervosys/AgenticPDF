@@ -942,9 +942,17 @@ pub fn to_markdown(doc: &SemanticDoc) -> String {
             out.push_str("\n> **Speaker notes**\n>\n");
             let mut notes = String::new();
             render_blocks(&section.notes, 0, &mut notes);
-            for line in notes.lines() {
-                out.push_str("> ");
-                out.push_str(line);
+            // Trimmed and written the way a block quote is: the trailing blank
+            // line the blocks end with became a quote line of its own, which
+            // reading the Markdown back does not produce.
+            for line in notes.trim_end().lines() {
+                match line.is_empty() {
+                    true => out.push('>'),
+                    false => {
+                        out.push_str("> ");
+                        out.push_str(line);
+                    }
+                }
                 out.push('\n');
             }
         }
@@ -1003,8 +1011,16 @@ fn render_block(block: &Block, indent: usize, out: &mut String) {
             render_blocks(blocks, 0, &mut body);
             for line in body.trim_end().lines() {
                 out.push_str(&pad);
-                out.push_str("> ");
-                out.push_str(line);
+                // A blank line inside a quote is `>` alone: writing `"> "`
+                // leaves a trailing space, so the same document rendered, read
+                // back and rendered again did not come out the same.
+                match line.is_empty() {
+                    true => out.push('>'),
+                    false => {
+                        out.push_str("> ");
+                        out.push_str(line);
+                    }
+                }
                 out.push('\n');
             }
             out.push('\n');
