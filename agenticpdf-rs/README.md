@@ -20,21 +20,21 @@ inside the plain-text family, where the bytes genuinely are ambiguous.
 | --- | --- | --- |
 | **Agentic Document Format** | `.adf` | ✅ **read *and written*** — chunk-indexed random access, embedded retrieval index, per-block provenance, CRDT edit log. [See below](#adf--the-agentic-document-format). |
 | PDF | `.pdf` | ✅ full — authored geometry, rendering, tables, figures, formulas, forms, OCR |
-| Word (OOXML) | `.docx` `.docm` | ✅ styles, headings, numbering, tables, hyperlinks, images, hidden text; typeset + rendered |
-| Excel (OOXML) | `.xlsx` `.xlsm` | ✅ sheets, shared strings, sparse cells, cell types, formula results; typeset + rendered |
-| PowerPoint (OOXML) | `.pptx` `.pptm` | ✅ slides in presentation order, titles, bullets, speaker notes, images; one page per slide |
+| Word (OOXML) | `.docx` `.docm` | ✅ styles, headings, numbering, tables + table styles, hyperlinks, images, text boxes, footnotes and endnotes, hidden text; typeset + rendered |
+| Excel (OOXML) | `.xlsx` `.xlsm` | ✅ sheets, shared strings, sparse cells, cell types, dates, formula results; hidden sheets, rows and columns skipped; typeset + rendered |
+| PowerPoint (OOXML) | `.pptx` `.pptm` | ✅ slides in presentation order, titles, bullets, tables + table styles, speaker notes, images; hidden shapes and slides flagged; one page per slide |
 | EPUB | `.epub` | ✅ spine order, Dublin Core metadata, per-chapter sections, images |
-| Rich Text Format | `.rtf` | ✅ stylesheet headings, tables, lists, cp1252 + `\u`, hidden text |
-| HTML / XHTML | `.html` `.htm` `.xhtml` | ✅ structure, tables, links, images, hidden-text scan |
+| Rich Text Format | `.rtf` | ✅ stylesheet headings and list depth, tables incl. nested, lists, footnotes, fields and hyperlinks, colour table, per-font code pages, `\u` escapes, tracked deletions excluded, hidden text |
+| HTML / XHTML | `.html` `.htm` `.xhtml` | ✅ structure, tables, links, images, declared charset, entities, the document's own `<style>` rules for emphasis and hidden-text scan |
 | Markdown | `.md` `.markdown` | ✅ round-trips through the model |
 | Delimited text | `.csv` `.tsv` | ✅ RFC 4180 quoting, inferred delimiter |
 | Plain text | `.txt` | ✅ |
-| OpenDocument Text | `.odt` | ✅ named styles + parent chains, headings, lists, tables, hidden text |
-| OpenDocument Sheet | `.ods` | ✅ sheets, repeat-count expansion, typed and displayed values |
-| OpenDocument Slides | `.odp` | ✅ slides, title placeholders, notes, one page per slide |
-| Word 97-2003 | `.doc` | ✅ piece table, style chains, SPRM deltas, lists, tables, hidden text |
-| Excel 97-2003 | `.xls` | ✅ BIFF8 records, shared strings, RK values, formula results |
-| PowerPoint 97-2003 | `.ppt` | ✅ persist-resolved slide order, titles, bullets, notes |
+| OpenDocument Text | `.odt` | ✅ named styles + parent chains, headings, lists, tables + table templates, text boxes, footnotes, hidden text |
+| OpenDocument Sheet | `.ods` | ✅ sheets, repeat-count expansion, typed and displayed values; hidden sheets, rows and columns skipped; cell comments excluded |
+| OpenDocument Slides | `.odp` | ✅ slides, title placeholders, tables + table templates, notes, one page per slide |
+| Word 97-2003 | `.doc` | ✅ piece table, style chains, SPRM deltas, lists, tables, footnotes and endnotes, text boxes, fields and hyperlinks, run colour, tracked deletions excluded, hidden text |
+| Excel 97-2003 | `.xls` | ✅ BIFF8 records, shared strings, RK values, dates, formula results; hidden sheets, rows and columns skipped |
+| PowerPoint 97-2003 | `.ppt` | ✅ persist-resolved slide order, titles, outline levels and character formatting, tables, hyperlinks, pictures, notes; hidden shapes and slides flagged |
 
 `apdf formats` prints this table with each format's capabilities;
 `apdf describe` includes the same data as JSON for agent discovery.
