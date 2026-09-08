@@ -85,6 +85,10 @@ pub struct CharProps {
     /// the file, and showing it presents wording the author removed as though
     /// it stood.
     pub deleted: bool,
+    /// `sprmCIss`: raised or lowered off the baseline. Not decoration -- it is
+    /// what tells `H2O` from `H<sub>2</sub>O` and `m2` from `m<sup>2</sup>`.
+    pub superscript: bool,
+    pub subscript: bool,
 }
 
 /// The sixteen colours `sprmCIco` indexes, with "automatic" at zero.
@@ -155,6 +159,13 @@ pub fn apply_chpx(grpprl: &[u8], current: CharProps, style_base: CharProps) -> C
             if let Some(value) = toggle(operand, style_base.deleted) {
                 props.deleted = value;
             }
+        }
+        // sprmCIss: 1 raises the run off the baseline and 2 lowers it, which
+        // is what both producers write for a superscript and a subscript.
+        0x2A48 => {
+            let kind = operand.first().copied().unwrap_or(0);
+            props.superscript = kind == 1;
+            props.subscript = kind == 2;
         }
         // sprmCKul: underline kind, where 0 means none.
         0x2A3E => {
@@ -553,6 +564,25 @@ mod tests {
         let merged = base.merge(over);
         assert_eq!(merged.ilfo, Some(1), "not stated by the overlay");
         assert_eq!(merged.ilvl, Some(2), "stated by the overlay");
+    }
+
+    /// A run lifted off the baseline says something the letters do not.
+    ///
+    /// `sprmCIss` raises with 1 and lowers with 2 -- read out of the same
+    /// document written by Word and by LibreOffice, which agree. Without it
+    /// the .doc of a document said `H2O` where its .docx, .odt and .rtf all
+    /// said `H<sub>2</sub>O`.
+    #[test]
+    fn reads_a_run_raised_or_lowered_off_the_baseline() {
+        let base = CharProps::default();
+        let raised = apply_chpx(&[0x48, 0x2A, 0x01], base, base);
+        assert!(raised.superscript && !raised.subscript);
+
+        let lowered = apply_chpx(&[0x48, 0x2A, 0x02], base, base);
+        assert!(lowered.subscript && !lowered.superscript);
+
+        let level = apply_chpx(&[0x48, 0x2A, 0x00], base, base);
+        assert!(!level.superscript && !level.subscript);
     }
 
     #[test]

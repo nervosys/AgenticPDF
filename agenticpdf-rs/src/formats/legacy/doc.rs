@@ -897,6 +897,9 @@ impl Assembler {
         let mut cell_blocks: Vec<Block> = Vec::new();
         let mut row: Vec<Cell> = Vec::new();
         let mut rows: Vec<Row> = Vec::new();
+        // One edge list per row, so a merged cell can be measured against the
+        // columns the rest of the table uses.
+        let mut edges: Vec<Vec<i32>> = Vec::new();
         let mut header_rows = 0usize;
 
         // Fields nest, so this is a stack rather than a flag.
@@ -932,6 +935,15 @@ impl Assembler {
                                 {
                                     header_rows += 1;
                                 }
+                                edges.push(
+                                    pap.props
+                                        .tap
+                                        .as_ref()
+                                        .map(|tap| {
+                                            tap.boundaries.iter().map(|at| *at as i32).collect()
+                                        })
+                                        .unwrap_or_default(),
+                                );
                                 rows.push(Row {
                                     cells: std::mem::take(&mut row),
                                 });
@@ -952,6 +964,7 @@ impl Assembler {
                             &mut row,
                             &mut cell_blocks,
                             &mut header_rows,
+                            &mut edges,
                         );
                         self.emit_paragraph(&pap, inlines, &mut blocks);
                         // A box anchored in the paragraph that just ended
@@ -1036,6 +1049,7 @@ impl Assembler {
             &mut row,
             &mut cell_blocks,
             &mut header_rows,
+            &mut edges,
         );
         if !inline_text(&content).trim().is_empty() {
             blocks.push(Block::Paragraph {
@@ -1222,6 +1236,7 @@ impl Assembler {
         row: &mut Vec<Cell>,
         cell_blocks: &mut Vec<Block>,
         header_rows: &mut usize,
+        edges: &mut Vec<Vec<i32>>,
     ) {
         if !cell_blocks.is_empty() {
             row.push(Cell {
@@ -1235,9 +1250,13 @@ impl Assembler {
             });
         }
         if rows.is_empty() {
+            edges.clear();
             return;
         }
-        let rows = std::mem::take(rows);
+        let mut rows = std::mem::take(rows);
+        let edges = std::mem::take(edges);
+        crate::formats::apply_column_spans(&mut rows, &edges);
+        let rows = rows;
         let header = std::mem::take(header_rows).min(rows.len());
         blocks.push(Block::Table(Table {
             caption: None,
@@ -1300,6 +1319,8 @@ fn to_text_style(props: CharProps) -> TextStyle {
         italic: props.italic,
         strikethrough: props.strike,
         underline: props.underline,
+        superscript: props.superscript,
+        subscript: props.subscript,
         hidden: props.hidden,
         color: props
             .color

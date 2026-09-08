@@ -1297,6 +1297,18 @@ fn render_run(run: &Run) -> String {
     let trailing = &run.text[run.text.trim_end().len()..];
 
     let mut body = escape_markdown(trimmed);
+    // Markdown has no mark of its own for these, and inline HTML is how it has
+    // always taken what it lacks -- the same way `~~` is an extension rather
+    // than Markdown proper. Dropping them is not a loss of decoration: `H2O`
+    // and `5m2` say something different from what the document said, and every
+    // reader here dropped them together, so no comparison between formats
+    // could have shown it.
+    if style.subscript {
+        body = format!("<sub>{body}</sub>");
+    }
+    if style.superscript {
+        body = format!("<sup>{body}</sup>");
+    }
     if style.strikethrough {
         body = format!("~~{body}~~");
     }
@@ -1683,6 +1695,38 @@ mod tests {
             to_markdown(&doc),
             "**bold** and _italic_ and ~~struck~~ and `code`\n"
         );
+    }
+
+    /// Markdown keeps what changes what a number means.
+    ///
+    /// It has no mark of its own for these, and inline HTML is how it has
+    /// always taken what it lacks. Dropping them turned `H<sub>2</sub>O` into
+    /// `H2O` and `5m<sup>2</sup>` into `5m2` — and every reader dropped them
+    /// together, so no comparison between formats could have shown it. The
+    /// HTML writer had carried them all along.
+    #[test]
+    fn renders_subscript_and_superscript_as_inline_html() {
+        let lifted = |text: &str, up: bool| {
+            Inline::Run(Run::styled(
+                text,
+                TextStyle {
+                    superscript: up,
+                    subscript: !up,
+                    ..TextStyle::default()
+                },
+            ))
+        };
+        let doc = doc_with(vec![Block::Paragraph {
+            content: vec![
+                Inline::Run(Run::plain("H")),
+                lifted("2", false),
+                Inline::Run(Run::plain("O and 5m")),
+                lifted("2", true),
+            ],
+            align: Align::Left,
+            indent: 0.0,
+        }]);
+        assert_eq!(to_markdown(&doc), "H<sub>2</sub>O and 5m<sup>2</sup>\n");
     }
 
     #[test]

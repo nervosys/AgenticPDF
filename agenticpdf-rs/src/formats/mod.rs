@@ -283,6 +283,72 @@ pub(crate) fn square_grid(grid: &mut Vec<Vec<String>>) {
     }
 }
 
+/// Give each cell the number of columns it covers, from the edges its row
+/// states measured against the edges the whole table uses.
+///
+/// The binary formats do not say a cell is merged: they simply give the row
+/// fewer cells and make one of them wider. Read as written, a row with a
+/// merged pair came out one cell short and the writer padded it at the end --
+/// so a three-column table whose header spanned the first two columns put its
+/// last heading under the middle column. The .docx and .odt of that table,
+/// which state the span outright, put it where it belongs.
+///
+/// A row whose edge list does not match its cells is left alone: the span is a
+/// correction, and a correction that cannot be trusted is worse than none.
+pub(crate) fn apply_column_spans(rows: &mut [crate::doc::Row], edges: &[Vec<i32>]) {
+    let mut all: Vec<i32> = edges.iter().flatten().copied().collect();
+    all.sort_unstable();
+    all.dedup();
+
+    for (row, row_edges) in rows.iter_mut().zip(edges) {
+        if row_edges.len() != row.cells.len() + 1 {
+            continue;
+        }
+        for (index, cell) in row.cells.iter_mut().enumerate() {
+            let (lo, hi) = (row_edges[index], row_edges[index + 1]);
+            if hi <= lo {
+                continue;
+            }
+            cell.col_span = 1 + all.iter().filter(|edge| **edge > lo && **edge < hi).count();
+        }
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::apply_column_spans;
+    use crate::doc::{Cell, Row};
+
+    fn row(count: usize) -> Row {
+        Row {
+            cells: (0..count).map(|_| Cell::default()).collect(),
+        }
+    }
+
+    /// A row with fewer cells than the table has columns has a merge in it,
+    /// and the edges say which cell covers the gap.
+    #[test]
+    fn a_wider_cell_covers_the_columns_it_spans() {
+        let mut rows = vec![row(2), row(3)];
+        let edges = vec![vec![0, 6240, 9360], vec![0, 3120, 6240, 9360]];
+        apply_column_spans(&mut rows, &edges);
+
+        let spans: Vec<Vec<usize>> = rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.col_span).collect())
+            .collect();
+        assert_eq!(spans, vec![vec![2, 1], vec![1, 1, 1]]);
+    }
+
+    /// A row whose edges do not match its cells is left as it is.
+    #[test]
+    fn an_edge_list_that_does_not_fit_is_not_used() {
+        let mut rows = vec![row(3)];
+        apply_column_spans(&mut rows, &[vec![0, 9360]]);
+        assert!(rows[0].cells.iter().all(|cell| cell.col_span == 1));
+    }
+}
+
 pub(crate) fn format_number(value: f64) -> String {
     if !value.is_finite() {
         return String::new();

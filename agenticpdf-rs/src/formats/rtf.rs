@@ -131,6 +131,12 @@ struct Parser<'a> {
     notes: Vec<NoteCapture>,
     /// Blocks that belong after the paragraph being read, not inside it.
     deferred: Vec<Block>,
+    /// Cell right edges gathered from the row being read, and one list per row
+    /// of the table being built.
+    row_edges: Vec<i32>,
+    row_edges_by_row: Vec<Vec<i32>>,
+    /// `\trleft`: the row's left margin, which is the first edge.
+    row_left: i32,
     /// The instruction of the field being read, if any.
     field_instruction: String,
     /// The field result being gathered, so its runs can become a link.
@@ -191,6 +197,9 @@ impl<'a> Parser<'a> {
             list_styles: HashMap::new(),
             notes: Vec::new(),
             deferred: Vec::new(),
+            row_edges: Vec::new(),
+            row_edges_by_row: Vec::new(),
+            row_left: 0,
             break_run: false,
             field_instruction: String::new(),
             field: None,
@@ -575,7 +584,24 @@ impl<'a> Parser<'a> {
 
             // -- Tables ------------------------------------------------
             "intbl" => self.state.in_table = true,
-            "trowd" => self.state.in_table = true,
+            // A row's properties are reset before they are stated, so this is
+            // where the edges of the row about to be read begin.
+            "trowd" => {
+                self.state.in_table = true;
+                self.row_edges.clear();
+                self.row_left = 0;
+            }
+            "trleft" => self.row_left = parameter.unwrap_or(0),
+            // `\cellx` gives a cell's right edge, and is the only thing an
+            // RTF row says about merging: a merged pair is simply one wider
+            // cell. Without the edges a row came out short and the writer
+            // padded it at the end, putting the last heading in the wrong
+            // column.
+            "cellx" => {
+                if let Some(edge) = parameter {
+                    self.row_edges.push(edge);
+                }
+            }
             "cell" => self.end_cell(),
             "row" => self.end_row(),
             // A nested table's cells and rows. The nested row marker was
@@ -965,6 +991,14 @@ impl<'a> Parser<'a> {
             return;
         }
         let cells = std::mem::take(&mut self.row);
+        // The edges are written after the row's text, as the row terminator's
+        // own properties, so what is on hand here belongs to this row. The
+        // first edge is the row's left margin, which `\cellx` does not state.
+        let mut edges = std::mem::take(&mut self.row_edges);
+        if edges.len() == cells.len() {
+            edges.insert(0, self.row_left);
+        }
+        self.row_edges_by_row.push(edges);
         self.table_rows.push(Row { cells });
         self.state.in_table = false;
     }
@@ -974,7 +1008,10 @@ impl<'a> Parser<'a> {
         if self.table_rows.is_empty() {
             return;
         }
-        let rows = std::mem::take(&mut self.table_rows);
+        let mut rows = std::mem::take(&mut self.table_rows);
+        let edges = std::mem::take(&mut self.row_edges_by_row);
+        crate::formats::apply_column_spans(&mut rows, &edges);
+        let rows = rows;
         // RTF has no way to mark a header row, so the first is treated as one —
         // the near-universal convention, and what a GFM table requires anyway.
         self.blocks.push(Block::Table(Table {
@@ -1517,7 +1554,10 @@ mod tests {
     #[test]
     fn reads_a_footnote_marked_skippable() {
         let rtf = format!(
-            r"{HEADER}\pard A claim{{\super \chftn{{\*\footnote \chftn\pard The source.\par}}}} stands.\par}}"
+            // `\plain` as both producers write it: without it the note's body
+            // inherits the `\super` of the marker it hangs from, which is what
+            // RTF says should happen.
+            r"{HEADER}\pard A claim{{\super \chftn{{\*\footnote \chftn\pard\plain The source.\par}}}} stands.\par}}"
         );
         let document = parse_rtf(rtf.as_bytes());
         assert_eq!(document.footnotes.len(), 1);
