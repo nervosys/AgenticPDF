@@ -85,6 +85,8 @@ enum Destination {
     StyleSheet,
     /// The `\fonttbl` group, read for the code page each font names.
     FontTable,
+    /// A field's `\fldinst`, which names the field rather than showing text.
+    FieldInstruction,
     /// The `\colortbl` group, read so `\cf` can name a colour.
     ColorTable,
     /// Content to discard entirely (font tables, colour tables, pictures,
@@ -123,6 +125,12 @@ struct Parser<'a> {
     heading_styles: HashMap<i64, u8>,
     /// The `\colortbl` entries, indexed as `\cf` names them. `None` is the
     /// automatic colour, which the table's first entry always is.
+    /// Whether the next character must begin a run of its own.
+    break_run: bool,
+    /// The instruction of the field being read, if any.
+    field_instruction: String,
+    /// The field result being gathered, so its runs can become a link.
+    field: Option<FieldResult>,
     /// Font number → the code page its bytes are in.
     font_pages: HashMap<i64, u16>,
     /// The font being defined while reading the font table.
@@ -175,6 +183,9 @@ impl<'a> Parser<'a> {
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
             list_styles: HashMap::new(),
+            break_run: false,
+            field_instruction: String::new(),
+            field: None,
             font_pages: HashMap::new(),
             font_number: None,
             default_page: None,
@@ -206,6 +217,11 @@ impl<'a> Parser<'a> {
                 }
                 b'}' => {
                     self.at += 1;
+                    // The result group is ending, so the runs it produced are
+                    // the link's text.
+                    if self.field.as_ref().is_some_and(|f| f.depth == self.stack.len()) {
+                        self.finish_field();
+                    }
                     // A list-marker group ends by handing its text to the
                     // paragraph that follows it.
                     if self.state.destination == Destination::ListMarker {
@@ -327,9 +343,31 @@ impl<'a> Parser<'a> {
             "listtable" | "listoverridetable" | "pict" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
             | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr" | "footnote"
-            | "annotation" | "bkmkstart" | "bkmkend" | "field" | "fldinst" | "filetbl"
+            | "annotation" | "bkmkstart" | "bkmkend" | "filetbl"
             | "revtbl" | "upr" => {
                 self.state.destination = Destination::Discard;
+            }
+            // A field's instruction says what it is; its result is the text
+            // the reader should show. Discarding the whole group threw the
+            // result away with it, so a hyperlink's text vanished -- the .docx
+            // and .odt of the same document both kept it.
+            "fldinst" => {
+                self.state.destination = Destination::FieldInstruction;
+                self.field_instruction.clear();
+            }
+            "fldrslt" => {
+                self.state.destination = Destination::Body;
+                // The result's text must begin a run of its own, or it is
+                // appended to the run before it when the style is unchanged --
+                // and then the recorded boundary marks nothing. Word styles
+                // link text differently, which hid this until a test wrote a
+                // field whose result looks like the text around it.
+                self.break_run = true;
+                self.field = Some(FieldResult {
+                    depth: self.stack.len(),
+                    start: self.runs.len(),
+                    href: crate::formats::hyperlink_target(&self.field_instruction),
+                });
             }
             // Read rather than skipped: a font carries the code page its
             // bytes are in, and without it every non-Latin script is decoded as
@@ -552,6 +590,13 @@ impl<'a> Parser<'a> {
                     self.style_name.push(ch);
                 }
             }
+            Destination::FieldInstruction => {
+                // Bounded: an instruction is a short expression, and a
+                // malformed document must not be able to grow one without end.
+                if self.field_instruction.len() < 4096 {
+                    self.field_instruction.push(ch);
+                }
+            }
             Destination::Title => push_meta(&mut self.document.title, ch),
             Destination::Author => push_meta(&mut self.document.author, ch),
             Destination::Subject => push_meta(&mut self.document.subject, ch),
@@ -561,6 +606,7 @@ impl<'a> Parser<'a> {
                 // paragraph does not become one run per character.
                 if let Some(Inline::Run(run)) = self.runs.last_mut()
                     && run.style == self.state.style
+                    && !std::mem::take(&mut self.break_run)
                 {
                     run.text.push(ch);
                     return;
@@ -570,6 +616,39 @@ impl<'a> Parser<'a> {
                     self.state.style.clone(),
                 )));
             }
+        }
+    }
+
+    /// Turn the runs a field result produced into a link, where it is one.
+    fn finish_field(&mut self) {
+        let Some(field) = self.field.take() else {
+            return;
+        };
+        let Some(href) = field.href else {
+            return;
+        };
+        // Not `>=`: a field whose result is empty still has a target worth
+        // showing, and that case is handled below.
+        if field.start > self.runs.len() {
+            return;
+        }
+
+        let runs: Vec<Run> = self
+            .runs
+            .drain(field.start..)
+            .filter_map(|inline| match inline {
+                Inline::Run(run) => Some(run),
+                _ => None,
+            })
+            .collect();
+        match runs.is_empty() {
+            // A field with no text of its own: the target is all there is, and
+            // showing it is better than showing nothing.
+            true => self.runs.push(Inline::Link {
+                runs: vec![Run::plain(href.clone())],
+                href,
+            }),
+            false => self.runs.push(Inline::Link { href, runs }),
         }
     }
 
@@ -822,6 +901,17 @@ fn parse_leading_number(text: &str) -> Option<u64> {
 /// The range 0x80-0x9F is where it differs from Latin-1 — those are the curly
 /// quotes and dashes that dominate real documents, so getting them right
 /// matters more than the rest of the table.
+/// The field result being gathered, and where its runs began.
+#[derive(Debug, Clone)]
+struct FieldResult {
+    /// Group depth the result opened at, so the right `}` closes it.
+    depth: usize,
+    /// Index into the paragraph's runs where the result's text starts.
+    start: usize,
+    /// The target, where the field is a hyperlink.
+    href: Option<String>,
+}
+
 /// The code page a `\fcharset` names.
 ///
 /// The mapping is the one Windows itself uses; a charset with no page here is
@@ -1155,6 +1245,43 @@ mod tests {
     /// use for, so every literal byte was decoded as windows-1252 whatever font
     /// it was written in: Hebrew in a `\fcharset177` font came out as Latin
     /// letters, where the .docx and .odt of the same document read it.
+    /// A field's result is the text to show; its instruction is not.
+    ///
+    /// The whole `\field` group was discarded, which threw the result away with
+    /// the instruction: a hyperlink's text vanished entirely, where the .docx
+    /// and .odt of the same document both produced a link.
+    #[test]
+    fn reads_a_hyperlink_field() {
+        let rtf = format!(
+            r#"{HEADER}\pard A {{\field{{\*\fldinst HYPERLINK "https://example.invalid/p" }}{{\fldrslt link}}}} to somewhere.\par}}"#
+        );
+        assert_eq!(
+            markdown_of(&rtf),
+            "A [link](https://example.invalid/p) to somewhere.\n"
+        );
+    }
+
+    /// A field that is not a hyperlink still shows its result.
+    #[test]
+    fn a_field_that_is_not_a_link_keeps_its_result() {
+        let rtf = format!(
+            r"{HEADER}\pard Page {{\field{{\*\fldinst PAGE }}{{\fldrslt 7}}}} of ten.\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "Page 7 of ten.\n");
+    }
+
+    /// A hyperlink with no text of its own shows its target.
+    #[test]
+    fn a_hyperlink_without_result_text_shows_its_target() {
+        let rtf = format!(
+            r#"{HEADER}\pard {{\field{{\*\fldinst HYPERLINK "https://example.invalid/p" }}{{\fldrslt }}}}\par}}"#
+        );
+        assert_eq!(
+            markdown_of(&rtf),
+            "[https://example.invalid/p](https://example.invalid/p)\n"
+        );
+    }
+
     #[test]
     fn decodes_bytes_by_the_fonts_code_page() {
         let rtf = format!(

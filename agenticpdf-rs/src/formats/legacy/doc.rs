@@ -683,6 +683,8 @@ impl Assembler {
         let mut rows: Vec<Row> = Vec::new();
         let mut header_rows = 0usize;
 
+        // Fields nest, so this is a stack rather than a flag.
+        let mut fields: Vec<Field> = Vec::new();
         let mut index = lo;
         let end = hi.min(self.text.chars.len());
         while index < end {
@@ -749,10 +751,45 @@ impl Assembler {
                     let style = self.char_style(fc, index);
                     push_char(&mut content, '-', style);
                 }
+                // A field is written inline: 0x13 opens it, 0x14 separates
+                // its instruction from its result, and 0x15 closes it. The
+                // instruction is not text to show -- read as if it were, a
+                // hyperlink came out as `HYPERLINK "https://..."link`, where
+                // the .docx and .odt of the same document produced a link.
+                '\u{13}' => {
+                    fields.push(Field {
+                        instruction: String::new(),
+                        start: content.len(),
+                        reading_result: false,
+                    });
+                }
+                '\u{14}' => {
+                    if let Some(field) = fields.last_mut() {
+                        field.reading_result = true;
+                        field.start = content.len();
+                    }
+                }
+                '\u{15}' => {
+                    if let Some(field) = fields.pop() {
+                        finish_field(&mut content, field);
+                    }
+                }
                 // Field markers, picture placeholders and other control
                 // characters carry no text of their own.
                 character if character.is_control() => {}
                 character => {
+                    // An instruction names the field rather than showing text.
+                    if let Some(field) = fields.last_mut()
+                        && !field.reading_result
+                    {
+                        // Bounded: a malformed document must not be able to
+                        // grow one without end.
+                        if field.instruction.len() < 4096 {
+                            field.instruction.push(character);
+                        }
+                        index += 1;
+                        continue;
+                    }
                     let style = self.char_style(fc, index);
                     push_char(&mut content, character, style);
                 }
@@ -960,6 +997,40 @@ impl Assembler {
             rows,
             column_widths: Vec::new(),
         }));
+    }
+}
+
+/// A field being read: its instruction, and where its result began.
+struct Field {
+    instruction: String,
+    /// Index into the paragraph's inlines where the result's text starts.
+    start: usize,
+    reading_result: bool,
+}
+
+/// Turn the inlines a field's result produced into a link, where it is one.
+fn finish_field(content: &mut Vec<Inline>, field: Field) {
+    let Some(href) = crate::formats::hyperlink_target(&field.instruction) else {
+        return;
+    };
+    if field.start > content.len() {
+        return;
+    }
+    let runs: Vec<Run> = content
+        .drain(field.start..)
+        .filter_map(|inline| match inline {
+            Inline::Run(run) => Some(run),
+            _ => None,
+        })
+        .collect();
+    match runs.is_empty() {
+        // A field with no text of its own: the target is all there is, and
+        // showing it is better than showing nothing.
+        true => content.push(Inline::Link {
+            runs: vec![Run::plain(href.clone())],
+            href,
+        }),
+        false => content.push(Inline::Link { href, runs }),
     }
 }
 

@@ -177,6 +177,72 @@ pub(crate) fn append_list_item(
 /// the width as the longest row, which counts a trailing empty column as a
 /// column: removing a hidden column at the right-hand edge left the same
 /// workbook one column wider through `.xlsx` and `.xls` than through `.ods`.
+/// The target of a `HYPERLINK` field instruction.
+///
+/// Word writes a field as an instruction and a result: the instruction names
+/// what the field is, the result is the text to show. Both the .doc and the
+/// .rtf state a hyperlink this way, so both readers ask the same question of
+/// the same syntax.
+///
+/// Anything else -- a page number, a cross-reference, a date -- has a result
+/// worth showing but no target, so it is read as ordinary text.
+pub(crate) fn hyperlink_target(instruction: &str) -> Option<String> {
+    let trimmed = instruction.trim_start();
+    let rest = trimmed
+        .strip_prefix("HYPERLINK")
+        .or_else(|| trimmed.strip_prefix("hyperlink"))?
+        .trim_start();
+    // The target is quoted when it holds spaces, and bare when it does not.
+    let target = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next().unwrap_or_default(),
+        None => rest.split_whitespace().next().unwrap_or_default(),
+    };
+    match target.is_empty() {
+        true => None,
+        false => Some(target.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod field_tests {
+    use super::hyperlink_target;
+
+    #[test]
+    fn reads_the_target_of_a_hyperlink_field() {
+        assert_eq!(
+            hyperlink_target(r#"HYPERLINK "https://example.invalid/a b" "#).as_deref(),
+            Some("https://example.invalid/a b"),
+            "quoted, and the quotes are what allow the space"
+        );
+        assert_eq!(
+            hyperlink_target(r"HYPERLINK https://example.invalid/p \l anchor").as_deref(),
+            Some("https://example.invalid/p"),
+            "bare, ending at the switch that follows it"
+        );
+        assert_eq!(
+            hyperlink_target("  hyperlink \"mailto:a@b.invalid\"").as_deref(),
+            Some("mailto:a@b.invalid"),
+            "leading space, and the name is not case sensitive"
+        );
+    }
+
+    /// Every other field has a result worth showing but no target.
+    #[test]
+    fn a_field_that_is_not_a_hyperlink_has_no_target() {
+        for instruction in ["PAGE", r"REF _Ref123 \h", r#"DATE \@ "d MMMM yyyy""#, ""] {
+            assert_eq!(hyperlink_target(instruction), None, "{instruction}");
+        }
+    }
+
+    /// A hyperlink naming nothing is not a link.
+    #[test]
+    fn a_hyperlink_without_a_target_is_none() {
+        assert_eq!(hyperlink_target("HYPERLINK"), None);
+        assert_eq!(hyperlink_target("HYPERLINK   "), None);
+        assert_eq!(hyperlink_target(r#"HYPERLINK """#), None);
+    }
+}
+
 pub(crate) fn square_grid(grid: &mut Vec<Vec<String>>) {
     while grid
         .last()
