@@ -20,8 +20,9 @@ use crate::PdfError;
 use std::collections::HashMap;
 
 use crate::container::zip::ZipArchive;
-use crate::doc::{Block, Cell, Row, Section, SemanticDoc, Table};
-use crate::formats::ooxml::{Package, attr_i64, resolve_path};
+use crate::doc::{Block, Section, SemanticDoc, Table};
+use crate::formats::SheetCell;
+use crate::formats::ooxml::{Package, Rels, attr_i64, resolve_path};
 use crate::xml::{Element, Event, Reader};
 
 /// Cap on cells read per sheet, bounding a hostile or corrupt dimension.
@@ -48,7 +49,11 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
             continue;
         };
 
-        let grid = read_sheet(&bytes, &shared, &styles);
+        // A cell's hyperlink is stated away from the cell, at the end of the
+        // sheet and through a relationship of the sheet's own -- so reading
+        // the cells alone gave the link's text and lost where it points.
+        let links = read_hyperlinks(&bytes, &Rels::for_part(archive, &path), &base);
+        let grid = read_sheet(&bytes, &shared, &styles, &links);
         if grid.is_empty() {
             // An empty sheet still exists; recording it keeps sheet indices
             // aligned with the workbook a user is looking at.
@@ -60,12 +65,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
             continue;
         }
 
-        let rows: Vec<Row> = grid
-            .into_iter()
-            .map(|cells| Row {
-                cells: cells.into_iter().map(Cell::text).collect(),
-            })
-            .collect();
+        let rows = crate::formats::sheet_rows(grid);
 
         document.sections.push(Section {
             kind: crate::doc::SectionKind::Sheet,
@@ -127,9 +127,79 @@ fn read_sheet_list(xml: &[u8]) -> Vec<SheetRef> {
     sheets
 }
 
+/// The hyperlink on each cell, by `(column, row)`.
+///
+/// `<hyperlink ref="B11" r:id="rId1"/>` sits after the cells and names a
+/// relationship of the worksheet part, not of the workbook. A `location`
+/// without a relationship is a reference within the workbook rather than a
+/// URL, and is kept as a fragment so it is not mistaken for one.
+fn read_hyperlinks(xml: &[u8], rels: &Rels, base: &str) -> HashMap<(usize, usize), String> {
+    /// A sheet naming more links than it has cells is not a sheet.
+    const MAX_LINKS: usize = 1 << 16;
+
+    let mut links = HashMap::new();
+    let mut reader = Reader::new(xml);
+
+    while let Some(event) = reader.read_event() {
+        let Event::Start(element) = event else {
+            continue;
+        };
+        if element.local != "hyperlink" || links.len() >= MAX_LINKS {
+            continue;
+        }
+        let href = element
+            .attr_local("id")
+            .and_then(|id| rels.resolve(base, id))
+            .or_else(|| {
+                element
+                    .attr_local("location")
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| format!("#{value}"))
+            });
+        let (Some(href), Some(reference)) = (href, element.attr_local("ref")) else {
+            continue;
+        };
+        // The reference may be a range, and every cell in it carries the link.
+        for (column, row) in reference_cells(reference) {
+            if links.len() >= MAX_LINKS {
+                break;
+            }
+            links.insert((column, row), href.clone());
+        }
+    }
+    links
+}
+
+/// Every cell a reference names, whether it is one cell or a range.
+fn reference_cells(reference: &str) -> Vec<(usize, usize)> {
+    /// A range wider or taller than this is a whole-sheet link, and marking
+    /// every cell of it says nothing.
+    const MAX_SPAN: usize = 4096;
+
+    let (from, to) = match reference.split_once(':') {
+        Some((from, to)) => (from, to),
+        None => (reference, reference),
+    };
+    let (Some(from), Some(to)) = (parse_reference(from), parse_reference(to)) else {
+        return Vec::new();
+    };
+    let columns = from.0.min(to.0)..=from.0.max(to.0);
+    let rows = from.1.min(to.1)..=from.1.max(to.1);
+    if columns.clone().count() * rows.clone().count() > MAX_SPAN {
+        return Vec::new();
+    }
+    rows.flat_map(|row| columns.clone().map(move |column| (column, row)))
+        .collect()
+}
+
 /// Read a worksheet into a dense, rectangular grid of strings.
-fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Vec<String>> {
-    let mut grid: Vec<Vec<String>> = Vec::new();
+fn read_sheet(
+    xml: &[u8],
+    shared: &SharedStrings,
+    styles: &CellStyles,
+    links: &HashMap<(usize, usize), String>,
+) -> Vec<Vec<SheetCell>> {
+    let mut grid: Vec<Vec<SheetCell>> = Vec::new();
     let mut reader = Reader::new(xml);
     let mut cells_read = 0usize;
     let mut row_index = 0usize;
@@ -189,9 +259,12 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Ve
                     grid.resize(row + 1, Vec::new());
                 }
                 if grid[row].len() <= column {
-                    grid[row].resize(column + 1, String::new());
+                    grid[row].resize(column + 1, SheetCell::default());
                 }
-                grid[row][column] = value;
+                grid[row][column] = SheetCell {
+                    text: value,
+                    href: links.get(&(column, row)).cloned(),
+                };
             }
             _ => {}
         }
@@ -219,7 +292,7 @@ fn read_sheet(xml: &[u8], shared: &SharedStrings, styles: &CellStyles) -> Vec<Ve
 }
 
 /// Resolve a cell's `(column, row)` from its `r` reference.
-fn cell_position(element: &Element, row_index: usize, grid: &[Vec<String>]) -> (usize, usize) {
+fn cell_position(element: &Element, row_index: usize, grid: &[Vec<SheetCell>]) -> (usize, usize) {
     match element.attr_local("r").and_then(parse_reference) {
         Some((column, row)) => (column, row),
         // Without a reference, the cell follows the previous one in its row.

@@ -15,7 +15,8 @@
 
 use std::collections::HashSet;
 
-use crate::doc::{Block, Cell, Row, Section, SectionKind, SemanticDoc, Table};
+use crate::doc::{Block, Section, SectionKind, SemanticDoc, Table};
+use crate::formats::SheetCell;
 use crate::xml::{Element, Event, Reader, ns};
 
 /// Largest repeat count honoured for a cell or row carrying content.
@@ -83,12 +84,7 @@ pub fn read(content: &[u8], document: &mut SemanticDoc) {
         let blocks = if grid.is_empty() {
             Vec::new()
         } else {
-            let rows: Vec<Row> = grid
-                .into_iter()
-                .map(|cells| Row {
-                    cells: cells.into_iter().map(Cell::text).collect(),
-                })
-                .collect();
+            let rows = crate::formats::sheet_rows(grid);
             vec![Block::Table(Table {
                 // As with every spreadsheet format, nothing marks a header row;
                 // the first is one by convention and GFM requires one.
@@ -108,8 +104,8 @@ pub fn read(content: &[u8], document: &mut SemanticDoc) {
 }
 
 /// Read one `<table:table>` into a dense, rectangular grid.
-fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
-    let mut grid: Vec<Vec<String>> = Vec::new();
+fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<SheetCell>> {
+    let mut grid: Vec<Vec<SheetCell>> = Vec::new();
     let mut nesting = 1usize;
     // Columns are declared before the rows; the hidden ones are removed once
     // the grid is built.
@@ -151,7 +147,7 @@ fn read_sheet(reader: &mut Reader, start: &Element) -> Vec<Vec<String>> {
                     continue;
                 }
 
-                if cells.iter().all(String::is_empty) {
+                if cells.iter().all(SheetCell::is_empty) {
                     pending_empty = pending_empty.saturating_add(repeat);
                     continue;
                 }
@@ -201,8 +197,8 @@ fn is_collapsed(element: &Element) -> bool {
 }
 
 /// Read one `<table:table-row>` into its cell values.
-fn read_row(reader: &mut Reader, start: &Element) -> Vec<String> {
-    let mut cells: Vec<String> = Vec::new();
+fn read_row(reader: &mut Reader, start: &Element) -> Vec<SheetCell> {
+    let mut cells: Vec<SheetCell> = Vec::new();
 
     while let Some(event) = reader.read_event() {
         match event {
@@ -218,7 +214,7 @@ fn read_row(reader: &mut Reader, start: &Element) -> Vec<String> {
                     // An empty run just advances the column cursor. Materialising
                     // it is what turns a small sheet into a huge one.
                     let target = (cells.len() + repeat).min(MAX_COLUMNS);
-                    cells.resize(target, String::new());
+                    cells.resize(target, SheetCell::default());
                     continue;
                 }
                 for _ in 0..repeat.min(MAX_REPEAT) {
@@ -253,9 +249,10 @@ fn read_row(reader: &mut Reader, start: &Element) -> Vec<String> {
 /// Dates and times keep their typed value for the same reason as numbers, and
 /// it is already ISO 8601 — which is what the OOXML readers now produce from a
 /// serial.
-fn read_cell(reader: &mut Reader, start: &Element) -> String {
+fn read_cell(reader: &mut Reader, start: &Element) -> SheetCell {
     let typed = typed_value(start);
     let mut text = String::new();
+    let mut href: Option<String> = None;
     let mut nesting = 1usize;
 
     while let Some(event) = reader.read_event() {
@@ -274,8 +271,14 @@ fn read_cell(reader: &mut Reader, start: &Element) -> String {
             Event::Start(element) if element.is(ns::ODF_OFFICE, "annotation") => {
                 let _ = crate::xml::text_of(reader, &element.qname);
             }
+            // Read a paragraph at a time rather than taking its text
+            // wholesale, because a cell's hyperlink is written inside it: the
+            // text of a `<text:a>` is the cell's text, and its target is where
+            // the cell points -- which the .xlsx of the same workbook states
+            // beside the sheet and this reader was losing here.
             Event::Start(element) if element.is(ns::ODF_TEXT, "p") => {
-                let paragraph = crate::xml::text_of(reader, &element.qname);
+                let (paragraph, target) = read_cell_paragraph(reader, &element.qname);
+                href = href.or(target);
                 if !paragraph.trim().is_empty() {
                     if !text.is_empty() {
                         text.push(' ');
@@ -298,13 +301,47 @@ fn read_cell(reader: &mut Reader, start: &Element) -> String {
         start.attr_local("value-type").unwrap_or(""),
         "float" | "percentage" | "currency" | "date" | "time" | "boolean"
     ) && !is_error_code(&text);
-    match machine_readable && !typed.is_empty() {
+    let value = match machine_readable && !typed.is_empty() {
         true => typed,
         false => match text.is_empty() {
             true => typed,
             false => text,
         },
+    };
+    SheetCell { text: value, href }
+}
+
+/// A cell's paragraph: its text, and the target of the first link in it.
+///
+/// A cell holds one link at most in practice, and a table cell has one place
+/// to put it, so the first is the one that counts.
+fn read_cell_paragraph(reader: &mut Reader, closer: &str) -> (String, Option<String>) {
+    let mut text = String::new();
+    let mut href: Option<String> = None;
+    let mut depth = 1usize;
+
+    while let Some(event) = reader.read_event() {
+        match event {
+            Event::End(name) if name == closer => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            Event::Start(element) if element.qname == closer => depth += 1,
+            Event::Start(element) if element.is(ns::ODF_TEXT, "a") => {
+                if href.is_none()
+                    && let Some(target) = element.attr_local("href")
+                    && !target.trim().is_empty()
+                {
+                    href = Some(target.to_string());
+                }
+            }
+            Event::Text(chunk) => text.push_str(&chunk),
+            _ => {}
+        }
     }
+    (text, href)
 }
 
 /// Whether displayed text is one of the spreadsheet error codes.

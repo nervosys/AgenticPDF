@@ -261,10 +261,54 @@ mod field_tests {
     }
 }
 
-pub(crate) fn square_grid(grid: &mut Vec<Vec<String>>) {
+/// One cell of a spreadsheet: what it says, and where it points.
+///
+/// A spreadsheet's grid was a grid of strings, which left a cell's hyperlink
+/// nowhere to go -- so all three readers reported the link's text and dropped
+/// its target, together, which is the one thing comparing them cannot show.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SheetCell {
+    pub text: String,
+    pub href: Option<String>,
+}
+
+impl SheetCell {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+}
+
+/// Turn a sheet's grid into table rows, keeping each cell's link.
+pub(crate) fn sheet_rows(grid: Vec<Vec<SheetCell>>) -> Vec<crate::doc::Row> {
+    use crate::doc::{Align, Block, Cell, Inline, Row, Run};
+
+    grid.into_iter()
+        .map(|cells| Row {
+            cells: cells
+                .into_iter()
+                .map(|cell| match cell.href {
+                    None => Cell::text(cell.text),
+                    Some(href) => Cell {
+                        blocks: vec![Block::Paragraph {
+                            content: vec![Inline::Link {
+                                href,
+                                runs: vec![Run::plain(cell.text)],
+                            }],
+                            align: Align::Left,
+                            indent: 0.0,
+                        }],
+                        ..Cell::default()
+                    },
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+pub(crate) fn square_grid(grid: &mut Vec<Vec<SheetCell>>) {
     while grid
         .last()
-        .is_some_and(|row| row.iter().all(String::is_empty))
+        .is_some_and(|row| row.iter().all(SheetCell::is_empty))
     {
         grid.pop();
     }
@@ -273,13 +317,13 @@ pub(crate) fn square_grid(grid: &mut Vec<Vec<String>>) {
         .iter()
         .map(|row| {
             row.iter()
-                .rposition(|cell| !cell.is_empty())
+                .rposition(|cell| !SheetCell::is_empty(cell))
                 .map_or(0, |at| at + 1)
         })
         .max()
         .unwrap_or(0);
     for row in grid.iter_mut() {
-        row.resize(width, String::new());
+        row.resize(width, SheetCell::default());
     }
 }
 

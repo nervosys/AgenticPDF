@@ -22,7 +22,8 @@
 
 use crate::PdfError;
 use crate::container::ole::{Ole2, decode_utf16le, u16_at, u32_at};
-use crate::doc::{Block, Cell, Row, Section, SectionKind, SemanticDoc, Table};
+use crate::doc::{Block, Section, SectionKind, SemanticDoc, Table};
+use crate::formats::SheetCell;
 
 // Record types, from the BIFF8 specification.
 const BOF: u16 = 0x0809;
@@ -45,6 +46,8 @@ const XF: u16 = 0x00E0;
 const FORMAT: u16 = 0x041E;
 const FILEPASS: u16 = 0x002F;
 const ROW: u16 = 0x0208;
+/// `HLINK`: a hyperlink over a range of cells.
+const HLINK: u16 = 0x01B8;
 const COLINFO: u16 = 0x007D;
 
 /// `fDyZero` in a `ROW` record's flags: the row is hidden.
@@ -120,12 +123,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         let blocks = if grid.is_empty() {
             Vec::new()
         } else {
-            let rows: Vec<Row> = grid
-                .into_iter()
-                .map(|cells| Row {
-                    cells: cells.into_iter().map(Cell::text).collect(),
-                })
-                .collect();
+            let rows = crate::formats::sheet_rows(grid);
             vec![Block::Table(Table {
                 header_rows: 1.min(rows.len()),
                 rows,
@@ -376,8 +374,8 @@ fn read_sheet(
     offset: usize,
     strings: &[String],
     formats: &Formats,
-) -> Vec<Vec<String>> {
-    let mut grid: Vec<Vec<String>> = Vec::new();
+) -> Vec<Vec<SheetCell>> {
+    let mut grid: Vec<Vec<SheetCell>> = Vec::new();
     if offset >= stream.len() {
         return grid;
     }
@@ -557,6 +555,22 @@ fn read_sheet(
                     place(&mut grid, row, column, text);
                 }
             }
+            // A cell's hyperlink is a record of its own, written after the
+            // cells and covering a range. Read on the spot rather than
+            // collected by position, because the hidden rows and columns are
+            // taken out of the grid afterwards and would move anything keyed
+            // to a coordinate.
+            HLINK => {
+                if let Some(href) = hyperlink_target(record.data) {
+                    for (row, column) in hlink_range(record.data) {
+                        if let Some(cell) =
+                            grid.get_mut(row).and_then(|cells| cells.get_mut(column))
+                        {
+                            cell.href = Some(href.clone());
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -571,7 +585,7 @@ fn read_sheet(
 /// Applied at the end rather than while reading: the records that state them
 /// need not precede every cell they cover, and a row block states its rows just
 /// before its own cells but says nothing about the blocks after it.
-fn remove_hidden(grid: &mut Vec<Vec<String>>, rows: &[usize], columns: &[usize]) {
+fn remove_hidden(grid: &mut Vec<Vec<SheetCell>>, rows: &[usize], columns: &[usize]) {
     for row in grid.iter_mut() {
         for column in columns.iter().copied().collect::<std::collections::BTreeSet<_>>().iter().rev() {
             if *column < row.len() {
@@ -589,14 +603,14 @@ fn remove_hidden(grid: &mut Vec<Vec<String>>, rows: &[usize], columns: &[usize])
 }
 
 /// The most recently written position, for attaching a formula's string result.
-fn last_position(grid: &[Vec<String>]) -> Option<(usize, usize)> {
+fn last_position(grid: &[Vec<SheetCell>]) -> Option<(usize, usize)> {
     let row = grid.len().checked_sub(1)?;
     let column = grid[row].len().checked_sub(1)?;
     Some((row, column))
 }
 
 /// Write a value at its true coordinates, growing the grid as needed.
-fn place(grid: &mut Vec<Vec<String>>, row: usize, column: usize, value: String) {
+fn place(grid: &mut Vec<Vec<SheetCell>>, row: usize, column: usize, value: String) {
     if row >= MAX_ROWS || column >= MAX_COLUMNS || value.is_empty() {
         return;
     }
@@ -604,9 +618,66 @@ fn place(grid: &mut Vec<Vec<String>>, row: usize, column: usize, value: String) 
         grid.resize(row + 1, Vec::new());
     }
     if grid[row].len() <= column {
-        grid[row].resize(column + 1, String::new());
+        grid[row].resize(column + 1, SheetCell::default());
     }
-    grid[row][column] = value;
+    grid[row][column].text = value;
+}
+
+/// The cells an `HLINK` record covers.
+///
+/// The record opens with the range it applies to, as four 16-bit numbers:
+/// first and last row, then first and last column.
+fn hlink_range(body: &[u8]) -> Vec<(usize, usize)> {
+    /// A link over more than this is a whole-sheet link, and marking every
+    /// cell of it says nothing.
+    const MAX_SPAN: usize = 4096;
+
+    let value = |at: usize| u16_at(body, at).map(usize::from);
+    let (Some(first_row), Some(last_row), Some(first_column), Some(last_column)) =
+        (value(0), value(2), value(4), value(6))
+    else {
+        return Vec::new();
+    };
+    if last_row < first_row || last_column < first_column {
+        return Vec::new();
+    }
+    let rows = first_row..=last_row;
+    let columns = first_column..=last_column;
+    if rows.clone().count() * columns.clone().count() > MAX_SPAN {
+        return Vec::new();
+    }
+    rows.flat_map(|row| columns.clone().map(move |column| (row, column)))
+        .collect()
+}
+
+/// The URL an `HLINK` record points at.
+///
+/// The record is a chain of optional pieces -- a display name, a target frame,
+/// the moniker itself -- each present only if a flag says so. Rather than walk
+/// the flags, this finds the URL moniker by its class identifier, which is the
+/// one piece that is always written the same way: the identifier, then the
+/// length in bytes, then the URL as UTF-16.
+fn hyperlink_target(body: &[u8]) -> Option<String> {
+    /// The class identifier of a URL moniker.
+    const URL_MONIKER: [u8; 16] = [
+        0xE0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B, 0xA9,
+        0x0B,
+    ];
+
+    let at = body
+        .windows(URL_MONIKER.len())
+        .position(|window| window == URL_MONIKER)?;
+    let start = at + URL_MONIKER.len();
+    let length = u32_at(body, start)? as usize;
+    let text = body.get(start + 4..start + 4 + length)?;
+    // The length covers the terminating null and whatever the moniker keeps
+    // after it, so the URL ends at the null rather than at the length.
+    let decoded = decode_utf16le(text);
+    let url = decoded.split('\0').next().unwrap_or("").trim();
+    match url.is_empty() {
+        true => None,
+        false => Some(url.to_string()),
+    }
 }
 
 /// Decode an RK value.
@@ -646,6 +717,66 @@ fn error_text(code: u8) -> &'static str {
         0x24 => "#NUM!",
         0x2A => "#N/A",
         _ => "#ERR",
+    }
+}
+
+#[cfg(test)]
+mod hyperlink_tests {
+    use super::{hlink_range, hyperlink_target};
+
+    /// The class identifier that always precedes a URL, and the URL after it.
+    fn hlink(url: &str) -> Vec<u8> {
+        // The range: rows 10 to 10, columns 1 to 1.
+        let mut out: Vec<u8> = [10u16, 10, 1, 1]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        // The pieces before the moniker, which this reader skips over.
+        out.extend_from_slice(&[0u8; 24]);
+        out.extend_from_slice(&[
+            0xE0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B,
+            0xA9, 0x0B,
+        ]);
+        let mut text: Vec<u8> = url.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        text.extend_from_slice(&[0, 0]); // the terminating null
+        // The length also covers what the moniker keeps after the null.
+        let trailing = vec![0xABu8; 24];
+        out.extend_from_slice(&((text.len() + trailing.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&text);
+        out.extend_from_slice(&trailing);
+        out
+    }
+
+    /// The URL ends at its null, not at the length the record states.
+    ///
+    /// The record's length covers the terminator and the moniker's own trailing
+    /// bytes, so reading to the length appended a run of mojibake to every link
+    /// in an .xls -- where the .xlsx and .ods of the same workbook gave a URL.
+    #[test]
+    fn reads_the_url_a_hyperlink_record_points_at() {
+        let body = hlink("https://example.invalid/cell");
+        assert_eq!(
+            hyperlink_target(&body).as_deref(),
+            Some("https://example.invalid/cell")
+        );
+        assert_eq!(hlink_range(&body), vec![(10, 1)]);
+    }
+
+    /// A record with no moniker in it points nowhere.
+    #[test]
+    fn a_record_without_a_url_moniker_is_not_a_link() {
+        assert_eq!(hyperlink_target(&[0u8; 40]), None);
+    }
+
+    /// A link over a whole sheet says nothing about any particular cell.
+    #[test]
+    fn a_range_too_large_to_mean_anything_is_dropped() {
+        let mut body: Vec<u8> = [0u16, 65_535, 0, 255]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        body.extend_from_slice(&[0u8; 8]);
+        assert!(hlink_range(&body).is_empty());
     }
 }
 
@@ -781,8 +912,8 @@ mod tests {
         crate::formats::square_grid(&mut grid);
 
         assert_eq!(grid.len(), 5, "the gap rows are kept");
-        assert_eq!(grid[0][0], "near");
-        assert_eq!(grid[4][2], "far");
+        assert_eq!(grid[0][0].text, "near");
+        assert_eq!(grid[4][2].text, "far");
         assert!(grid.iter().all(|row| row.len() == 3), "grid is rectangular");
     }
 

@@ -1052,6 +1052,54 @@ fn xlsx_with_sheet(sheet: &str) -> Vec<u8> {
     ])
 }
 
+/// A cell's link is stated away from the cell, and survives the pruning.
+///
+/// `<hyperlink>` sits after the cells and names a relationship of the
+/// worksheet part rather than of the workbook, so reading the cells alone gave
+/// the link's text and lost where it pointed -- as the .ods and .xls readers
+/// of the same workbook also did, which is why no comparison showed it.
+///
+/// The hidden row here is the reason the link travels on the cell rather than
+/// in a map of coordinates: the rows are pruned after the grid is built, and a
+/// coordinate recorded before that no longer names the same cell.
+#[test]
+fn xlsx_reads_the_link_on_a_cell() {
+    let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <sheetData>
+          <row r="1" hidden="1"><c r="A1" t="inlineStr"><is><t>hidden</t></is></c></row>
+          <row r="2"><c r="A2" t="inlineStr"><is><t>the link</t></is></c>
+                     <c r="B2" t="inlineStr"><is><t>elsewhere</t></is></c></row>
+        </sheetData>
+        <hyperlinks><hyperlink ref="A2" r:id="rId9"/>
+                    <hyperlink ref="B2" location="Sheet2!A1"/></hyperlinks>
+        </worksheet>"#;
+    let sheet_rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+        <Relationship Id="rId9" TargetMode="External"
+          Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+          Target="https://example.invalid/cell"/></Relationships>"#;
+
+    let workbook = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#;
+    let rels = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#;
+    let root = root_rels("xl/workbook.xml");
+    let zip = build_zip(&[
+        ("_rels/.rels", root.as_bytes(), true),
+        ("xl/workbook.xml", workbook.as_bytes(), true),
+        ("xl/_rels/workbook.xml.rels", rels.as_bytes(), true),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes(), true),
+        ("xl/worksheets/_rels/sheet1.xml.rels", sheet_rels, true),
+    ]);
+
+    let markdown = to_markdown(&open(&zip, Format::Xlsx));
+    assert!(
+        markdown.contains("[the link](https://example.invalid/cell)"),
+        "{markdown}"
+    );
+    // A location without a relationship points inside the workbook, and is
+    // kept as a fragment so it is not mistaken for a URL.
+    assert!(markdown.contains("[elsewhere](#Sheet2!A1)"), "{markdown}");
+}
+
 /// A hidden row and a hidden column are content the author chose not to show.
 ///
 /// The same reasoning that already skips a hidden sheet, one division down.

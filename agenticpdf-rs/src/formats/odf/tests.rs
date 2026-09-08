@@ -246,6 +246,25 @@ fn odt_nests_lists() {
 /// comment as part of the value: a cell holding "Value" came back as
 /// "A reviewer note. Value", where the .xlsx and .xls of the same workbook both
 /// leave the comment out.
+/// A cell's link is written inside the cell, and is not just its text.
+///
+/// Taking the paragraph's text wholesale gave the words and dropped the
+/// target, which is what the .xlsx and .xls readers of the same workbook did
+/// too -- so all three agreed and all three were wrong.
+#[test]
+fn ods_reads_the_link_inside_a_cell() {
+    let zip = ods(r#"<table:table table:name="S"><table:table-row>
+             <table:table-cell office:value-type="string"><text:p>Link</text:p></table:table-cell>
+             <table:table-cell office:value-type="string"><text:p><text:a
+               xlink:href="https://example.invalid/cell">the link</text:a></text:p></table:table-cell>
+           </table:table-row></table:table>"#);
+    let markdown = to_markdown(&parse(&zip, Format::Ods).unwrap());
+    assert!(
+        markdown.contains("[the link](https://example.invalid/cell)"),
+        "{markdown}"
+    );
+}
+
 #[test]
 fn ods_keeps_a_cell_comment_out_of_the_cell() {
     let body = r#"<table:table table:name="Cells">
