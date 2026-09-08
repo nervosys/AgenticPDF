@@ -191,6 +191,30 @@ fn odt_does_not_merge_lists_of_different_kinds() {
     assert_eq!(document.sections[0].blocks.len(), 2);
 }
 
+/// A nested list states no style of its own; it continues the one around it.
+///
+/// Word's export gives the outer list a style and the inner list none, and
+/// defaulting to unnumbered made a numbered sublist bulleted -- where the .docx
+/// of the same document names the format for every level.
+#[test]
+fn odt_a_nested_list_inherits_the_style_around_it() {
+    let styles = r#"<text:list-style style:name="L1">
+           <text:list-level-style-number text:level="1"/>
+           <text:list-level-style-number text:level="2"/></text:list-style>"#;
+    let zip = odt(
+        styles,
+        r#"<text:list text:style-name="L1"><text:list-item><text:p>Top</text:p>
+             <text:list><text:list-item><text:p>Nested</text:p></text:list-item></text:list>
+           </text:list-item></text:list>"#,
+    );
+    assert_eq!(
+        to_markdown(&parse(&zip, Format::Odt).unwrap()),
+        "1. Top
+   1. Nested
+"
+    );
+}
+
 #[test]
 fn odt_nests_lists() {
     let zip = odt(

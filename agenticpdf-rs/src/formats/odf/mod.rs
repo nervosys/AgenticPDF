@@ -56,6 +56,7 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
         archive: &archive,
         styles,
         images: HashMap::new(),
+        list_style: None,
         deferred: Vec::new(),
     };
 
@@ -97,6 +98,12 @@ pub struct Package<'a> {
     styles: Styles,
     /// Archive path → registered asset id, so an image used twice is stored once.
     images: HashMap<String, String>,
+    /// The style of the list being read, so a nested one that names none can
+    /// inherit it. Word's export gives the outer list a style and the inner
+    /// list none at all, and defaulting to unnumbered made a numbered sublist
+    /// bulleted -- which the .docx of the same document, naming the format for
+    /// every level, says it is not.
+    list_style: Option<String>,
     /// Blocks a frame produced while a paragraph was being read, to be emitted
     /// after it. A text box is anchored inside a paragraph but is not part of
     /// the sentence, so its content cannot go inline and must not be lost.
@@ -609,10 +616,16 @@ fn read_list(
     document: &mut SemanticDoc,
     depth: usize,
 ) -> (bool, Vec<(u8, ListItem)>) {
-    let ordered = start
+    // A nested list states no style of its own; it continues the one around it.
+    let style = start
         .attr_local("style-name")
+        .map(str::to_string)
+        .or_else(|| package.list_style.clone());
+    let ordered = style
+        .as_deref()
         .map(|name| package.styles.is_ordered(name))
         .unwrap_or(false);
+    let outer_style = std::mem::replace(&mut package.list_style, style);
     let mut items = Vec::new();
     let mut nesting = 1usize;
 
@@ -643,6 +656,7 @@ fn read_list(
         }
     }
 
+    package.list_style = outer_style;
     (ordered, items)
 }
 

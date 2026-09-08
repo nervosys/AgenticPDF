@@ -869,7 +869,7 @@ impl<'a> Parser<'a> {
         if is_list {
             let ordered = marker
                 .as_deref()
-                .is_some_and(|m| m.chars().any(|c| c.is_ascii_digit()));
+                .is_some_and(is_ordered_marker);
             let item = ListItem {
                 blocks: vec![block],
                 checked: None,
@@ -955,10 +955,35 @@ fn is_marker(text: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    trimmed.chars().any(|c| c.is_ascii_digit())
-        || trimmed
-            .chars()
-            .any(|c| matches!(c, '\u{2022}' | '\u{00B7}' | '\u{25E6}' | '-' | '*' | 'o'))
+    is_ordered_marker(trimmed) || trimmed.chars().any(is_bullet_glyph)
+}
+
+/// Whether a list marker counts rather than bullets.
+///
+/// Word writes the marker as the text it draws: a number, a letter or a roman
+/// numeral for a list that counts, and a glyph for one that bullets. Testing
+/// for a digit alone called a lettered or roman-numbered list a bullet -- which
+/// the .docx of the same document, naming the format outright, says it is not.
+fn is_ordered_marker(text: &str) -> bool {
+    let trimmed = text.trim();
+    let body = trimmed.trim_end_matches(['.', ')', ':']);
+    if body.is_empty() || body.len() > 8 {
+        return false;
+    }
+    if body.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // A letter or a roman numeral counts only where a separator follows it.
+    // Without that rule `o` -- one of Word's bullet glyphs -- would count.
+    body.len() < trimmed.len() && body.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// The characters Word draws as a bullet.
+fn is_bullet_glyph(character: char) -> bool {
+    matches!(
+        character,
+        '\u{2022}' | '\u{00B7}' | '\u{25E6}' | '\u{25AA}' | '-' | '*' | 'o'
+    )
 }
 
 fn parse_leading_number(text: &str) -> Option<u64> {
@@ -1302,6 +1327,37 @@ mod tests {
             markdown_of(&rtf),
             "- One\n  - Under one\n  - Also under\n- Two\n"
         );
+    }
+
+    /// A list that counts with letters or roman numerals still counts.
+    ///
+    /// The marker was tested for a digit, so `a.` and `iv.` read as bullets
+    /// -- where the .docx of the same document names the format outright as
+    /// `lowerLetter`, and its sublist is numbered.
+    #[test]
+    fn lettered_and_roman_markers_produce_an_ordered_list() {
+        // Word writes the marker as the literal text it draws.
+        // The number a marker states is the one the list starts at, which is
+        // why these differ.
+        for (marker, expected) in [
+            ("a.", "1. Item\n"),
+            ("iv.", "1. Item\n"),
+            ("B)", "1. Item\n"),
+            ("12.", "12. Item\n"),
+        ] {
+            let rtf = format!(
+                r"{HEADER}\pard{{\listtext {marker}\tab}}\ilvl0 Item\par}}"
+            );
+            assert_eq!(markdown_of(&rtf), expected, "marker {marker}");
+        }
+
+        // A glyph still bullets, and `o` is one of them.
+        for marker in ["o", "\u{2022}", "-", "*"] {
+            let rtf = format!(
+                r"{HEADER}\pard{{\listtext {marker}\tab}}\ilvl0 Item\par}}"
+            );
+            assert_eq!(markdown_of(&rtf), "- Item\n", "marker {marker}");
+        }
     }
 
     #[test]
