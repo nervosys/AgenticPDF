@@ -65,13 +65,20 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     .unwrap_or_default();
     let data_stream = ole.read_optional("Data").unwrap_or_default();
 
-    // Character counts per document part; only the main text is converted.
-    let ccp_text = u32_at(&word, 0x4C).unwrap_or(0) as usize;
-    let total_cp = ccp_text
-        + [0x50, 0x54, 0x58, 0x5C, 0x60]
-            .iter()
-            .map(|&offset| u32_at(&word, offset).unwrap_or(0) as usize)
-            .sum::<usize>();
+    // A document is one run of characters divided into parts, each counted in
+    // the header: the main text, then the footnotes, headers, macros,
+    // annotations, endnotes and finally the text boxes. The text-box count was
+    // missing from this total, so a text box's text was never even extracted --
+    // no amount of looking at the main text would have found it.
+    let counts: Vec<usize> = [0x4C, 0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68]
+        .iter()
+        .map(|&offset| u32_at(&word, offset).unwrap_or(0) as usize)
+        .collect();
+    let ccp_text = counts[0];
+    let total_cp: usize = counts.iter().sum();
+    // The text boxes begin after every part before them.
+    let textbox_start: usize = counts[..6].iter().sum();
+    let textbox_end = textbox_start + counts[6] + counts[7];
 
     let fc_clx = u32_at(&word, 0x1A2).unwrap_or(0) as usize;
     let lcb_clx = u32_at(&word, 0x1A6).unwrap_or(0) as usize;
@@ -105,7 +112,11 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     let lists = parse_lists(&word, &table);
 
     let main_end = text.index_of_cp(ccp_text);
-    let assembler = Assembler {
+    let textbox_range = match counts[6] + counts[7] > 0 {
+        true => Some((text.index_of_cp(textbox_start), text.index_of_cp(textbox_end))),
+        false => None,
+    };
+    let mut assembler = Assembler {
         text,
         chpx,
         papx,
@@ -116,7 +127,14 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         counters: HashMap::new(),
     };
 
-    let blocks = assembler.build(0, main_end);
+    let mut blocks = assembler.build(0, main_end);
+    // A text box is anchored by a drawing record rather than by its position in
+    // this run, and that anchor is not read here, so its content goes after the
+    // body rather than beside the paragraph it belongs to. The .docx and .odt
+    // of the same document do place it there.
+    if let Some((lo, hi)) = textbox_range {
+        blocks.extend(assembler.build(lo, hi));
+    }
     Ok(SemanticDoc {
         sections: vec![Section {
             blocks,
@@ -673,7 +691,7 @@ struct EffectivePap {
 
 impl Assembler {
     /// Walk the character range, emitting blocks.
-    fn build(mut self, lo: usize, hi: usize) -> Vec<Block> {
+    fn build(&mut self, lo: usize, hi: usize) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
         let mut content: Vec<Inline> = Vec::new();
 
