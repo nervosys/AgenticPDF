@@ -50,6 +50,7 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
         images: HashMap::new(),
         notes: HashMap::new(),
         placed_notes: HashMap::new(),
+        deferred: Vec::new(),
         table_style: None,
         cell_style: TextStyle::default(),
     };
@@ -85,6 +86,11 @@ struct DocxReader<'a> {
     /// Note id → its place in the document's footnote list, so a note
     /// referenced twice is stored once and numbered once.
     placed_notes: HashMap<NoteId, usize>,
+    /// Blocks a drawing produced while a paragraph was being read, to be
+    /// emitted after it. A text box is anchored inside a paragraph but is not
+    /// part of the sentence, so its content cannot go inline and must not be
+    /// lost.
+    deferred: Vec<Block>,
 }
 
 /// A note's identity: its number, and which of the two lists it is in.
@@ -129,7 +135,7 @@ impl DocxReader<'_> {
                 let Some(id) = attr_i64(&element, "id") else {
                     continue;
                 };
-                let blocks = self.read_note_body(&mut reader, &element);
+                let blocks = self.read_nested_blocks(&mut reader, &element);
                 if !blocks.is_empty() {
                     self.notes.insert(NoteId { endnote, id }, blocks);
                 }
@@ -137,8 +143,25 @@ impl DocxReader<'_> {
         }
     }
 
-    /// Read one note's blocks, which are paragraphs and tables like any others.
-    fn read_note_body(&mut self, reader: &mut Reader, start: &Element) -> Vec<Block> {
+    /// Skip an `<mc:Fallback>`, which repeats content already offered.
+    ///
+    /// `<mc:AlternateContent>` states the same thing twice: a `<mc:Choice>` for
+    /// a reader that understands the newer markup, and a `<mc:Fallback>` in
+    /// older markup for one that does not. This reader understands both, so
+    /// reading each produced everything inside twice -- a text box appeared
+    /// once from the drawing and again from the picture beneath it.
+    fn skip_fallback(&mut self, reader: &mut Reader, element: &Element) -> bool {
+        if element.local != "Fallback" {
+            return false;
+        }
+        let _ = crate::xml::text_of(reader, &element.qname);
+        true
+    }
+
+    /// Read the blocks inside one element: paragraphs and tables like any others.
+    ///
+    /// Used for a note's body and for a text box's, which are the same shape.
+    fn read_nested_blocks(&mut self, reader: &mut Reader, start: &Element) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
         let mut depth = 1usize;
 
@@ -151,6 +174,7 @@ impl DocxReader<'_> {
                     }
                 }
                 Event::Start(element) if element.qname == start.qname => depth += 1,
+                Event::Start(element) if self.skip_fallback(reader, &element) => {}
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
                     "p" => {
                         if let Some(paragraph) = self.read_paragraph(reader, &element) {
@@ -166,6 +190,7 @@ impl DocxReader<'_> {
                 },
                 _ => {}
             }
+            self.drain_deferred(&mut blocks);
         }
         blocks
     }
@@ -197,6 +222,9 @@ impl DocxReader<'_> {
             let Event::Start(element) = event else {
                 continue;
             };
+            if self.skip_fallback(&mut reader, &element) {
+                continue;
+            }
             if !element.in_ns(ns::W) {
                 continue;
             }
@@ -213,8 +241,20 @@ impl DocxReader<'_> {
                 }
                 _ => {}
             }
+            self.drain_deferred(&mut blocks);
         }
         blocks
+    }
+
+    /// Emit what a drawing produced, after the paragraph that anchored it.
+    ///
+    /// A text box is a box beside the text rather than a word in it, so
+    /// splicing it into the sentence would read as part of it.
+    fn drain_deferred(&mut self, blocks: &mut Vec<Block>) {
+        if !self.deferred.is_empty() {
+            let deferred = std::mem::take(&mut self.deferred);
+            blocks.extend(deferred);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -362,6 +402,7 @@ impl DocxReader<'_> {
         while let Some(event) = reader.read_event() {
             match event {
                 Event::End(name) if name == start.qname => break,
+                Event::Start(element) if self.skip_fallback(reader, &element) => {}
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
                     "rPr" => self.read_run_properties(reader, &element, &mut style),
                     "t" => {
@@ -490,6 +531,13 @@ impl DocxReader<'_> {
                         "extent" | "ext" => {
                             width = attr_i64(&element, "cx").map(emu_to_points);
                             height = attr_i64(&element, "cy").map(emu_to_points);
+                        }
+                        // A drawing may hold a text box as well as, or instead
+                        // of, a picture. Reading only the picture dropped its
+                        // text, as all four readers of one document did.
+                        "txbxContent" => {
+                            let blocks = self.read_nested_blocks(reader, &element);
+                            self.deferred.extend(blocks);
                         }
                         _ => {}
                     }

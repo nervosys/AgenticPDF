@@ -335,6 +335,47 @@ fn docx_nests_list_items_by_their_level() {
 /// Read no further than the run, every footnote and endnote in the document was
 /// silently dropped -- though the model has somewhere to put them and both
 /// writers already render them. The .odt of the same document now agrees.
+/// A drawing may hold a text box as well as, or instead of, a picture.
+///
+/// Reading only the picture dropped its text, as all four readers of one
+/// document did. It cannot go inline either: a text box is a box beside the
+/// text rather than a word in it, so it is emitted after the paragraph that
+/// anchors it -- which is where the .odt reader now puts it too.
+#[test]
+fn docx_reads_a_text_box_anchored_in_a_paragraph() {
+    let zip = docx(
+        r#"<w:p><w:r><w:t>Before the box.</w:t>
+             <w:drawing><wp:anchor><w:txbxContent>
+               <w:p><w:r><w:t>Box content.</w:t></w:r></w:p>
+             </w:txbxContent></wp:anchor></w:drawing></w:r></w:p>
+           <w:p><w:r><w:t>After the box.</w:t></w:r></w:p>"#,
+    );
+    assert_eq!(
+        to_markdown(&open(&zip, Format::Docx)),
+        "Before the box.\n\nBox content.\n\nAfter the box.\n"
+    );
+}
+
+/// `<mc:AlternateContent>` states the same content twice; only one is read.
+///
+/// Word writes a text box as a `<mc:Choice>` in newer markup and a
+/// `<mc:Fallback>` in older markup for a reader that cannot manage the first.
+/// This reader manages both, so reading each produced everything inside twice.
+#[test]
+fn docx_reads_alternate_content_once() {
+    let zip = docx(
+        r#"<w:p><w:r><mc:AlternateContent>
+             <mc:Choice Requires="wps"><w:drawing><wp:anchor><w:txbxContent>
+               <w:p><w:r><w:t>Box content.</w:t></w:r></w:p>
+             </w:txbxContent></wp:anchor></w:drawing></mc:Choice>
+             <mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent>
+               <w:p><w:r><w:t>Box content.</w:t></w:r></w:p>
+             </w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback>
+           </mc:AlternateContent></w:r></w:p>"#,
+    );
+    assert_eq!(to_markdown(&open(&zip, Format::Docx)), "Box content.\n");
+}
+
 #[test]
 fn docx_reads_footnotes_and_endnotes() {
     // Ids 0 and 1 are the separators Word draws above the notes, not notes.
