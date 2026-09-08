@@ -111,6 +111,24 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     let stylesheet = stsh::parse(&word, &table);
     let lists = parse_lists(&word, &table);
 
+    // A note's reference is a 0x02 in the main text and its body is a
+    // paragraph in the note subdocument, also beginning with 0x02. What says
+    // which of the two kinds a reference is -- the subdocuments are separate,
+    // and the references are mixed together in reading order -- is a table of
+    // the character positions of each kind.
+    //
+    // Both offsets were found by looking for the table naming the positions
+    // this document's references actually sit at, rather than taken from
+    // memory: the footnote reference is at character 30 and the endnote at 57,
+    // and exactly one table names each.
+    let footnote_refs = reference_positions(&word, &table, 0x00AA);
+    let endnote_refs = reference_positions(&word, &table, 0x020A);
+
+    let footnote_start: usize = counts[0];
+    let endnote_start: usize = counts[..5].iter().sum();
+    let footnote_bodies = note_bodies(&text, footnote_start, counts[1]);
+    let endnote_bodies = note_bodies(&text, endnote_start, counts[5]);
+
     let main_end = text.index_of_cp(ccp_text);
     let textbox_range = match counts[6] + counts[7] > 0 {
         true => Some((text.index_of_cp(textbox_start), text.index_of_cp(textbox_end))),
@@ -125,7 +143,21 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         prcs,
         piece_prcs: pieces.iter().map(|piece| piece.prm_prc).collect(),
         counters: HashMap::new(),
+        footnote_refs,
+        endnote_refs,
+        note_bodies: Vec::new(),
+        notes: Vec::new(),
     };
+
+    // Built before the body, so a reference found there resolves to one.
+    let mut bodies: Vec<(bool, Vec<Block>)> = Vec::new();
+    for (endnote, ranges) in [(false, footnote_bodies), (true, endnote_bodies)] {
+        for (lo, hi) in ranges {
+            let blocks = assembler.build(lo, hi);
+            bodies.push((endnote, blocks));
+        }
+    }
+    assembler.note_bodies = bodies;
 
     let mut blocks = assembler.build(0, main_end);
     // A text box is anchored by a drawing record rather than by its position in
@@ -140,8 +172,52 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
             blocks,
             ..Section::default()
         }],
+        footnotes: std::mem::take(&mut assembler.notes),
         ..SemanticDoc::default()
     })
+}
+
+/// The character positions a reference table names.
+///
+/// A `PLC` is an array of positions followed by one entry each; only the
+/// positions are wanted here, and the last is the end marker rather than a
+/// reference.
+fn reference_positions(word: &[u8], table: &[u8], fib_offset: usize) -> Vec<u32> {
+    let fc = u32_at(word, fib_offset).unwrap_or(0) as usize;
+    let lcb = u32_at(word, fib_offset + 4).unwrap_or(0) as usize;
+    // Each entry is two bytes, so `lcb = 4 * (n + 1) + 2 * n`.
+    if lcb < 10 || !(lcb - 4).is_multiple_of(6) || fc + lcb > table.len() {
+        return Vec::new();
+    }
+    let count = (lcb - 4) / 6;
+    (0..count)
+        .filter_map(|index| u32_at(table, fc + index * 4))
+        .collect()
+}
+
+/// Split a note subdocument into one range per note.
+///
+/// Each note's text begins with the same 0x02 that marks its reference, so the
+/// subdocument divides at those without needing the table that also states it
+/// -- which is as well, since that table's positions are stated relative to a
+/// base this reader would have to guess at.
+fn note_bodies(text: &TextStream, start_cp: usize, count: usize) -> Vec<(usize, usize)> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let lo = text.index_of_cp(start_cp);
+    let hi = text.index_of_cp(start_cp + count);
+    let mut starts: Vec<usize> = (lo..hi.min(text.chars.len()))
+        .filter(|&at| text.chars[at] == '\u{02}')
+        .collect();
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    starts.push(hi);
+    starts
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
 }
 
 // ============================================================================
@@ -681,6 +757,14 @@ struct Assembler {
     prcs: Vec<Vec<u8>>,
     piece_prcs: Vec<Option<usize>>,
     counters: HashMap<u32, [u64; LEVELS]>,
+    /// Character positions of the footnote and endnote references, which say
+    /// which of the two kinds each 0x02 in the main text is.
+    footnote_refs: Vec<u32>,
+    endnote_refs: Vec<u32>,
+    /// Note bodies, footnotes first, each with whether it is an endnote.
+    note_bodies: Vec<(bool, Vec<Block>)>,
+    /// Notes placed so far, in the order their references were met.
+    notes: Vec<crate::doc::Footnote>,
 }
 
 /// A paragraph's resolved properties.
@@ -690,6 +774,39 @@ struct EffectivePap {
 }
 
 impl Assembler {
+    /// Place the note a reference at this character names.
+    ///
+    /// The references are met in reading order and the bodies are held in that
+    /// same order within each kind, so each kind is taken in turn. A reference
+    /// whose body is missing yields nothing rather than a number pointing at
+    /// no note.
+    fn place_note(&mut self, index: usize) -> Option<usize> {
+        let cp = *self.text.cps.get(index)?;
+        let endnote = match (
+            self.footnote_refs.contains(&cp),
+            self.endnote_refs.contains(&cp),
+        ) {
+            (true, _) => false,
+            (_, true) => true,
+            // A 0x02 the tables do not name is not a reference.
+            _ => return None,
+        };
+        let at = self
+            .note_bodies
+            .iter()
+            .position(|(kind, _)| *kind == endnote)?;
+        let (_, blocks) = self.note_bodies.remove(at);
+        if blocks.is_empty() {
+            return None;
+        }
+        let number = self.notes.len();
+        self.notes.push(crate::doc::Footnote {
+            label: None,
+            blocks,
+        });
+        Some(number)
+    }
+
     /// Walk the character range, emitting blocks.
     fn build(&mut self, lo: usize, hi: usize) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
@@ -768,6 +885,13 @@ impl Assembler {
                 '\u{1e}' => {
                     let style = self.char_style(fc, index);
                     push_char(&mut content, '-', style);
+                }
+                // A note's reference. Its body is in a subdocument of its
+                // own, and the tables say which of the two kinds it is.
+                '\u{02}' => {
+                    if let Some(note) = self.place_note(index) {
+                        content.push(Inline::FootnoteRef { index: note });
+                    }
                 }
                 // A field is written inline: 0x13 opens it, 0x14 separates
                 // its instruction from its result, and 0x15 closes it. The
