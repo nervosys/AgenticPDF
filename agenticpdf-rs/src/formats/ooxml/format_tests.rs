@@ -324,6 +324,53 @@ fn docx_nests_list_items_by_their_level() {
     );
 }
 
+/// A table style states its header row and first column separately.
+///
+/// `<w:tblStylePr>` holds them, and the row and cell say which apply through
+/// `<w:cnfStyle>`. None of it was read, so a document Word saved in four
+/// formats showed a bold white header through .doc, .rtf and .odt -- which bake
+/// the formatting into the runs -- and nothing at all through .docx.
+#[test]
+fn docx_resolves_a_tables_conditional_formatting() {
+    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:style w:type="table" w:styleId="Grid"><w:name w:val="Grid"/>
+          <w:tblStylePr w:type="firstRow"><w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr></w:tblStylePr>
+          <w:tblStylePr w:type="firstCol"><w:rPr><w:i/></w:rPr></w:tblStylePr>
+        </w:style>
+      </w:styles>"#;
+    let body = r#"<w:tbl>
+        <w:tblPr><w:tblStyle w:val="Grid"/></w:tblPr>
+        <w:tr><w:trPr><w:cnfStyle w:firstRow="1"/></w:trPr>
+          <w:tc><w:tcPr><w:cnfStyle w:firstColumn="1"/></w:tcPr>
+            <w:p><w:r><w:t>Region</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>Growth</w:t></w:r></w:p></w:tc></w:tr>
+        <w:tr>
+          <w:tc><w:tcPr><w:cnfStyle w:firstColumn="1"/></w:tcPr>
+            <w:p><w:r><w:t>EMEA</w:t></w:r></w:p></w:tc>
+          <w:tc><w:p><w:r><w:t>8%</w:t></w:r></w:p></w:tc></w:tr>
+      </w:tbl>"#;
+    let zip = docx_with_parts(body, &[("word/styles.xml", styles, true)]);
+    let document = open(&zip, Format::Docx);
+
+    // The header row is bold; its first cell is also italic, from the column.
+    assert_eq!(
+        to_markdown(&document),
+        "| _**Region**_ | **Growth** |\n| --- | --- |\n| _EMEA_ | 8% |\n"
+    );
+
+    // And the header's colour is read, which is what the other three reported.
+    let Some(Block::Table(table)) = document.sections[0].blocks.first() else {
+        panic!("no table");
+    };
+    let Some(Block::Paragraph { content, .. }) = table.rows[0].cells[0].blocks.first() else {
+        panic!("no paragraph");
+    };
+    let Some(crate::doc::Inline::Run(run)) = content.first() else {
+        panic!("no run");
+    };
+    assert_eq!(run.style.color, Some([1.0, 1.0, 1.0]));
+}
+
 #[test]
 fn docx_reads_tables_with_header_rows_and_spans() {
     let zip = docx(

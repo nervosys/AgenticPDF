@@ -48,6 +48,8 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
         styles,
         document: SemanticDoc::default(),
         images: HashMap::new(),
+        table_style: None,
+        cell_style: TextStyle::default(),
     };
 
     let blocks = reader.read_body(&body);
@@ -69,6 +71,11 @@ struct DocxReader<'a> {
     /// Relationship id → registered asset id, so an image used twice is stored
     /// once.
     images: HashMap<String, String>,
+    /// The style of the table being read, if any. A stack is unnecessary:
+    /// `read_table` saves and restores it around a nested one.
+    table_style: Option<String>,
+    /// The formatting the current cell inherits from that style.
+    cell_style: TextStyle,
 }
 
 impl DocxReader<'_> {
@@ -124,7 +131,12 @@ impl DocxReader<'_> {
                     "pPr" => self.read_paragraph_properties(reader, &element, &mut properties),
                     "r" => {
                         // Read before the call: `read_run` borrows self.
-                        let inherited = self.styles.text_style(&properties.style_id);
+                        // A cell's table style sits under the paragraph's own,
+                        // which sits under the run's direct properties.
+                        let inherited = layer_over(
+                            &self.cell_style,
+                            &self.styles.text_style(&properties.style_id),
+                        );
                         self.read_run(reader, &element, &inherited, &mut content)
                     }
                     "hyperlink" => self.read_hyperlink(reader, &element, &mut content),
@@ -402,6 +414,9 @@ impl DocxReader<'_> {
         let mut column_widths: Vec<f64> = Vec::new();
         let mut header_rows = 0usize;
         let mut depth = 1usize;
+        // Saved and restored so a table nested in a cell does not take the
+        // outer table's style with it.
+        let outer_style = self.table_style.take();
 
         while let Some(event) = reader.read_event() {
             match event {
@@ -413,6 +428,9 @@ impl DocxReader<'_> {
                 }
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
+                    "tblStyle" => {
+                        self.table_style = element.attr_local("val").map(str::to_string);
+                    }
                     "gridCol" => {
                         if let Some(width) = attr_i64(&element, "w") {
                             column_widths.push(width as f64 / TWIPS_PER_POINT);
@@ -435,6 +453,7 @@ impl DocxReader<'_> {
             }
         }
 
+        self.table_style = outer_style;
         if rows.is_empty() {
             return None;
         }
@@ -450,6 +469,7 @@ impl DocxReader<'_> {
     fn read_row(&mut self, reader: &mut Reader, start: &Element) -> (Row, bool) {
         let mut cells: Vec<Cell> = Vec::new();
         let mut is_header = false;
+        let mut position = CellPosition::default();
         let mut depth = 1usize;
 
         while let Some(event) = reader.read_event() {
@@ -463,8 +483,10 @@ impl DocxReader<'_> {
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
                     "tblHeader" => is_header = is_on(&element),
+                    // The row's own position, which its cells inherit.
+                    "cnfStyle" => position.read(&element),
                     "tc" => {
-                        if let Some(cell) = self.read_cell(reader, &element) {
+                        if let Some(cell) = self.read_cell(reader, &element, &position) {
                             cells.push(cell);
                         }
                     }
@@ -476,11 +498,29 @@ impl DocxReader<'_> {
         (Row { cells }, is_header)
     }
 
-    fn read_cell(&mut self, reader: &mut Reader, start: &Element) -> Option<Cell> {
+    /// The formatting a cell inherits from its table's style, if it has one.
+    fn inherited_cell_style(&self, position: &CellPosition) -> TextStyle {
+        match &self.table_style {
+            Some(id) => self.styles.table_style(id, position),
+            None => TextStyle::default(),
+        }
+    }
+
+    fn read_cell(
+        &mut self,
+        reader: &mut Reader,
+        start: &Element,
+        row_position: &CellPosition,
+    ) -> Option<Cell> {
         let mut blocks: Vec<Block> = Vec::new();
         let mut col_span = 1usize;
         let mut vertical_merge: Option<bool> = None;
+        let mut position = row_position.clone();
         let mut depth = 1usize;
+        let outer_cell_style = self.cell_style.clone();
+        // Set before any content is read, so a cell that states no position of
+        // its own still inherits its row's rather than the last cell's.
+        self.cell_style = self.inherited_cell_style(&position);
 
         while let Some(event) = reader.read_event() {
             match event {
@@ -492,6 +532,13 @@ impl DocxReader<'_> {
                 }
                 Event::Start(element) if element.qname == start.qname => depth += 1,
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
+                    // The cell's own position adds its column to the row's.
+                    // It precedes the cell's content, so the formatting it
+                    // implies is in force by the time any paragraph is read.
+                    "cnfStyle" => {
+                        position.read(&element);
+                        self.cell_style = self.inherited_cell_style(&position);
+                    }
                     "gridSpan" => {
                         col_span = attr_i64(&element, "val").unwrap_or(1).clamp(1, 1000) as usize;
                     }
@@ -522,6 +569,7 @@ impl DocxReader<'_> {
             return None;
         }
 
+        self.cell_style = outer_cell_style;
         Some(Cell {
             blocks,
             col_span,
@@ -642,6 +690,83 @@ fn push_paragraph(blocks: &mut Vec<Block>, paragraph: Paragraph) {
     crate::formats::append_list_item(blocks, item, reference.level, reference.ordered, 1);
 }
 
+/// Which of a table style's conditional formats apply to one cell.
+///
+/// Read from the `<w:cnfStyle>` Word writes on the row and on the cell, rather
+/// than worked out from the cell's index: the producer already states it, and
+/// banding in particular depends on settings this reader does not otherwise
+/// need to track.
+#[derive(Debug, Clone, Default)]
+struct CellPosition {
+    first_row: bool,
+    last_row: bool,
+    first_column: bool,
+    last_column: bool,
+    odd_h_band: bool,
+    even_h_band: bool,
+    odd_v_band: bool,
+    even_v_band: bool,
+}
+
+impl CellPosition {
+    /// Read the flags `<w:cnfStyle>` carries, keeping any already set: a cell's
+    /// own element states its column, and its row's states the row.
+    fn read(&mut self, element: &Element) {
+        for (attribute, field) in [
+            ("firstRow", &mut self.first_row),
+            ("lastRow", &mut self.last_row),
+            ("firstColumn", &mut self.first_column),
+            ("lastColumn", &mut self.last_column),
+            ("oddHBand", &mut self.odd_h_band),
+            ("evenHBand", &mut self.even_h_band),
+            ("oddVBand", &mut self.odd_v_band),
+            ("evenVBand", &mut self.even_v_band),
+        ] {
+            *field |= matches!(element.attr_local(attribute), Some("1") | Some("true"));
+        }
+    }
+
+    /// The conditional formats that apply, weakest first.
+    fn conditionals(&self) -> Vec<&'static str> {
+        let mut kinds = Vec::new();
+        for (applies, name) in [
+            (self.odd_v_band, "band1Vert"),
+            (self.even_v_band, "band2Vert"),
+            (self.odd_h_band, "band1Horz"),
+            (self.even_h_band, "band2Horz"),
+            (self.first_column, "firstCol"),
+            (self.last_column, "lastCol"),
+            (self.first_row, "firstRow"),
+            (self.last_row, "lastRow"),
+        ] {
+            if applies {
+                kinds.push(name);
+            }
+        }
+        kinds
+    }
+}
+
+/// Lay one set of character properties over another.
+///
+/// A property nobody states is `false` or `None` here, which is why this is an
+/// overlay rather than a replacement: the layer only adds what it declares.
+fn layer_over(base: &TextStyle, over: &TextStyle) -> TextStyle {
+    TextStyle {
+        bold: base.bold || over.bold,
+        italic: base.italic || over.italic,
+        underline: base.underline || over.underline,
+        strikethrough: base.strikethrough || over.strikethrough,
+        code: base.code || over.code,
+        superscript: base.superscript || over.superscript,
+        subscript: base.subscript || over.subscript,
+        hidden: base.hidden || over.hidden,
+        font: over.font.clone().or_else(|| base.font.clone()),
+        size: over.size.or(base.size),
+        color: over.color.or(base.color),
+    }
+}
+
 // ============================================================================
 // Styles and numbering
 // ============================================================================
@@ -664,6 +789,13 @@ struct Styles {
     based_on: HashMap<String, String>,
     /// Style id → the character formatting the style itself declares.
     text: HashMap<String, TextStyle>,
+    /// (table style id, conditional format) → the formatting it declares.
+    ///
+    /// A table style states its header row, its first column and its banding
+    /// separately, in `<w:tblStylePr>`. Word resolves these when it writes any
+    /// other format, so the .doc, .rtf and .odt of one document all reported a
+    /// bold white header where the .docx reported nothing at all.
+    conditional: HashMap<(String, String), TextStyle>,
 }
 
 impl Styles {
@@ -675,6 +807,7 @@ impl Styles {
 
         let mut reader = Reader::new(&bytes);
         let mut current: Option<String> = None;
+        let mut conditional: Option<String> = None;
         while let Some(event) = reader.read_event() {
             let Event::Start(element) = event else {
                 continue;
@@ -683,7 +816,15 @@ impl Styles {
                 continue;
             }
             match element.local.as_str() {
-                "style" => current = element.attr_local("styleId").map(str::to_string),
+                "style" => {
+                    current = element.attr_local("styleId").map(str::to_string);
+                    conditional = None;
+                }
+                // Everything after this within the style belongs to one
+                // conditional format rather than to the style itself. The
+                // style's own properties come first, so this only ever
+                // redirects what follows it.
+                "tblStylePr" => conditional = element.attr_local("type").map(str::to_string),
                 "basedOn" => {
                     if let (Some(id), Some(parent)) = (&current, element.attr_local("val")) {
                         styles.based_on.insert(id.clone(), parent.to_string());
@@ -701,7 +842,14 @@ impl Styles {
                 "b" | "bCs" | "i" | "iCs" | "strike" | "dstrike" | "u" | "vanish" | "webHidden"
                 | "vertAlign" | "sz" | "szCs" | "rFonts" | "color" => {
                     if let Some(id) = &current {
-                        apply_run_property(&element, styles.text.entry(id.clone()).or_default());
+                        let into = match &conditional {
+                            Some(kind) => styles
+                                .conditional
+                                .entry((id.clone(), kind.clone()))
+                                .or_default(),
+                            None => styles.text.entry(id.clone()).or_default(),
+                        };
+                        apply_run_property(&element, into);
                     }
                 }
                 "ilvl" => {
@@ -756,6 +904,20 @@ impl Styles {
         if compact.contains("code") || compact.contains("htmlcode") {
             self.code.push(id.to_string());
         }
+    }
+
+    /// The formatting a table style gives a cell in the given position.
+    ///
+    /// Applied outermost first, so a header row's colour beats the banding
+    /// underneath it and a direct run property beats them all.
+    fn table_style(&self, id: &str, position: &CellPosition) -> TextStyle {
+        let mut style = self.text.get(id).cloned().unwrap_or_default();
+        for kind in position.conditionals() {
+            if let Some(layer) = self.conditional.get(&(id.to_string(), kind.to_string())) {
+                style = layer_over(&style, layer);
+            }
+        }
+        style
     }
 
     fn heading_level(&self, id: &str) -> Option<u8> {
