@@ -129,6 +129,8 @@ struct Parser<'a> {
     break_run: bool,
     /// Notes being captured, innermost last. A note may hold a note.
     notes: Vec<NoteCapture>,
+    /// Blocks that belong after the paragraph being read, not inside it.
+    deferred: Vec<Block>,
     /// The instruction of the field being read, if any.
     field_instruction: String,
     /// The field result being gathered, so its runs can become a link.
@@ -188,6 +190,7 @@ impl<'a> Parser<'a> {
             heading_styles: HashMap::new(),
             list_styles: HashMap::new(),
             notes: Vec::new(),
+            deferred: Vec::new(),
             break_run: false,
             field_instruction: String::new(),
             field: None,
@@ -259,6 +262,9 @@ impl<'a> Parser<'a> {
     fn finish(mut self) -> SemanticDoc {
         self.end_paragraph();
         self.flush_table();
+        // A box anchored in the last paragraph has nothing after it to follow.
+        let deferred = std::mem::take(&mut self.deferred);
+        self.blocks.extend(deferred);
         let blocks = std::mem::take(&mut self.blocks);
         self.document.body().blocks = blocks;
         self.document
@@ -367,12 +373,35 @@ impl<'a> Parser<'a> {
             // and the text belongs in the document's notes -- which is where
             // the .docx and .odt of the same document now put theirs.
             "footnote" => {
+                // `\*ootnote` is as legal as `ootnote`: the star says a
+                // reader that does not know the destination should skip it,
+                // not that this one should. LibreOffice writes the star and
+                // Word does not, so the star left the destination on discard
+                // and every note in a LibreOffice .rtf was dropped.
+                self.state.destination = Destination::Body;
                 self.notes.push(NoteCapture {
                     depth: self.stack.len(),
                     runs: std::mem::take(&mut self.runs),
                     blocks: std::mem::take(&mut self.blocks),
+                    kind: CaptureKind::Note,
                 });
             }
+            // The text a shape holds. Both producers put a text box's content
+            // here, inside the shape's properties -- which are discarded, so
+            // the text went with them and every reader of this document but
+            // the .rtf one reported the box.
+            "shptxt" => {
+                self.state.destination = Destination::Body;
+                self.notes.push(NoteCapture {
+                    depth: self.stack.len(),
+                    runs: std::mem::take(&mut self.runs),
+                    blocks: std::mem::take(&mut self.blocks),
+                    kind: CaptureKind::TextBox,
+                });
+            }
+            // The shape drawn for a reader that cannot draw the shape itself:
+            // the same content again, in a form this reader has no use for.
+            "shprslt" => self.state.destination = Destination::Discard,
             // A field's instruction says what it is; its result is the text
             // the reader should show. Discarding the whole group threw the
             // result away with it, so a hyperlink's text vanished -- the .docx
@@ -683,6 +712,12 @@ impl<'a> Parser<'a> {
         if body.is_empty() {
             return;
         }
+        if capture.kind == CaptureKind::TextBox {
+            // Not part of the sentence it is anchored in; it follows the
+            // paragraph, which is where the .docx and .odt of it put it.
+            self.deferred.extend(body);
+            return;
+        }
         let index = self.document.footnotes.len();
         self.document.footnotes.push(crate::doc::Footnote {
             label: None,
@@ -820,12 +855,26 @@ impl<'a> Parser<'a> {
 
     /// Close the paragraph in progress and file it as a block.
     fn end_paragraph(&mut self) {
+        let emitted = self.end_paragraph_inner();
+        // A text box anchored in a paragraph follows it rather than
+        // interrupting it. An empty paragraph is not one to follow -- Word
+        // anchors the shape in the one before the heading, and draining there
+        // put the box above the title -- and neither is one still being
+        // gathered inside a note.
+        if emitted && !self.deferred.is_empty() && !self.state.in_table && self.notes.is_empty() {
+            let deferred = std::mem::take(&mut self.deferred);
+            self.blocks.extend(deferred);
+        }
+    }
+
+    /// Emit the paragraph gathered so far; false if there was nothing in it.
+    fn end_paragraph_inner(&mut self) -> bool {
         let content = std::mem::take(&mut self.runs);
         let marker = self.marker.take();
         let text = crate::doc::inline_text(&content);
 
         if text.trim().is_empty() {
-            return;
+            return false;
         }
 
         // An inline outline level wins; otherwise the paragraph's style number
@@ -859,7 +908,7 @@ impl<'a> Parser<'a> {
         // A paragraph inside a table belongs to the cell being built.
         if self.state.in_table {
             self.cell.push(block);
-            return;
+            return true;
         }
         self.flush_table();
 
@@ -891,10 +940,11 @@ impl<'a> Parser<'a> {
                 .and_then(parse_leading_number)
                 .unwrap_or(1);
             crate::formats::append_list_item(&mut self.blocks, item, level, ordered, start);
-            return;
+            return true;
         }
 
         self.blocks.push(block);
+        true
     }
 
     fn end_cell(&mut self) {
@@ -1011,6 +1061,17 @@ struct NoteCapture {
     depth: usize,
     runs: Vec<Inline>,
     blocks: Vec<Block>,
+    kind: CaptureKind,
+}
+
+/// What a captured group turns into when it closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureKind {
+    /// A note: its text goes to the document's notes, leaving a reference.
+    Note,
+    /// A text box: its text is a block of its own, placed after the paragraph
+    /// the box is anchored in.
+    TextBox,
 }
 
 /// The field result being gathered, and where its runs began.
@@ -1444,6 +1505,42 @@ mod tests {
             r"{HEADER}\pard {{\field{{\*\fldinst PAGE }}{{\fldrslt \b Error!}}}}\par}}"
         );
         assert_eq!(markdown_of(&rtf), "**Error!**\n");
+    }
+
+    /// A starred destination is still the destination it names.
+    ///
+    /// `\*` asks a reader that does not know the control word to skip the
+    /// group; it does not ask a reader that does. LibreOffice writes
+    /// `{\*\footnote ...}` and Word writes `{\footnote ...}`, so the star left
+    /// the destination on discard and every note in a LibreOffice .rtf went
+    /// with it -- while the .docx and .odt of that document kept both.
+    #[test]
+    fn reads_a_footnote_marked_skippable() {
+        let rtf = format!(
+            r"{HEADER}\pard A claim{{\super \chftn{{\*\footnote \chftn\pard The source.\par}}}} stands.\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+        assert_eq!(document.footnotes.len(), 1);
+        let markdown = crate::doc::to_markdown(&document);
+        assert!(markdown.contains("[^1]: The source."), "{markdown}");
+        assert!(markdown.contains("A claim[^1] stands."), "{markdown}");
+    }
+
+    /// A text box's content is a block after the paragraph, not text in it.
+    ///
+    /// Both producers put it inside the shape's properties, which are
+    /// discarded wholesale, so the box was the one thing in this document that
+    /// only the .rtf reader failed to report. `\shprslt` holds a drawing of
+    /// the same box for a reader that cannot draw one, and is not more content.
+    #[test]
+    fn reads_the_text_a_shape_holds() {
+        let rtf = format!(
+            r"{HEADER}\pard Before the box{{\shp{{\*\shpinst{{\sp{{\sn wzName}}{{\sv Text Box 1}}}}{{\shptxt\pard Boxed words.\par}}}}{{\shprslt Boxed words.}}}}\par After.\par}}"
+        );
+        assert_eq!(
+            markdown_of(&rtf),
+            "Before the box\n\nBoxed words.\n\nAfter.\n"
+        );
     }
 
     #[test]
