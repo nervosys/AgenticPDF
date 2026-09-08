@@ -227,10 +227,32 @@ fn html_entity(name: &str) -> Option<&'static str> {
 }
 
 pub fn parse_html(data: &[u8]) -> SemanticDoc {
+    parse_html_with_styles(data, &[])
+}
+
+/// Parse HTML, with stylesheets the caller has already found.
+///
+/// A page's `<link>`ed stylesheet is not fetched -- this reader never goes to
+/// the network for a document's content -- but an EPUB carries its stylesheets
+/// inside the package, where there is no network to go to. Those rules decide
+/// the same two things as an inline `<style>`: whether text is visible, and
+/// whether it is emphasised.
+pub fn parse_html_with_styles(data: &[u8], linked: &[String]) -> SemanticDoc {
     let source = decode_html(data);
     // Before the body, because a rule in the head decides whether the text
     // below it is visible at all.
-    let sheet = read_stylesheet(&source);
+    let mut sheet = read_stylesheet(&source);
+    // The document's own `<style>` rules are read first and so are overridden
+    // by nothing; a linked sheet is weaker than what the page states inline,
+    // which is what putting it underneath achieves.
+    for css in linked {
+        let mut linked_rules = Stylesheet::default();
+        parse_rules(css, &mut linked_rules, 4096, 0);
+        linked_rules.classes.extend(std::mem::take(&mut sheet.classes));
+        linked_rules.ids.extend(std::mem::take(&mut sheet.ids));
+        linked_rules.tags.extend(std::mem::take(&mut sheet.tags));
+        sheet = linked_rules;
+    }
     let tokens = tokenize(&source);
 
     let mut parser = Parser {
