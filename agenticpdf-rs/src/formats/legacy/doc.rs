@@ -147,6 +147,7 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         endnote_refs,
         note_bodies: Vec::new(),
         notes: Vec::new(),
+        boxes: Vec::new(),
     };
 
     // Built before the body, so a reference found there resolves to one.
@@ -159,12 +160,41 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
     }
     assembler.note_bodies = bodies;
 
+    // A text box's text is not where the box is: it lives in a subdocument of
+    // its own, and the drawing that anchors it says where it belongs. Two
+    // tables state that between them -- the shapes, by position in the main
+    // text, and the stories, by the shape each one fills.
+    let anchors: HashMap<u32, u32> = shape_anchors(&word, &table).into_iter().collect();
+    let mut placed: Vec<(usize, usize, usize)> = Vec::new();
+    for (from, to, shape) in textbox_stories(&word, &table) {
+        let Some(&cp) = anchors.get(&shape) else {
+            continue;
+        };
+        placed.push((
+            assembler.text.index_of_cp(cp as usize),
+            assembler.text.index_of_cp(textbox_start + from as usize),
+            assembler.text.index_of_cp(textbox_start + to as usize),
+        ));
+    }
+    placed.sort_unstable();
+    let mut boxes: Vec<(usize, Vec<Block>)> = Vec::new();
+    for (anchor, lo, hi) in placed {
+        let blocks = assembler.build(lo, hi);
+        if !blocks.is_empty() {
+            boxes.push((anchor, blocks));
+        }
+    }
+    let anchored = !boxes.is_empty();
+    assembler.boxes = boxes;
+
     let mut blocks = assembler.build(0, main_end);
-    // A text box is anchored by a drawing record rather than by its position in
-    // this run, and that anchor is not read here, so its content goes after the
-    // body rather than beside the paragraph it belongs to. The .docx and .odt
-    // of the same document do place it there.
-    if let Some((lo, hi)) = textbox_range {
+    // Whatever the anchors did not account for still belongs in the document,
+    // even if this reader cannot say where; better after the body than lost.
+    let unplaced = std::mem::take(&mut assembler.boxes);
+    for (_, box_blocks) in unplaced {
+        blocks.extend(box_blocks);
+    }
+    if !anchored && let Some((lo, hi)) = textbox_range {
         blocks.extend(assembler.build(lo, hi));
     }
     Ok(SemanticDoc {
@@ -192,6 +222,54 @@ fn reference_positions(word: &[u8], table: &[u8], fib_offset: usize) -> Vec<u32>
     let count = (lcb - 4) / 6;
     (0..count)
         .filter_map(|index| u32_at(table, fc + index * 4))
+        .collect()
+}
+
+/// The shapes anchored in the main text, as position and shape id.
+///
+/// `PlcfSpaMom` is a `PLC` of 26-byte `FSPA` entries whose first four bytes are
+/// the shape id; the positions are in the main document.
+fn shape_anchors(word: &[u8], table: &[u8]) -> Vec<(u32, u32)> {
+    plc(word, table, 0x01DA, 26)
+        .into_iter()
+        .filter_map(|(cp, _, entry)| Some((u32_at(entry, 0)?, cp)))
+        .collect()
+}
+
+/// The text-box stories, as a range in the text-box subdocument and the shape
+/// each one fills.
+///
+/// `PlcfTxbxTxt` is a `PLC` of 22-byte `FTXBXS` entries whose `lid`, fourteen
+/// bytes in, is the shape id. The last entry is a reserved one whose id names
+/// no shape, and is dropped by not matching one.
+fn textbox_stories(word: &[u8], table: &[u8]) -> Vec<(u32, u32, u32)> {
+    plc(word, table, 0x025A, 22)
+        .into_iter()
+        .filter_map(|(from, to, entry)| Some((from, to, u32_at(entry, 14)?)))
+        .collect()
+}
+
+/// Read a `PLC`: `n + 1` positions followed by `n` entries of `size` bytes.
+fn plc<'a>(
+    word: &[u8],
+    table: &'a [u8],
+    fib_offset: usize,
+    size: usize,
+) -> Vec<(u32, u32, &'a [u8])> {
+    let fc = u32_at(word, fib_offset).unwrap_or(0) as usize;
+    let lcb = u32_at(word, fib_offset + 4).unwrap_or(0) as usize;
+    if lcb < 4 + 4 + size || !(lcb - 4).is_multiple_of(4 + size) || fc + lcb > table.len() {
+        return Vec::new();
+    }
+    let count = (lcb - 4) / (4 + size);
+    let entries = fc + 4 * (count + 1);
+    (0..count)
+        .filter_map(|index| {
+            let from = u32_at(table, fc + index * 4)?;
+            let to = u32_at(table, fc + index * 4 + 4)?;
+            let at = entries + index * size;
+            Some((from, to, table.get(at..at + size)?))
+        })
         .collect()
 }
 
@@ -765,6 +843,9 @@ struct Assembler {
     note_bodies: Vec<(bool, Vec<Block>)>,
     /// Notes placed so far, in the order their references were met.
     notes: Vec<crate::doc::Footnote>,
+    /// Text boxes waiting for the paragraph they are anchored in to end,
+    /// ordered by that anchor.
+    boxes: Vec<(usize, Vec<Block>)>,
 }
 
 /// A paragraph's resolved properties.
@@ -873,6 +954,13 @@ impl Assembler {
                             &mut header_rows,
                         );
                         self.emit_paragraph(&pap, inlines, &mut blocks);
+                        // A box anchored in the paragraph that just ended
+                        // follows it, which is where the .docx, .odt and .rtf
+                        // of the same document all put it.
+                        while self.boxes.first().is_some_and(|(at, _)| *at <= index) {
+                            let (_, box_blocks) = self.boxes.remove(0);
+                            blocks.extend(box_blocks);
+                        }
                     }
                 }
                 // A line break inside a paragraph.
@@ -1224,5 +1312,66 @@ fn to_text_style(props: CharProps) -> TextStyle {
             }),
         size: props.half_points.map(|value| value as f64 / 2.0),
         ..TextStyle::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `PLC`: positions, then one entry each.
+    fn plc_bytes(positions: &[u32], entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut out: Vec<u8> = positions.iter().flat_map(|p| p.to_le_bytes()).collect();
+        for entry in entries {
+            out.extend_from_slice(entry);
+        }
+        out
+    }
+
+    /// A FIB naming one table at `offset`, for a table stream of `len` bytes.
+    fn fib(offset: usize, len: usize) -> Vec<u8> {
+        let mut word = vec![0u8; 0x400];
+        word[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
+        word[offset + 4..offset + 8].copy_from_slice(&(len as u32).to_le_bytes());
+        word
+    }
+
+    /// A text box says where it belongs in two tables, not one.
+    ///
+    /// The shapes are listed by their position in the main text, and the
+    /// stories by the shape each one fills, so the two are joined on the shape
+    /// id: the first table gives the anchor, the second the text. Without
+    /// them a box's content could only be appended after the body, which is
+    /// where this reader used to leave it while the .docx, .odt and .rtf of
+    /// the same document all placed it beside its paragraph.
+    #[test]
+    fn joins_a_text_box_to_its_anchor_through_the_shape_id() {
+        let mut shape = vec![0u8; 26];
+        shape[..4].copy_from_slice(&2050u32.to_le_bytes());
+        let shapes = plc_bytes(&[42, 353], &[shape]);
+
+        let entry = |lid: u32| {
+            let mut bytes = vec![0u8; 22];
+            bytes[14..18].copy_from_slice(&lid.to_le_bytes());
+            bytes
+        };
+        // The second story is the reserved entry, naming no shape.
+        let stories = plc_bytes(&[0, 19, 353], &[entry(2050), entry(0)]);
+
+        assert_eq!(
+            shape_anchors(&fib(0x01DA, shapes.len()), &shapes),
+            vec![(2050, 42)]
+        );
+        assert_eq!(
+            textbox_stories(&fib(0x025A, stories.len()), &stories),
+            vec![(0, 19, 2050), (19, 353, 0)]
+        );
+    }
+
+    /// A table whose length does not divide into whole entries is not one.
+    #[test]
+    fn a_plc_of_the_wrong_shape_is_read_as_empty() {
+        let stories = vec![0u8; 37];
+        assert!(textbox_stories(&fib(0x025A, stories.len()), &stories).is_empty());
     }
 }
