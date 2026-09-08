@@ -330,6 +330,58 @@ fn docx_nests_list_items_by_their_level() {
 /// `<w:cnfStyle>`. None of it was read, so a document Word saved in four
 /// formats showed a bold white header through .doc, .rtf and .odt -- which bake
 /// the formatting into the runs -- and nothing at all through .docx.
+/// A note's text lives in a part of its own, and the run only points at it.
+///
+/// Read no further than the run, every footnote and endnote in the document was
+/// silently dropped -- though the model has somewhere to put them and both
+/// writers already render them. The .odt of the same document now agrees.
+#[test]
+fn docx_reads_footnotes_and_endnotes() {
+    // Ids 0 and 1 are the separators Word draws above the notes, not notes.
+    let footnotes = br#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:footnote w:id="0" w:type="separator"><w:p><w:r><w:t>sep</w:t></w:r></w:p></w:footnote>
+        <w:footnote w:id="1" w:type="continuationSeparator"><w:p><w:r><w:t>cont</w:t></w:r></w:p></w:footnote>
+        <w:footnote w:id="2"><w:p><w:r><w:t>The footnote text.</w:t></w:r></w:p></w:footnote>
+      </w:footnotes>"#;
+    let endnotes = br#"<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:endnote w:id="2"><w:p><w:r><w:t>The endnote text.</w:t></w:r></w:p></w:endnote>
+      </w:endnotes>"#;
+    // Both are id 2: the two lists are numbered separately.
+    let zip = docx_with_parts(
+        r#"<w:p><w:r><w:t xml:space="preserve">A claim</w:t></w:r>
+             <w:r><w:footnoteReference w:id="2"/></w:r>
+             <w:r><w:t xml:space="preserve"> stands</w:t></w:r>
+             <w:r><w:endnoteReference w:id="2"/></w:r>
+             <w:r><w:t>.</w:t></w:r></w:p>"#,
+        &[
+            ("word/footnotes.xml", footnotes, true),
+            ("word/endnotes.xml", endnotes, true),
+        ],
+    );
+    let document = open(&zip, Format::Docx);
+    assert_eq!(document.footnotes.len(), 2, "the separators are not notes");
+    assert_eq!(
+        to_markdown(&document),
+        "A claim[^1] stands[^2].\n\n[^1]: The footnote text.\n[^2]: The endnote text.\n"
+    );
+}
+
+/// A note referenced twice is stored once and keeps its number.
+#[test]
+fn docx_numbers_a_note_referenced_twice_only_once() {
+    let footnotes = br#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:footnote w:id="2"><w:p><w:r><w:t>Once.</w:t></w:r></w:p></w:footnote>
+      </w:footnotes>"#;
+    let zip = docx_with_parts(
+        r#"<w:p><w:r><w:t>a</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r>
+             <w:r><w:t>b</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>"#,
+        &[("word/footnotes.xml", footnotes, true)],
+    );
+    let document = open(&zip, Format::Docx);
+    assert_eq!(document.footnotes.len(), 1);
+    assert_eq!(to_markdown(&document), "a[^1]b[^1]\n\n[^1]: Once.\n");
+}
+
 #[test]
 fn docx_resolves_a_tables_conditional_formatting() {
     let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">

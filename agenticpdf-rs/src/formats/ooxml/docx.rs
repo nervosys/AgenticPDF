@@ -48,10 +48,14 @@ pub fn parse(archive: &ZipArchive, package: &Package) -> Result<SemanticDoc, Pdf
         styles,
         document: SemanticDoc::default(),
         images: HashMap::new(),
+        notes: HashMap::new(),
+        placed_notes: HashMap::new(),
         table_style: None,
         cell_style: TextStyle::default(),
     };
 
+    // Before the body, so a reference found there has somewhere to resolve to.
+    reader.read_notes();
     let blocks = reader.read_body(&body);
     let mut document = std::mem::take(&mut reader.document);
     document.sections = vec![crate::doc::Section {
@@ -76,9 +80,114 @@ struct DocxReader<'a> {
     table_style: Option<String>,
     /// The formatting the current cell inherits from that style.
     cell_style: TextStyle,
+    /// Footnote and endnote bodies, by the id a reference names.
+    notes: HashMap<NoteId, Vec<Block>>,
+    /// Note id → its place in the document's footnote list, so a note
+    /// referenced twice is stored once and numbered once.
+    placed_notes: HashMap<NoteId, usize>,
+}
+
+/// A note's identity: its number, and which of the two lists it is in.
+///
+/// The two are numbered separately, so a footnote and an endnote may both be
+/// id 2 and mean different things.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NoteId {
+    endnote: bool,
+    id: i64,
 }
 
 impl DocxReader<'_> {
+    /// Read the footnote and endnote parts, so a reference can resolve.
+    ///
+    /// A note's text lives in a part of its own and the run carries only a
+    /// reference to it, so a reader that looks no further drops every footnote
+    /// in the document. The model has somewhere to put them, and both the
+    /// Markdown and HTML writers already render them.
+    fn read_notes(&mut self) {
+        for (part, endnote) in [("footnotes.xml", false), ("endnotes.xml", true)] {
+            let Some(bytes) = self.archive.read_optional(&format!("{}{part}", self.base)) else {
+                continue;
+            };
+            let mut reader = Reader::new(&bytes);
+            while let Some(event) = reader.read_event() {
+                let Event::Start(element) = event else {
+                    continue;
+                };
+                if !element.in_ns(ns::W) || element.local != "footnote" && element.local != "endnote"
+                {
+                    continue;
+                }
+                // The separators are the rules Word draws above a note, not
+                // notes of their own, and they carry no id worth resolving.
+                if matches!(
+                    element.attr_local("type"),
+                    Some("separator") | Some("continuationSeparator")
+                ) {
+                    continue;
+                }
+                let Some(id) = attr_i64(&element, "id") else {
+                    continue;
+                };
+                let blocks = self.read_note_body(&mut reader, &element);
+                if !blocks.is_empty() {
+                    self.notes.insert(NoteId { endnote, id }, blocks);
+                }
+            }
+        }
+    }
+
+    /// Read one note's blocks, which are paragraphs and tables like any others.
+    fn read_note_body(&mut self, reader: &mut Reader, start: &Element) -> Vec<Block> {
+        let mut blocks: Vec<Block> = Vec::new();
+        let mut depth = 1usize;
+
+        while let Some(event) = reader.read_event() {
+            match event {
+                Event::End(name) if name == start.qname => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Start(element) if element.qname == start.qname => depth += 1,
+                Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
+                    "p" => {
+                        if let Some(paragraph) = self.read_paragraph(reader, &element) {
+                            push_paragraph(&mut blocks, paragraph);
+                        }
+                    }
+                    "tbl" => {
+                        if let Some(table) = self.read_table(reader, &element) {
+                            blocks.push(Block::Table(table));
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        blocks
+    }
+
+    /// Add a note to the document's list the first time it is referenced.
+    ///
+    /// Returns where it sits in that list, which is the number it is given. A
+    /// note referenced twice keeps the number it already has.
+    fn place_note(&mut self, id: NoteId) -> Option<usize> {
+        if let Some(index) = self.placed_notes.get(&id) {
+            return Some(*index);
+        }
+        let blocks = self.notes.get(&id)?.clone();
+        let index = self.document.footnotes.len();
+        self.document.footnotes.push(crate::doc::Footnote {
+            label: None,
+            blocks,
+        });
+        self.placed_notes.insert(id, index);
+        Some(index)
+    }
+
     /// Read `<w:body>` into blocks.
     fn read_body(&mut self, xml: &[u8]) -> Vec<Block> {
         let mut reader = Reader::new(xml);
@@ -268,6 +377,14 @@ impl DocxReader<'_> {
                         };
                         if !text.is_empty() {
                             push_run(into, Run::styled(text, style.clone()));
+                        }
+                    }
+                    "footnoteReference" | "endnoteReference" => {
+                        let endnote = element.local == "endnoteReference";
+                        if let Some(id) = attr_i64(&element, "id")
+                            && let Some(index) = self.place_note(NoteId { endnote, id })
+                        {
+                            into.push(Inline::FootnoteRef { index });
                         }
                     }
                     "tab" => push_run(into, Run::styled("\t", style.clone())),

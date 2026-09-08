@@ -926,9 +926,18 @@ fn read_inline_run(
                         into.push(Inline::Image(image));
                     }
                 }
-                // Notes and annotations are commentary, not body text; their
-                // content would otherwise be spliced into the sentence.
-                (ns::ODF_TEXT, "note") | (ns::ODF_OFFICE, "annotation") => {
+                // A note's text is not body text -- spliced into the
+                // sentence it would read as part of it -- but it is content,
+                // and the model has a place for it that both writers render.
+                // What stays in the sentence is a reference to it.
+                (ns::ODF_TEXT, "note") => {
+                    if let Some(index) = read_note(reader, &element, package, document) {
+                        into.push(Inline::FootnoteRef { index });
+                    }
+                }
+                // An annotation is a reviewer's remark about the document
+                // rather than part of it, and has nowhere to go in this model.
+                (ns::ODF_OFFICE, "annotation") => {
                     let _ = xml::text_of(reader, &element.qname);
                 }
                 _ => {}
@@ -936,6 +945,49 @@ fn read_inline_run(
             _ => {}
         }
     }
+}
+
+/// Read a `<text:note>` into the document's notes, returning its number.
+///
+/// The citation is the marker the author sees -- `1`, `a`, `*` -- and is kept
+/// as the note's label, since a document may number its notes in a way this
+/// reader would not.
+fn read_note(
+    reader: &mut Reader,
+    start: &Element,
+    package: &mut Package,
+    document: &mut SemanticDoc,
+) -> Option<usize> {
+    let mut label: Option<String> = None;
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut nesting = 1usize;
+
+    while let Some(event) = reader.read_event() {
+        match event {
+            Event::End(name) if name == start.qname => {
+                nesting -= 1;
+                if nesting == 0 {
+                    break;
+                }
+            }
+            Event::Start(element) if element.qname == start.qname => nesting += 1,
+            Event::Start(element) if element.is(ns::ODF_TEXT, "note-citation") => {
+                let text = xml::text_of(reader, &element.qname);
+                label = Some(text.trim().to_string()).filter(|text| !text.is_empty());
+            }
+            Event::Start(element) if element.is(ns::ODF_TEXT, "note-body") => {
+                blocks = read_blocks(reader, &element.qname, package, document, 1, &mut None);
+            }
+            _ => {}
+        }
+    }
+
+    if blocks.is_empty() {
+        return None;
+    }
+    let index = document.footnotes.len();
+    document.footnotes.push(crate::doc::Footnote { label, blocks });
+    Some(index)
 }
 
 /// Read a `<draw:frame>`, registering the picture it wraps.

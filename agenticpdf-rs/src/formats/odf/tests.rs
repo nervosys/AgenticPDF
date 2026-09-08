@@ -419,20 +419,35 @@ fn odt_flags_display_none_as_hidden_text() {
 }
 
 #[test]
-fn odt_skips_footnotes_and_annotations_in_body_text() {
+fn odt_keeps_a_note_out_of_the_sentence_but_not_out_of_the_document() {
     // A note's text would otherwise be spliced into the middle of the sentence.
+    // It is content all the same, so it becomes a footnote and the sentence
+    // keeps a reference to it.
     let zip = odt(
         "",
-        r#"<text:p>A claim<text:note><text:note-body><text:p>the source</text:p></text:note-body></text:note> stands.</text:p>"#,
+        r#"<text:p>A claim<text:note><text:note-citation>1</text:note-citation><text:note-body><text:p>the source</text:p></text:note-body></text:note> stands.</text:p>"#,
+    );
+    let document = parse(&zip, Format::Odt).unwrap();
+
+    let markdown = to_markdown(&document);
+    assert!(markdown.contains("A claim[^1] stands."), "{markdown}");
+    assert!(markdown.contains("[^1]: the source"), "{markdown}");
+    assert_eq!(document.footnotes.len(), 1);
+    assert_eq!(document.footnotes[0].label.as_deref(), Some("1"));
+}
+
+/// An annotation is a remark about the document rather than part of it.
+#[test]
+fn odt_skips_annotations_in_body_text() {
+    let zip = odt(
+        "",
+        r#"<text:p>A claim<office:annotation><text:p>a reviewer note</text:p></office:annotation> stands.</text:p>"#,
     );
     let document = parse(&zip, Format::Odt).unwrap();
     let text = document.text();
     assert!(text.contains("A claim"), "{text}");
     assert!(text.contains("stands."), "{text}");
-    assert!(
-        !text.contains("the source"),
-        "note leaked into body: {text}"
-    );
+    assert!(!text.contains("a reviewer note"), "leaked: {text}");
 }
 
 #[test]
