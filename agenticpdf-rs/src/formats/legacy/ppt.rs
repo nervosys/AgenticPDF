@@ -49,6 +49,16 @@ const RT_TEXT_CHARS_ATOM: u16 = 0x0FA0;
 const RT_TEXT_BYTES_ATOM: u16 = 0x0FA8;
 const RT_STYLE_TEXT_PROP_ATOM: u16 = 0x0FA1;
 
+// A hyperlink is stated in three places: a list of targets at the top of the
+// document, an atom on the shape naming which target, and an atom giving the
+// characters it covers.
+const RT_EX_OBJ_LIST: u16 = 0x0409;
+const RT_EX_HYPERLINK: u16 = 0x0FD7;
+const RT_EX_HYPERLINK_ATOM: u16 = 0x0FD3;
+const RT_CSTRING: u16 = 0x0FBA;
+const RT_INTERACTIVE_INFO_ATOM: u16 = 0x0FF3;
+const RT_TX_INTERACTIVE_INFO_ATOM: u16 = 0x0FDF;
+
 // The drawing layer. A table has no record of its own in this format: it is a
 // group of ordinary shapes, marked as a table by a property on the group.
 const ART_SPGR_CONTAINER: u16 = 0xF003;
@@ -95,11 +105,14 @@ pub fn parse(data: &[u8]) -> Result<SemanticDoc, PdfError> {
         return Err(PdfError::Encrypted);
     }
 
+    // The targets are listed once for the document; a shape names one.
+    let links = read_hyperlinks(&stream);
+
     let mut document = SemanticDoc::default();
     let sections = match layout(&stream, &current_user) {
-        Some(layout) => read_in_presentation_order(&stream, &layout),
+        Some(layout) => read_in_presentation_order(&stream, &layout, &links),
         // No usable persist chain: read the stream forward instead.
-        None => read_in_stream_order(&stream),
+        None => read_in_stream_order(&stream, &links),
     };
     document.sections = sections;
 
@@ -336,7 +349,11 @@ fn notes_owner(stream: &[u8], layout: &Layout, persist: u32) -> Option<u32> {
 // ============================================================================
 
 /// Read slides through the resolved persist directory.
-fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
+fn read_in_presentation_order(
+    stream: &[u8],
+    layout: &Layout,
+    links: &HashMap<u32, String>,
+) -> Vec<Section> {
     // Pair each notes record to the slide its `NotesAtom` names.
     //
     // Position is right only while every slide has notes. A two-slide deck with
@@ -361,7 +378,7 @@ fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
             continue;
         }
 
-        let shapes = collect_shapes(record.body);
+        let shapes = collect_shapes(record.body, links);
         // Fall back to position only where no notes record named a slide at
         // all, so a producer that omits the atom keeps the old behaviour rather
         // than losing its notes.
@@ -376,7 +393,7 @@ fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
             .and_then(|id| layout.persist.get(id))
             .and_then(|&offset| record_at(stream, offset))
             .filter(|(record, _)| record.kind == RT_NOTES)
-            .map(|(record, _)| collect_shapes(record.body))
+            .map(|(record, _)| collect_shapes(record.body, links))
             .unwrap_or_default();
 
         let mut section = build_slide(shapes, notes);
@@ -393,11 +410,17 @@ fn read_in_presentation_order(stream: &[u8], layout: &Layout) -> Vec<Section> {
 /// The fallback when the persist chain is unusable. Superseded copies of a
 /// slide may still be present, so this can show stale content — but it recovers
 /// text from files the resolved path cannot open at all.
-fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
+fn read_in_stream_order(stream: &[u8], links: &HashMap<u32, String>) -> Vec<Section> {
     let mut sections: Vec<Section> = Vec::new();
     let mut budget = MAX_RECORDS;
 
-    fn walk(data: &[u8], depth: usize, budget: &mut usize, sections: &mut Vec<Section>) {
+    fn walk(
+        data: &[u8],
+        depth: usize,
+        budget: &mut usize,
+        sections: &mut Vec<Section>,
+        links: &HashMap<u32, String>,
+    ) {
         if depth > MAX_DEPTH {
             return;
         }
@@ -408,7 +431,7 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
             *budget -= 1;
             match record.kind {
                 RT_SLIDE => {
-                    let mut section = build_slide(collect_shapes(record.body), Vec::new());
+                    let mut section = build_slide(collect_shapes(record.body, links), Vec::new());
                     if slide_is_hidden(record.body) {
                         hide_section(&mut section);
                     }
@@ -416,18 +439,20 @@ fn read_in_stream_order(stream: &[u8]) -> Vec<Section> {
                 }
                 // Notes attach to the slide they follow.
                 RT_NOTES => {
-                    let notes = collect_shapes(record.body);
+                    let notes = collect_shapes(record.body, links);
                     if let Some(section) = sections.last_mut() {
                         section.notes = notes_blocks(notes);
                     }
                 }
-                _ if record.is_container() => walk(record.body, depth + 1, budget, sections),
+                _ if record.is_container() => {
+                    walk(record.body, depth + 1, budget, sections, links)
+                }
                 _ => {}
             }
         }
     }
 
-    walk(stream, 0, &mut budget, &mut sections);
+    walk(stream, 0, &mut budget, &mut sections, links);
     sections
 }
 
@@ -436,6 +461,8 @@ struct Shape {
     /// Hidden through PowerPoint's selection pane: not drawn, fully
     /// extractable, and so exactly the payload a reader must report.
     hidden: bool,
+    /// The characters a hyperlink covers, and its target.
+    link: Option<(u32, u32, String)>,
     /// Paragraph and character formatting, where the shape states it.
     props: Option<TextProps>,
     /// The grid, where this shape is a group PowerPoint marked as a table.
@@ -446,11 +473,17 @@ struct Shape {
 }
 
 /// Collect the text shapes in a slide container, in document order.
-fn collect_shapes(data: &[u8]) -> Vec<Shape> {
+fn collect_shapes(data: &[u8], links: &HashMap<u32, String>) -> Vec<Shape> {
     let mut shapes: Vec<Shape> = Vec::new();
     let mut budget = MAX_RECORDS;
 
-    fn walk(data: &[u8], depth: usize, budget: &mut usize, shapes: &mut Vec<Shape>) {
+    fn walk(
+        data: &[u8],
+        depth: usize,
+        budget: &mut usize,
+        shapes: &mut Vec<Shape>,
+        links: &HashMap<u32, String>,
+    ) {
         if depth > MAX_DEPTH {
             return;
         }
@@ -467,6 +500,7 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                     props: None,
                     table: None,
                     hidden: false,
+                    link: None,
                 }),
                 // UTF-16 text.
                 RT_TEXT_CHARS_ATOM => push_text(shapes, decode_utf16le(record.body)),
@@ -493,16 +527,21 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                 // applied once the text has been read.
                 ART_SP_CONTAINER if record.is_container() => {
                     let before = shapes.len();
-                    walk(record.body, depth + 1, budget, shapes);
+                    walk(record.body, depth + 1, budget, shapes, links);
                     if shape_is_hidden(record.body) {
                         for shape in &mut shapes[before..] {
                             shape.hidden = true;
                         }
                     }
+                    if let Some(link) = shape_hyperlink(record.body, links) {
+                        for shape in &mut shapes[before..] {
+                            shape.link = Some(link.clone());
+                        }
+                    }
                 }
                 _ if record.is_container() => {
                     if record.kind == ART_SPGR_CONTAINER
-                        && let Some(table) = read_table_group(record.body)
+                        && let Some(table) = read_table_group(record.body, links)
                     {
                         shapes.push(Shape {
                             // Not a placeholder of any kind; it is the grid.
@@ -511,17 +550,18 @@ fn collect_shapes(data: &[u8]) -> Vec<Shape> {
                             props: None,
                             table: Some(table),
                             hidden: false,
+                            link: None,
                         });
                         continue;
                     }
-                    walk(record.body, depth + 1, budget, shapes);
+                    walk(record.body, depth + 1, budget, shapes, links);
                 }
                 _ => {}
             }
         }
     }
 
-    walk(data, 0, &mut budget, &mut shapes);
+    walk(data, 0, &mut budget, &mut shapes, links);
     shapes.retain(|shape| !shape.text.trim().is_empty() || shape.table.is_some());
     shapes
 }
@@ -731,7 +771,83 @@ fn push_text(shapes: &mut Vec<Shape>, text: String) {
             props: None,
             table: None,
             hidden: false,
+            link: None,
         }),
+    }
+}
+
+/// Read the document's list of hyperlink targets, by the id a shape names.
+///
+/// A shape does not carry its own target: it names one from this list, and the
+/// characters it covers are stated separately again. Read no further than the
+/// shape, the .ppt of a deck lost every link the .pptx and .odp of it kept.
+fn read_hyperlinks(stream: &[u8]) -> HashMap<u32, String> {
+    let mut targets = HashMap::new();
+    let Some(list) = find_record(stream, RT_EX_OBJ_LIST) else {
+        return targets;
+    };
+
+    for record in children(list) {
+        if record.kind != RT_EX_HYPERLINK {
+            continue;
+        }
+        let mut id = None;
+        // The strings are the friendly name and then the target itself; the
+        // target is what a reader wants, and it comes second.
+        let mut strings: Vec<String> = Vec::new();
+        for child in children(record.body) {
+            match child.kind {
+                RT_EX_HYPERLINK_ATOM => id = u32_at(child.body, 0),
+                RT_CSTRING => strings.push(decode_utf16le(child.body)),
+                _ => {}
+            }
+        }
+        if let (Some(id), Some(target)) = (id, strings.pop())
+            && !target.trim().is_empty()
+        {
+            targets.insert(id, target);
+        }
+    }
+    targets
+}
+
+/// The hyperlink a shape names, and the characters it covers.
+fn shape_hyperlink(body: &[u8], targets: &HashMap<u32, String>) -> Option<(u32, u32, String)> {
+    let mut id = None;
+    let mut range = None;
+
+    fn walk(
+        data: &[u8],
+        depth: usize,
+        id: &mut Option<u32>,
+        range: &mut Option<(u32, u32)>,
+    ) {
+        if depth > MAX_DEPTH {
+            return;
+        }
+        for record in children(data) {
+            match record.kind {
+                // The reference sits four bytes in, after the sound.
+                RT_INTERACTIVE_INFO_ATOM => *id = u32_at(record.body, 4),
+                RT_TX_INTERACTIVE_INFO_ATOM => {
+                    if let (Some(begin), Some(end)) =
+                        (u32_at(record.body, 0), u32_at(record.body, 4))
+                    {
+                        *range = Some((begin, end));
+                    }
+                }
+                _ if record.is_container() => walk(record.body, depth + 1, id, range),
+                _ => {}
+            }
+        }
+    }
+
+    walk(body, 0, &mut id, &mut range);
+    let (begin, end) = range?;
+    let target = targets.get(&id?)?;
+    match end > begin {
+        true => Some((begin, end, target.clone())),
+        false => None,
     }
 }
 
@@ -742,7 +858,7 @@ fn push_text(shapes: &mut Vec<Shape>, text: String) {
 /// the rest are one shape per cell, each with a child anchor giving its
 /// rectangle, plus a set of zero-area shapes that draw the rules. The grid has
 /// to be rebuilt from those rectangles, because nothing else states it.
-fn read_table_group(body: &[u8]) -> Option<Table> {
+fn read_table_group(body: &[u8], links: &HashMap<u32, String>) -> Option<Table> {
     let mut records = children(body);
     let group = records.next()?;
     if group.kind != ART_SP_CONTAINER || !is_table_group(group.body) {
@@ -762,8 +878,8 @@ fn read_table_group(body: &[u8]) -> Option<Table> {
             continue;
         }
         let mut blocks = Vec::new();
-        for shape in collect_shapes(record.body) {
-            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
+        for shape in collect_shapes(record.body, links) {
+            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false, None);
         }
         cells.push((
             rect,
@@ -939,15 +1055,18 @@ fn build_slide(shapes: Vec<Shape>, notes: Vec<Shape>) -> Section {
         }
         // A body placeholder reads as a bulleted list, as it is drawn.
         let bulleted = matches!(shape.kind, TEXT_TYPE_BODY | TEXT_TYPE_CENTER_BODY);
+        let link = shape.link.clone();
         match shape.hidden {
-            false => push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), bulleted),
+            false => {
+                push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), bulleted, link);
+            }
             // Built apart and marked before joining the rest: consecutive
             // bulleted shapes merge into one list, and a hidden shape's items
             // would otherwise be indistinguishable from the visible ones they
             // merged into.
             true => {
                 let mut hidden = Vec::new();
-                push_shape_blocks(&mut hidden, &shape.text, shape.props.as_ref(), bulleted);
+                push_shape_blocks(&mut hidden, &shape.text, shape.props.as_ref(), bulleted, link);
                 crate::doc::mark_hidden(&mut hidden);
                 blocks.append(&mut hidden);
             }
@@ -1008,7 +1127,7 @@ fn notes_blocks(notes: Vec<Shape>) -> Vec<Block> {
         .into_iter()
         .filter(|shape| shape.kind == TEXT_TYPE_NOTES)
     {
-        push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
+        push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false, None);
     }
     blocks
 }
@@ -1022,8 +1141,9 @@ fn push_shape_blocks(
     text: &str,
     props: Option<&TextProps>,
     bulleted: bool,
+    link: Option<(u32, u32, String)>,
 ) {
-    for (level, content) in split_paragraphs(text, props) {
+    for (level, content) in split_paragraphs(text, props, link.as_ref()) {
         let block = Block::Paragraph {
             content,
             align: Align::Left,
@@ -1048,7 +1168,11 @@ fn push_shape_blocks(
 /// advanced by each character's own width in those units, not by one per
 /// character. Where the shape states no properties every paragraph is at level
 /// zero and unstyled, which is what this reader did for all of them before.
-fn split_paragraphs(text: &str, props: Option<&TextProps>) -> Vec<(u8, Vec<Inline>)> {
+fn split_paragraphs(
+    text: &str,
+    props: Option<&TextProps>,
+    link: Option<&(u32, u32, String)>,
+) -> Vec<(u8, Vec<Inline>)> {
     let empty_levels: &[(u32, u8)] = &[];
     let empty_runs: &[(u32, TextStyle)] = &[];
     let mut levels = Runs::new(props.map_or(empty_levels, |p| p.levels.as_slice()));
@@ -1060,11 +1184,19 @@ fn split_paragraphs(text: &str, props: Option<&TextProps>) -> Vec<(u8, Vec<Inlin
     let mut buffer_style = TextStyle::default();
     // The level belongs to the paragraph, and is read at its first character.
     let mut level = levels.current().copied().unwrap_or(0);
+    // A hyperlink names the characters it covers, counted across the shape's
+    // whole text -- separators included, which is why the count is kept here
+    // rather than over the runs, where the separators are already gone.
+    let mut position = 0u32;
+    let mut buffer_link = false;
 
     for character in text.chars() {
         let width = character.len_utf16();
+        let linked = link.is_some_and(|(begin, end, _)| position >= *begin && position < *end);
+        position += width as u32;
+
         if matches!(character, '\r' | '\u{0B}') {
-            flush_run(&mut content, &mut buffer, &buffer_style);
+            flush_run(&mut content, &mut buffer, &buffer_style, buffer_link, link);
             finish_paragraph(&mut out, level, std::mem::take(&mut content));
             levels.advance(width);
             styles.advance(width);
@@ -1072,18 +1204,20 @@ fn split_paragraphs(text: &str, props: Option<&TextProps>) -> Vec<(u8, Vec<Inlin
             continue;
         }
         let style = styles.current().cloned().unwrap_or_default();
-        if !buffer.is_empty() && style != buffer_style {
-            flush_run(&mut content, &mut buffer, &buffer_style);
+        // The link's edges break a run as surely as a change of style does.
+        if !buffer.is_empty() && (style != buffer_style || linked != buffer_link) {
+            flush_run(&mut content, &mut buffer, &buffer_style, buffer_link, link);
         }
         if buffer.is_empty() {
             buffer_style = style;
+            buffer_link = linked;
         }
         buffer.push(character);
         levels.advance(width);
         styles.advance(width);
     }
 
-    flush_run(&mut content, &mut buffer, &buffer_style);
+    flush_run(&mut content, &mut buffer, &buffer_style, buffer_link, link);
     finish_paragraph(&mut out, level, content);
     out
 }
@@ -1093,10 +1227,24 @@ fn split_paragraphs(text: &str, props: Option<&TextProps>) -> Vec<(u8, Vec<Inlin
 /// Deliberately not trimmed: the space between a bold word and the one after it
 /// falls at the boundary between two runs, and trimming each one would close it
 /// up. The paragraph is trimmed as a whole instead.
-fn flush_run(content: &mut Vec<Inline>, buffer: &mut String, style: &TextStyle) {
+fn flush_run(
+    content: &mut Vec<Inline>,
+    buffer: &mut String,
+    style: &TextStyle,
+    linked: bool,
+    link: Option<&(u32, u32, String)>,
+) {
     let text = strip_controls(&std::mem::take(buffer));
-    if !text.is_empty() {
-        content.push(Inline::Run(Run::styled(text, style.clone())));
+    if text.is_empty() {
+        return;
+    }
+    let run = Run::styled(text, style.clone());
+    match (linked, link) {
+        (true, Some((_, _, href))) => content.push(Inline::Link {
+            href: href.clone(),
+            runs: vec![run],
+        }),
+        _ => content.push(Inline::Run(run)),
     }
 }
 
@@ -1215,7 +1363,7 @@ mod tests {
             slide_list: &slide_list,
             notes_list: Some(&notes_list),
         };
-        let sections = read_in_presentation_order(&stream, &layout);
+        let sections = read_in_presentation_order(&stream, &layout, &HashMap::new());
 
         assert_eq!(sections.len(), 2, "{sections:?}");
         assert!(
@@ -1254,7 +1402,7 @@ mod tests {
         body.extend(record(0, RT_TEXT_HEADER_ATOM, &[1]));
         body.extend(record(0, RT_TEXT_BYTES_ATOM, b"byte text"));
 
-        let shapes = collect_shapes(&container(RT_SLIDE, &body));
+        let shapes = collect_shapes(&container(RT_SLIDE, &body), &HashMap::new());
         assert_eq!(shapes.len(), 2);
         assert_eq!(shapes[0].text, "wide text");
         assert_eq!(shapes[1].text, "byte text");
@@ -1267,7 +1415,7 @@ mod tests {
         body.extend(record(0, RT_TEXT_HEADER_ATOM, &[1])); // body
         body.extend(text_chars("first point\rsecond point"));
 
-        let shapes = collect_shapes(&container(RT_SLIDE, &body));
+        let shapes = collect_shapes(&container(RT_SLIDE, &body), &HashMap::new());
         let section = build_slide(shapes, Vec::new());
         assert_eq!(section.title.as_deref(), Some("Slide Title"));
 
@@ -1282,7 +1430,7 @@ mod tests {
     fn notes_are_prose_rather_than_bullets() {
         let mut body = record(0, RT_TEXT_HEADER_ATOM, &[2]);
         body.extend(text_chars("Remember the numbers."));
-        let notes = collect_shapes(&container(RT_NOTES, &body));
+        let notes = collect_shapes(&container(RT_NOTES, &body), &HashMap::new());
 
         let blocks = notes_blocks(notes);
         assert!(
@@ -1332,7 +1480,7 @@ mod tests {
         body.extend(text_chars(text));
         body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
 
-        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body), &HashMap::new()), Vec::new());
         let mut document = SemanticDoc::default();
         document.sections.push(section);
         assert_eq!(
@@ -1359,7 +1507,7 @@ mod tests {
         let mut body = record(0, RT_TEXT_HEADER_ATOM, &[1]);
         body.extend(text_chars(text));
         body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
-        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body), &HashMap::new()), Vec::new());
         let mut document = SemanticDoc::default();
         document.sections.push(section);
         assert_eq!(crate::doc::to_markdown(&document), "- one\n- two\n");
@@ -1394,10 +1542,10 @@ mod tests {
         let mut body = record(0, RT_TEXT_HEADER_ATOM, &[2]); // notes: prose
         body.extend(text_chars(text));
         body.extend(record(0, RT_STYLE_TEXT_PROP_ATOM, &props));
-        let shapes = collect_shapes(&container(RT_NOTES, &body));
+        let shapes = collect_shapes(&container(RT_NOTES, &body), &HashMap::new());
         let mut blocks = Vec::new();
         for shape in shapes {
-            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false);
+            push_shape_blocks(&mut blocks, &shape.text, shape.props.as_ref(), false, None);
         }
         let mut document = SemanticDoc::default();
         document.sections.push(Section {
@@ -1446,6 +1594,48 @@ mod tests {
     /// the rules between them are shapes of no width or no height. Read as
     /// loose shapes the cells arrive as a column of stray paragraphs, which is
     /// what the .pptx of the same deck disagreed with.
+    /// A hyperlink is stated in three places, none of them the shape's text.
+    ///
+    /// The document lists its targets, an atom on the shape names which target,
+    /// and another gives the characters it covers. Read no further than the
+    /// text, the .ppt of a deck lost every link the .pptx and .odp of it kept.
+    #[test]
+    fn reads_a_hyperlink_over_the_characters_it_covers() {
+        // The target list, as it sits at the top of the document.
+        let mut targets = art_atom(0, RT_EX_HYPERLINK_ATOM, &7u32.to_le_bytes());
+        let url: Vec<u8> = "https://example.invalid/p"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        targets.extend(art_atom(0, RT_CSTRING, &url));
+        let list = art(0, RT_EX_OBJ_LIST, &art(0, RT_EX_HYPERLINK, &targets));
+
+        // The shape: its text, the target it names, and the range it covers.
+        let mut shape = record(0, RT_TEXT_HEADER_ATOM, &[1]);
+        shape.extend(text_chars("A link to somewhere"));
+        let mut info = [0u8; 16];
+        info[4..8].copy_from_slice(&7u32.to_le_bytes());
+        shape.extend(art_atom(0, RT_INTERACTIVE_INFO_ATOM, &info));
+        let mut range = 2u32.to_le_bytes().to_vec();
+        range.extend_from_slice(&6u32.to_le_bytes());
+        shape.extend(art_atom(0, RT_TX_INTERACTIVE_INFO_ATOM, &range));
+
+        let mut body = list.clone();
+        body.extend(art(0, ART_SP_CONTAINER, &shape));
+        let stream = container(RT_SLIDE, &body);
+
+        let links = read_hyperlinks(&stream);
+        assert_eq!(links.get(&7).map(String::as_str), Some("https://example.invalid/p"));
+
+        let section = build_slide(collect_shapes(&stream, &links), Vec::new());
+        let mut document = SemanticDoc::default();
+        document.sections.push(section);
+        assert_eq!(
+            crate::doc::to_markdown(&document),
+            "- A [link](https://example.invalid/p) to somewhere\n"
+        );
+    }
+
     #[test]
     fn rebuilds_a_table_from_the_shapes_that_draw_it() {
         let mut group = art(0, ART_SP_CONTAINER, &fopt(PID_TABLE_PROPERTIES, 1));
@@ -1456,7 +1646,10 @@ mod tests {
         // A rule: no height, and no text.
         group.extend(table_cell((400, 800, 3600, 800), ""));
 
-        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        let shapes = collect_shapes(
+            &container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)),
+            &HashMap::new(),
+        );
         let section = build_slide(shapes, Vec::new());
         let mut document = SemanticDoc::default();
         document.sections.push(section);
@@ -1473,7 +1666,10 @@ mod tests {
         group.extend(table_cell((400, 400, 2000, 800), "one"));
         group.extend(table_cell((2000, 400, 3600, 800), "two"));
 
-        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        let shapes = collect_shapes(
+            &container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)),
+            &HashMap::new(),
+        );
         assert_eq!(shapes.len(), 2);
         assert!(shapes.iter().all(|shape| shape.table.is_none()));
     }
@@ -1486,7 +1682,10 @@ mod tests {
         group.extend(table_cell((400, 800, 2000, 1200), "left"));
         group.extend(table_cell((2000, 800, 3600, 1200), "right"));
 
-        let shapes = collect_shapes(&container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)));
+        let shapes = collect_shapes(
+            &container(RT_SLIDE, &art(0, ART_SPGR_CONTAINER, &group)),
+            &HashMap::new(),
+        );
         let section = build_slide(shapes, Vec::new());
         let Some(Block::Table(table)) = section.blocks.first() else {
             panic!("no table: {:?}", section.blocks);
@@ -1523,7 +1722,7 @@ mod tests {
         let mut body = shape_with_booleans(0x0002_0002, "PAYLOAD");
         body.extend(shape_with_booleans(0x0002_0000, "ordinary"));
 
-        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body)), Vec::new());
+        let section = build_slide(collect_shapes(&container(RT_SLIDE, &body), &HashMap::new()), Vec::new());
         let mut document = SemanticDoc::default();
         document.sections.push(section);
         let hidden = document.hidden_text();
@@ -1552,7 +1751,7 @@ mod tests {
             body.extend(record(0, RT_TEXT_HEADER_ATOM, &[1])); // body
             body.extend(text_chars("PAYLOAD"));
 
-            let sections = read_in_stream_order(&container(RT_SLIDE, &body));
+            let sections = read_in_stream_order(&container(RT_SLIDE, &body), &HashMap::new());
             let mut document = SemanticDoc::default();
             document.sections.extend(sections);
             let hidden = document.hidden_text();
@@ -1577,7 +1776,7 @@ mod tests {
         let mut stream = container(RT_SLIDE, &slide);
         stream.extend(container(RT_NOTES, &notes));
 
-        let sections = read_in_stream_order(&stream);
+        let sections = read_in_stream_order(&stream, &HashMap::new());
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].title.as_deref(), Some("First"));
         assert_eq!(sections[0].notes.len(), 1);
