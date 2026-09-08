@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 786 Rust, 950 TypeScript |
+| Tests | 794 Rust, 950 TypeScript |
 | Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -63,7 +63,7 @@ every construct the engine turns down.
 - [ ] **iOS has never been built or run.** The code paths exist; nothing has
       executed them. Needs macOS.
 - [ ] Non-PDF formats and the ADF container are covered by their test suites and
-      by 103 real-producer files, but not by a corpus at the scale the PDF path
+      by 111 real-producer files, but not by a corpus at the scale the PDF path
       enjoys.
 - [ ] Only two producers, and only on Windows. Nothing here has met a document
       written by Google Docs, Apple Pages, or an older Office than the one
@@ -98,6 +98,18 @@ Not every difference is a defect: a converter loses things of its own, and each
 one has to be read out of the file before it is attributed. LibreOffice's EPUB
 export writes headings as paragraphs and bullets as `<ol>`; Calibre flattens
 nested lists. Those are recorded, not fixed.
+
+**Agreement is not correctness.** A differential between readers is blind to
+anything they all get wrong together, and no amount of extra formats or extra
+producers can see past that — only new content can. The first fixture built to
+provoke it (merged cells across and down, a table inside a cell, a captioned
+picture, and run properties that carry meaning) found six more defects, one of
+them invisible by construction: every reader read sub- and superscript
+correctly and the Markdown writer threw them away, so `H<sub>2</sub>O` came
+back as `H2O` in all eight files at once. The others were figures dropped
+because the paragraph holding one has no text in it, a merged cell's blank
+padded onto the end of its row instead of the column it covers, and a picture's
+bytes left behind a header nobody followed.
 
 ### Render engine
 
