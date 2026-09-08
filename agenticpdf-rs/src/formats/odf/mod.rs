@@ -555,7 +555,7 @@ fn read_blocks(
                         list_level.get_or_insert(level);
                     }
                     let content = read_inlines(reader, &element, package, document);
-                    if inline_text(&content).trim().is_empty() {
+                    if crate::doc::inlines_are_empty(&content) {
                         continue;
                     }
                     // A paragraph whose style descends from a heading style is
@@ -1084,7 +1084,7 @@ fn read_slides(content: &[u8], package: &mut Package, document: &mut SemanticDoc
         let name = element
             .attr_local("name")
             .map(str::trim)
-            .filter(|value| !value.is_empty() && !is_generated_page_name(value))
+            .filter(|value| !value.is_empty() && !is_generated_name(value))
             .map(str::to_string);
         let (title, blocks, notes) = read_slide(&mut reader, &element, package, document);
 
@@ -1098,8 +1098,16 @@ fn read_slides(content: &[u8], package: &mut Package, document: &mut SemanticDoc
     }
 }
 
-/// Whether a page name is one an application generated rather than a title.
-fn is_generated_page_name(name: &str) -> bool {
+/// Whether a name is one an application generated rather than one a person
+/// wrote: a kind followed by a number, like `Slide 3` or `Picture 1`.
+///
+/// Used for two things that turn out to be the same question. A page called
+/// `Slide 3` has no title, and a frame called `Picture 1` has no alt text --
+/// taking either at face value reports a label the application invented as
+/// though the author had written it. A .odt of a document said
+/// `![Picture 1]` where its .docx, which has the same automatic name in
+/// `wp:docPr` and does not use it, said `![]`.
+fn is_generated_name(name: &str) -> bool {
     let lower = name.trim().to_ascii_lowercase();
     let digits = lower.trim_start_matches(|c: char| c.is_ascii_alphabetic() || c.is_whitespace());
     let stem = &lower[..lower.len() - digits.len()];
@@ -1107,7 +1115,20 @@ fn is_generated_page_name(name: &str) -> bool {
         && digits.chars().all(|c| c.is_ascii_digit())
         && matches!(
             stem.trim(),
-            "slide" | "page" | "folie" | "diapositiva" | "diapositive"
+            "slide"
+                | "page"
+                | "folie"
+                | "diapositiva"
+                | "diapositive"
+                | "picture"
+                | "image"
+                | "graphics"
+                | "grafik"
+                | "bild"
+                | "object"
+                | "shape"
+                | "text box"
+                | "textbox"
         )
 }
 
@@ -1287,7 +1308,7 @@ fn read_frame_blocks(
     // user sees in the application, so it is more useful than nothing.
     let fallback = start
         .attr_local("name")
-        .filter(|name| !name.trim().is_empty())
+        .filter(|name| !name.trim().is_empty() && !is_generated_name(name))
         .map(str::to_string);
     for mut image in images.into_iter().take(match has_table {
         true => 0,

@@ -91,6 +91,8 @@ enum Destination {
     FieldInstruction,
     /// The `\colortbl` group, read so `\cf` can name a colour.
     ColorTable,
+    /// A `\pict` group, whose text is the picture's bytes written as hex.
+    Picture,
     /// Content to discard entirely (font tables, colour tables, pictures,
     /// unknown `\*\` destinations).
     Discard,
@@ -137,6 +139,8 @@ struct Parser<'a> {
     row_edges_by_row: Vec<Vec<i32>>,
     /// `\trleft`: the row's left margin, which is the first edge.
     row_left: i32,
+    /// The picture being read, if any.
+    picture: Option<Picture>,
     /// The instruction of the field being read, if any.
     field_instruction: String,
     /// The field result being gathered, so its runs can become a link.
@@ -200,6 +204,7 @@ impl<'a> Parser<'a> {
             row_edges: Vec::new(),
             row_edges_by_row: Vec::new(),
             row_left: 0,
+            picture: None,
             break_run: false,
             field_instruction: String::new(),
             field: None,
@@ -243,6 +248,9 @@ impl<'a> Parser<'a> {
                     // the link's text.
                     if self.field.as_ref().is_some_and(|f| f.depth == self.stack.len()) {
                         self.finish_field();
+                    }
+                    if self.state.destination == Destination::Picture {
+                        self.finish_picture();
                     }
                     // A list-marker group ends by handing its text to the
                     // paragraph that follows it.
@@ -365,7 +373,7 @@ impl<'a> Parser<'a> {
 
         match word {
             // -- Destinations ------------------------------------------
-            "listtable" | "listoverridetable" | "pict" | "object"
+            "listtable" | "listoverridetable" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
             // The group holding what a reader that cannot manage nested
             // tables should show instead. A reader that can must skip it,
@@ -415,6 +423,29 @@ impl<'a> Parser<'a> {
             // the reader should show. Discarding the whole group threw the
             // result away with it, so a hyperlink's text vanished -- the .docx
             // and .odt of the same document both kept it.
+            // A picture is written as hex digits in the body of its group,
+            // so the bytes are in the file and were being discarded with it:
+            // the .rtf of a document with a figure in it was the one form of
+            // that document reporting no figure at all.
+            "pict" => {
+                self.state.destination = Destination::Picture;
+                self.picture = Some(Picture::default());
+            }
+            "pngblip" => self.set_picture_type("image/png"),
+            "jpegblip" => self.set_picture_type("image/jpeg"),
+            // Goal size in twips: what the picture is drawn at, rather than
+            // what it holds.
+            "picwgoal" => self.set_picture_size(parameter, true),
+            "pichgoal" => self.set_picture_size(parameter, false),
+            // The binary form, whose bytes are not hex and would be read as
+            // text. Nothing here can use it, so the group goes back to being
+            // discarded rather than half-read.
+            "bin" => {
+                if self.picture.is_some() {
+                    self.picture = None;
+                    self.state.destination = Destination::Discard;
+                }
+            }
             "fldinst" => {
                 self.state.destination = Destination::FieldInstruction;
                 self.field_instruction.clear();
@@ -669,6 +700,13 @@ impl<'a> Parser<'a> {
             }
             // Entries are separated by semicolons, and an entry with no
             // components at all is "automatic" -- the table opens with one.
+            Destination::Picture => {
+                if let Some(picture) = self.picture.as_mut()
+                    && let Some(value) = ch.to_digit(16)
+                {
+                    picture.hex.push(value as u8);
+                }
+            }
             Destination::ColorTable => {
                 if ch == ';' {
                     let entry = self.pending_color.take().map(|[r, g, b]| {
@@ -753,6 +791,55 @@ impl<'a> Parser<'a> {
         // run before it.
         self.break_run = true;
         self.runs.push(Inline::FootnoteRef { index });
+    }
+
+    fn set_picture_type(&mut self, media: &str) {
+        if let Some(picture) = self.picture.as_mut() {
+            picture.media = Some(media.to_string());
+        }
+    }
+
+    /// Twips to points, for the size the picture is drawn at.
+    fn set_picture_size(&mut self, parameter: Option<i32>, is_width: bool) {
+        if let (Some(picture), Some(value)) = (self.picture.as_mut(), parameter)
+            && value > 0
+        {
+            let points = value as f64 / 20.0;
+            match is_width {
+                true => picture.width = Some(points),
+                false => picture.height = Some(points),
+            }
+        }
+    }
+
+    /// Register the picture just read and put a reference to it in the text.
+    ///
+    /// Only the forms this reader could hand on: a metafile is a drawing to be
+    /// executed rather than an image, and registering one under a type nothing
+    /// can open would be worse than saying nothing.
+    fn finish_picture(&mut self) {
+        let Some(picture) = self.picture.take() else {
+            return;
+        };
+        let Some(media) = picture.media else {
+            return;
+        };
+        // Two digits to the byte; an odd trailing digit is a truncated file.
+        let bytes: Vec<u8> = picture
+            .hex
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[high, low]| (high << 4) | low)
+            .collect();
+        if bytes.is_empty() {
+            return;
+        }
+        let mut image = self.document.add_asset(media, bytes);
+        image.width = picture.width;
+        image.height = picture.height;
+        self.break_run = true;
+        self.runs.push(Inline::Image(image));
     }
 
     /// Turn the runs a field result produced into a link, where it is one.
@@ -897,9 +984,7 @@ impl<'a> Parser<'a> {
     fn end_paragraph_inner(&mut self) -> bool {
         let content = std::mem::take(&mut self.runs);
         let marker = self.marker.take();
-        let text = crate::doc::inline_text(&content);
-
-        if text.trim().is_empty() {
+        if crate::doc::inlines_are_empty(&content) {
             return false;
         }
 
@@ -1111,6 +1196,18 @@ enum CaptureKind {
     TextBox,
 }
 
+/// A picture being read out of a `\pict` group.
+#[derive(Debug, Default, Clone)]
+struct Picture {
+    /// Media type, from the blip control word. `None` while unknown, and a
+    /// form this reader cannot use stays `None`.
+    media: Option<String>,
+    /// One entry per hex digit, paired into bytes when the group closes.
+    hex: Vec<u8>,
+    width: Option<f64>,
+    height: Option<f64>,
+}
+
 /// The field result being gathered, and where its runs began.
 #[derive(Debug, Clone)]
 struct FieldResult {
@@ -1189,6 +1286,9 @@ mod tests {
     fn markdown_of(rtf: &str) -> String {
         to_markdown(&parse_rtf(rtf.as_bytes()))
     }
+
+    /// A one-pixel PNG, as the hex digits an RTF picture group holds.
+    const PNG: &str = "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c636060f80f00010301000889c2ec0000000049454e44ae426082";
 
     const HEADER: &str = r"{\rtf1\ansi\ansicpg1252\deff0";
 
@@ -1564,6 +1664,44 @@ mod tests {
         let markdown = crate::doc::to_markdown(&document);
         assert!(markdown.contains("[^1]: The source."), "{markdown}");
         assert!(markdown.contains("A claim[^1] stands."), "{markdown}");
+    }
+
+    /// A picture's bytes are in the file, written as hex in its own group.
+    ///
+    /// The group was discarded whole, so the .rtf of a document with a figure
+    /// in it was the one form of that document that reported no figure at all.
+    /// The size is the goal size in twips -- what the picture is drawn at.
+    #[test]
+    fn reads_a_picture_out_of_its_hex() {
+        let rtf = format!(
+            r"{HEADER}\pard {{\pict\pngblip\picwgoal1440\pichgoal720 {PNG}}}\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+
+        assert_eq!(document.assets.len(), 1, "{:?}", document.assets.len());
+        let asset = &document.assets[0];
+        assert_eq!(asset.media_type, "image/png");
+        // Decoded rather than merely carried: the dimensions are read out of
+        // the PNG header, so a wrong pairing of the hex digits gives zeroes.
+        assert_eq!((asset.width, asset.height), (1, 1));
+
+        let markdown = crate::doc::to_markdown(&document);
+        assert!(markdown.contains("![](asset1)"), "{markdown}");
+    }
+
+    /// A form this reader cannot hand on is not registered under a type
+    /// nothing can open.
+    #[test]
+    fn leaves_a_metafile_picture_alone() {
+        let rtf = format!(
+            r"{HEADER}\pard {{\pict\wmetafile8\picwgoal1440 0102030405060708}}\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+        assert!(document.assets.is_empty());
+        // And the hex is not mistaken for text either.
+        let markdown = crate::doc::to_markdown(&document);
+        assert!(!markdown.contains("!["), "{markdown}");
+        assert!(!markdown.contains("0102"), "{markdown}");
     }
 
     /// A text box's content is a block after the paragraph, not text in it.

@@ -1124,7 +1124,7 @@ impl Assembler {
         content: Vec<Inline>,
         blocks: &mut Vec<Block>,
     ) {
-        if inline_text(&content).trim().is_empty() {
+        if crate::doc::inlines_are_empty(&content) {
             return;
         }
         let style = self.stylesheet.get(pap.istd);
@@ -1218,7 +1218,7 @@ impl Assembler {
     }
 
     fn push_paragraph(blocks: &mut Vec<Block>, content: Vec<Inline>) {
-        if inline_text(&content).trim().is_empty() {
+        if crate::doc::inlines_are_empty(&content) {
             return;
         }
         blocks.push(Block::Paragraph {

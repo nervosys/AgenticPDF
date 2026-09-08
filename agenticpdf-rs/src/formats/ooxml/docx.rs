@@ -295,7 +295,7 @@ impl DocxReader<'_> {
             }
         }
 
-        if inline_text(&content).trim().is_empty() && !properties.page_break {
+        if crate::doc::inlines_are_empty(&content) && !properties.page_break {
             return None;
         }
 

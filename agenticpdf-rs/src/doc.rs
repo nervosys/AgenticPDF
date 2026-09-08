@@ -582,6 +582,19 @@ impl SemanticDoc {
 }
 
 /// Concatenated text of a run of inlines.
+/// Whether a run of inlines holds nothing worth a block of its own.
+///
+/// Text is the usual answer, and an empty paragraph is not worth keeping. But
+/// a figure on a line by itself is a paragraph with no text in it, and every
+/// reader that filed the question as "is there text" threw the picture away
+/// with the paragraph -- which is the shape a captioned figure always takes.
+pub fn inlines_are_empty(content: &[Inline]) -> bool {
+    inline_text(content).trim().is_empty()
+        && !content.iter().any(|inline| {
+            matches!(inline, Inline::Image(_) | Inline::FootnoteRef { .. })
+        })
+}
+
 pub fn inline_text(content: &[Inline]) -> String {
     let mut out = String::new();
     for item in content {
