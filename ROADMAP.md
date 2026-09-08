@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 771 Rust, 950 TypeScript |
+| Tests | 786 Rust, 950 TypeScript |
 | Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -60,30 +60,44 @@ every construct the engine turns down.
 
 ### Measurement gaps
 
-- [ ] **EPUB has never met a file a real producer wrote.** Every other format
-      now has one: a workbook and a document were written out of Office in ten
-      formats and read back, which immediately found a spreadsheet number bug
-      that hand-written fixtures could not. No EPUB producer is installed and no
-      `.epub` exists on the development machine, so this one still rests on
-      fixtures we wrote ourselves.
 - [ ] **iOS has never been built or run.** The code paths exist; nothing has
       executed them. Needs macOS.
 - [ ] Non-PDF formats and the ADF container are covered by their test suites and
-      by sixteen real-producer files, but not by a corpus at the scale the PDF
-      path enjoys.
+      by 103 real-producer files, but not by a corpus at the scale the PDF path
+      enjoys.
+- [ ] Only two producers, and only on Windows. Nothing here has met a document
+      written by Google Docs, Apple Pages, or an older Office than the one
+      installed.
 
 **What the real-producer files have been worth so far.** Writing one document
 out of Office in every format it supports and diffing the readers against each
-other found **twelve defects** that fixtures written in this repository could
-not: a parser panic on a multi-byte character, a spreadsheet number reported to
-seventeen digits, three separate style-inheritance gaps, two off-by-one walks
+other has found **over forty defects** that fixtures written in this repository
+could not: a parser panic on a multi-byte character, a spreadsheet number
+reported to seventeen digits, several style-inheritance gaps, off-by-one walks
 through the legacy `.doc` list definitions, speaker notes attached to the wrong
-slide, dates reported as their serial number, and an error code reported as
-zero. None was visible without a second implementation to disagree with.
+slide, dates reported as their serial number, an error code reported as zero,
+tracked deletions read as text, hidden text and comments read as content, notes
+and text boxes dropped entirely, and table styles ignored.
 
 The rule the technique rests on: **a document saved in several formats must read
 back the same.** Where two readers differ, at least one is wrong, and no ground
 truth is needed to know that.
+
+**Two producers, not one.** Every file above came out of Microsoft Office, so
+the comparison was only ever between *formats*. Converting the same documents
+with LibreOffice added the missing axis and immediately found nine more
+defects, including one that had never been exercised at all: the `.ppt` reader
+took the document container from the wrong field of the `UserEditAtom`, and
+only ever worked because PowerPoint writes zeros there. A rule written from a
+specification and never run against the producer it describes has not been
+tested. Calibre and LibreOffice also gave EPUB its first real-producer files,
+which found that the reader ignored the stylesheets an EPUB carries inside
+itself -- text lost, and a way past the hidden-text scan.
+
+Not every difference is a defect: a converter loses things of its own, and each
+one has to be read out of the file before it is attributed. LibreOffice's EPUB
+export writes headings as paragraphs and bullets as `<ol>`; Calibre flattens
+nested lists. Those are recorded, not fixed.
 
 ### Render engine
 
