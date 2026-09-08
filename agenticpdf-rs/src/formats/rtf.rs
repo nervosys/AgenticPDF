@@ -56,6 +56,8 @@ struct State {
     indent: i32,
     /// List nesting from `\ilvl`, when the paragraph is in a list.
     list_level: Option<u8>,
+    /// The font in force, which decides how its bytes are decoded.
+    font: Option<i64>,
     in_table: bool,
     /// Characters still to skip after a `\uN`, from `\ucN`.
     unicode_skip: usize,
@@ -81,6 +83,8 @@ enum Destination {
     ListMarker,
     /// The `\stylesheet` group, read to learn which style numbers are headings.
     StyleSheet,
+    /// The `\fonttbl` group, read for the code page each font names.
+    FontTable,
     /// The `\colortbl` group, read so `\cf` can name a colour.
     ColorTable,
     /// Content to discard entirely (font tables, colour tables, pictures,
@@ -119,6 +123,12 @@ struct Parser<'a> {
     heading_styles: HashMap<i64, u8>,
     /// The `\colortbl` entries, indexed as `\cf` names them. `None` is the
     /// automatic colour, which the table's first entry always is.
+    /// Font number → the code page its bytes are in.
+    font_pages: HashMap<i64, u16>,
+    /// The font being defined while reading the font table.
+    font_number: Option<i64>,
+    /// The document's `\ansicpg`, used where a font names no page of its own.
+    default_page: Option<u16>,
     colors: Vec<Option<[f64; 3]>>,
     /// Channels gathered for the entry being read.
     pending_color: Option<[u8; 3]>,
@@ -165,6 +175,9 @@ impl<'a> Parser<'a> {
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
             list_styles: HashMap::new(),
+            font_pages: HashMap::new(),
+            font_number: None,
+            default_page: None,
             colors: Vec::new(),
             pending_color: None,
             style_depth: None,
@@ -210,7 +223,8 @@ impl<'a> Parser<'a> {
                 _ => {
                     let byte = self.data[self.at];
                     self.at += 1;
-                    self.push_char(cp1252(byte));
+                    let character = self.decode_byte(byte);
+                    self.push_char(character);
                 }
             }
         }
@@ -252,7 +266,10 @@ impl<'a> Parser<'a> {
                         // Bytes following a `\uN` are its ASCII fallback and
                         // must be dropped, not emitted alongside it.
                         _ if self.state.unicode_skip_pending() => self.consume_skip(),
-                        Some(byte) => self.push_char(cp1252(byte)),
+                        Some(byte) => {
+                            let character = self.decode_byte(byte);
+                            self.push_char(character);
+                        }
                         None => {}
                     }
                 }
@@ -307,13 +324,44 @@ impl<'a> Parser<'a> {
 
         match word {
             // -- Destinations ------------------------------------------
-            "fonttbl" | "listtable" | "listoverridetable" | "pict" | "object"
+            "listtable" | "listoverridetable" | "pict" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
             | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr" | "footnote"
             | "annotation" | "bkmkstart" | "bkmkend" | "field" | "fldinst" | "filetbl"
             | "revtbl" | "upr" => {
                 self.state.destination = Destination::Discard;
             }
+            // Read rather than skipped: a font carries the code page its
+            // bytes are in, and without it every non-Latin script is decoded as
+            // windows-1252. Hebrew came out as Latin letters.
+            "fonttbl" => {
+                self.state.destination = Destination::FontTable;
+                self.font_number = None;
+            }
+            // Inside the font table this numbers the font being defined;
+            // elsewhere it selects one, and with it the code page to decode by.
+            "f" => match self.state.destination {
+                Destination::FontTable => self.font_number = parameter.map(i64::from),
+                _ => self.state.font = parameter.map(i64::from),
+            },
+            "fcharset" => {
+                if let (Destination::FontTable, Some(number), Some(charset)) =
+                    (self.state.destination, self.font_number, parameter)
+                    && let Some(page) = code_page(charset)
+                {
+                    self.font_pages.insert(number, page);
+                }
+            }
+            // A font may state its code page outright instead.
+            "cpg" => {
+                if let (Destination::FontTable, Some(number), Some(page)) =
+                    (self.state.destination, self.font_number, parameter)
+                {
+                    self.font_pages.insert(number, page as u16);
+                }
+            }
+            // The document's own default, for text in a font that names none.
+            "ansicpg" => self.default_page = parameter.map(|page| page as u16),
             // Read rather than skipped: without it `\cf` names an index into
             // a table nobody built, and the run's colour is lost. The .docx and
             // .odt of the same document both keep it.
@@ -476,6 +524,13 @@ impl<'a> Parser<'a> {
         match self.state.destination {
             Destination::Discard => {}
             Destination::ListMarker => self.pending_marker.push(ch),
+            // A font's name and the semicolon ending its entry. Neither is
+            // content, and the entry's end is where the next font begins.
+            Destination::FontTable => {
+                if ch == ';' {
+                    self.font_number = None;
+                }
+            }
             // Entries are separated by semicolons, and an entry with no
             // components at all is "automatic" -- the table opens with one.
             Destination::ColorTable => {
@@ -515,6 +570,30 @@ impl<'a> Parser<'a> {
                     self.state.style.clone(),
                 )));
             }
+        }
+    }
+
+    /// Decode one literal byte by the code page of the font in force.
+    ///
+    /// Single byte in, single character out, which is what every code page here
+    /// is. A document in a multi-byte script writes those characters as `\u`
+    /// escapes rather than as byte pairs, so this does not need to pair bytes.
+    fn decode_byte(&self, byte: u8) -> char {
+        let page = self
+            .state
+            .font
+            .and_then(|font| self.font_pages.get(&font).copied())
+            .or(self.default_page);
+        match page.and_then(encoding_for) {
+            Some(encoding) => encoding
+                .decode(&[byte])
+                .0
+                .chars()
+                .next()
+                .unwrap_or(char::REPLACEMENT_CHARACTER),
+            // No page named, or one this build has no table for: windows-1252
+            // is the format's own default and what every ASCII byte needs.
+            None => cp1252(byte),
         }
     }
 
@@ -743,6 +822,51 @@ fn parse_leading_number(text: &str) -> Option<u64> {
 /// The range 0x80-0x9F is where it differs from Latin-1 — those are the curly
 /// quotes and dashes that dominate real documents, so getting them right
 /// matters more than the rest of the table.
+/// The code page a `\fcharset` names.
+///
+/// The mapping is the one Windows itself uses; a charset with no page here is
+/// left to the document's default rather than guessed at.
+fn code_page(charset: i32) -> Option<u16> {
+    Some(match charset {
+        0 => 1252,   // ANSI
+        77 => 10000, // Mac Roman
+        128 => 932,  // Japanese
+        129 => 949,  // Korean
+        134 => 936,  // Simplified Chinese
+        136 => 950,  // Traditional Chinese
+        161 => 1253, // Greek
+        162 => 1254, // Turkish
+        163 => 1258, // Vietnamese
+        177 => 1255, // Hebrew
+        178 => 1256, // Arabic
+        186 => 1257, // Baltic
+        204 => 1251, // Cyrillic
+        222 => 874,  // Thai
+        238 => 1250, // Central European
+        _ => return None,
+    })
+}
+
+/// The decoder for a code page, where it is one this reader can decode.
+fn encoding_for(page: u16) -> Option<&'static encoding_rs::Encoding> {
+    Some(match page {
+        1250 => encoding_rs::WINDOWS_1250,
+        1251 => encoding_rs::WINDOWS_1251,
+        1253 => encoding_rs::WINDOWS_1253,
+        1254 => encoding_rs::WINDOWS_1254,
+        1255 => encoding_rs::WINDOWS_1255,
+        1256 => encoding_rs::WINDOWS_1256,
+        1257 => encoding_rs::WINDOWS_1257,
+        1258 => encoding_rs::WINDOWS_1258,
+        874 => encoding_rs::WINDOWS_874,
+        10000 => encoding_rs::MACINTOSH,
+        // 1252 falls through to the table below, which is this reader's own and
+        // agrees with the code page; the multi-byte pages are not decoded a
+        // byte at a time and so are left to it too.
+        _ => return None,
+    })
+}
+
 fn cp1252(byte: u8) -> char {
     const HIGH: [char; 32] = [
         '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
@@ -1025,6 +1149,39 @@ mod tests {
     /// same document read as .docx and .odt kept it. Entry zero is the
     /// "automatic" colour, which the table opens with and which is the
     /// reader's default rather than anything the document states.
+    /// A font names the code page its bytes are in.
+    ///
+    /// The font table was skipped along with the other tables a reader has no
+    /// use for, so every literal byte was decoded as windows-1252 whatever font
+    /// it was written in: Hebrew in a `\fcharset177` font came out as Latin
+    /// letters, where the .docx and .odt of the same document read it.
+    #[test]
+    fn decodes_bytes_by_the_fonts_code_page() {
+        let rtf = format!(
+            r"{HEADER}{{\fonttbl{{\f0\fcharset0 Calibri;}}{{\f1\fcharset177 Calibri (Hebrew);}}{{\f2\fcharset204 Calibri Cyr;}}}}\pard\f1 \'f2\'e1\'f8\'e9\'fa\f0  and \f2 \'cc\'ee\'e8\'e0\f0  end\par}}"
+        );
+        assert_eq!(
+            markdown_of(&rtf),
+            "\u{05E2}\u{05D1}\u{05E8}\u{05D9}\u{05EA} and \u{041C}\u{043E}\u{0438}\u{0430} end\n"
+        );
+    }
+
+    /// A font that names no code page falls back to the reader's own table.
+    #[test]
+    fn a_font_without_a_charset_keeps_the_default_decoding() {
+        let rtf = format!(
+            r"{HEADER}{{\fonttbl{{\f0 Calibri;}}}}\pard\f0 caf\'e9 \'93quoted\'94\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "caf\u{00E9} \u{201C}quoted\u{201D}\n");
+    }
+
+    /// The font table is read, not emitted.
+    #[test]
+    fn the_font_table_is_not_emitted_as_prose() {
+        let rtf = format!(r"{HEADER}{{\fonttbl{{\f0\fcharset0 Calibri;}}}}\pard\f0 text\par}}");
+        assert_eq!(markdown_of(&rtf), "text\n");
+    }
+
     #[test]
     fn reads_colours_through_the_colour_table() {
         let rtf = format!(
