@@ -302,7 +302,21 @@ impl DocxReader<'_> {
         // Resolve the numbering reference now, while the definitions are in
         // reach; the classifier that files the block only sees the properties.
         if let Some(reference) = properties.numbering.as_mut() {
+            // The depth is in the style name where the paragraph does not give
+            // one. LibreOffice's .docx writes `ListBullet2` with an explicit
+            // `<w:ilvl w:val="0"/>` and a `numId` of its own for each level,
+            // so read by the markup alone a two-level list came back flat --
+            // where the same document written by Word nests it with `w:ilvl`.
+            // The kind of marker is asked at the level the file gave, before
+            // the name moves the item: the style name says where the item sits,
+            // not what the numbering it points at defines. Asked at the deeper
+            // level, a bulleted sub-list came back numbered.
             reference.ordered = self.numbering.is_ordered(reference.id, reference.level);
+            if reference.level == 0
+                && let Some(level) = self.styles.list_level(&properties.style_id)
+            {
+                reference.level = level;
+            }
         }
 
         Some(Paragraph {
@@ -1091,6 +1105,19 @@ impl Styles {
             reference.level = *level;
         }
         Some(reference)
+    }
+
+    /// The nesting depth a style's name carries, following `basedOn`.
+    fn list_level(&self, id: &str) -> Option<u8> {
+        let mut at = id;
+        // A cap rather than a visited set: a cycle is malformed input.
+        for _ in 0..8 {
+            if let Some(level) = self.list_levels.get(at) {
+                return Some(*level);
+            }
+            at = self.based_on.get(at)?;
+        }
+        None
     }
 
     /// The numbering the style chain carries, before the name is consulted.

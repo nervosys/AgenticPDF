@@ -194,6 +194,57 @@ fn docx_reads_a_lists_depth_from_the_style_name() {
     );
 }
 
+/// The other producer states the depth in the name *and* a level of zero.
+///
+/// LibreOffice's .docx writes `<w:pStyle w:val="ListBullet2"/>` together with
+/// an explicit `<w:ilvl w:val="0"/>` and a `numId` of its own for each level,
+/// so the depth is in the name and the markup contradicts it. Word's own
+/// export carries no `<w:ilvl>` at all, so the case never arose until the same
+/// document was written by a second producer.
+///
+/// The marker is asked at the level the file states, not at the depth the name
+/// gives: `numId` 2 defines its level zero as a bullet, and asking it about
+/// level one -- which nothing in this list uses -- turned the sub-list into a
+/// numbered one.
+#[test]
+fn docx_reads_a_depth_from_the_name_over_a_stated_level_of_zero() {
+    let styles = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:style w:styleId="ListBullet"><w:name w:val="List Bullet"/></w:style>
+        <w:style w:styleId="ListBullet2"><w:name w:val="List Bullet 2"/></w:style>
+      </w:styles>"#;
+    let numbering = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:abstractNum w:abstractNumId="0">
+          <w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl>
+          <w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/></w:lvl>
+        </w:abstractNum>
+        <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+        <w:num w:numId="2"><w:abstractNumId w:val="0"/></w:num>
+      </w:numbering>"#;
+    let item = |style: &str, num: u8, text: &str| {
+        format!(
+            r#"<w:p><w:pPr><w:pStyle w:val="{style}"/><w:numPr><w:ilvl w:val="0"/>
+               <w:numId w:val="{num}"/></w:numPr></w:pPr><w:r><w:t>{text}</w:t></w:r></w:p>"#
+        )
+    };
+    let body = format!(
+        "{}{}{}",
+        item("ListBullet", 1, "one"),
+        item("ListBullet2", 2, "under one"),
+        item("ListBullet", 1, "two"),
+    );
+    let zip = docx_with_parts(
+        &body,
+        &[
+            ("word/styles.xml", styles, true),
+            ("word/numbering.xml", numbering, true),
+        ],
+    );
+    assert_eq!(
+        to_markdown(&open(&zip, Format::Docx)),
+        "- one\n  - under one\n- two\n"
+    );
+}
+
 /// An explicit level is not second-guessed by the style's name.
 #[test]
 fn docx_prefers_an_explicit_level_to_the_style_name() {

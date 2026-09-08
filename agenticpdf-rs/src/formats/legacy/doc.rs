@@ -1070,15 +1070,19 @@ impl Assembler {
             // second level, and `ilvl` stays at zero. Read by `ilvl` alone a
             // two-level list came back flat, which is what the .docx of the
             // same document disagreed with.
-            let level = match pap.props.ilvl.unwrap_or(0) {
-                0 => style.list_level.unwrap_or(0) as usize,
-                stated => stated as usize,
-            }
-            .min(LEVELS - 1);
+            let stated = (pap.props.ilvl.unwrap_or(0) as usize).min(LEVELS - 1);
+            let level = match stated {
+                0 => (style.list_level.unwrap_or(0) as usize).min(LEVELS - 1),
+                deeper => deeper,
+            };
             let fallback = ListDef::unknown();
             let list = self.lists.by_ilfo.get(&ilfo).unwrap_or(&fallback).clone();
-            let ordered = list.ordered[level];
-            let start = self.next_number(&list, level);
+            // The marker and the count come from the level the file states,
+            // which is the level within that list's own definition; the name
+            // says only where the item sits among the lists around it. Asked
+            // at the deeper level, a bulleted sub-list came back numbered.
+            let ordered = list.ordered[stated];
+            let start = self.next_number(&list, stated);
 
             let item = ListItem {
                 blocks: vec![paragraph],
