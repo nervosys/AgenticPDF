@@ -646,11 +646,17 @@ impl<'a> Parser<'a> {
             Destination::Company => push_meta(&mut self.document.creator, ch),
             Destination::Body if self.state.deleted => {}
             Destination::Body => {
+                // Taken before the test below, not inside it: as one of the
+                // conditions it was left set whenever an earlier one
+                // short-circuited, and then broke the run one character late --
+                // splitting "Error!" into "E" and "rror!", which the writer
+                // then wrapped in emphasis separately.
+                let force_break = std::mem::take(&mut self.break_run);
                 // Extend the last run when the style is unchanged, so a
                 // paragraph does not become one run per character.
-                if let Some(Inline::Run(run)) = self.runs.last_mut()
+                if !force_break
+                    && let Some(Inline::Run(run)) = self.runs.last_mut()
                     && run.style == self.state.style
-                    && !std::mem::take(&mut self.break_run)
                 {
                     run.text.push(ch);
                     return;
@@ -1369,6 +1375,21 @@ mod tests {
     ///
     /// Showing it presents wording the author removed as though it stood.
     /// The .docx and .odt of the same document leave it out.
+    /// A field result is one run, not a first character and a remainder.
+    ///
+    /// The flag that starts the result in a run of its own was one of the
+    /// conditions deciding whether to extend the previous run, so an
+    /// earlier condition short-circuiting left it set -- and it broke the
+    /// run one character late. "Error!" became "E" and "rror!", which the
+    /// writer emphasised separately as `**E****rror!**`.
+    #[test]
+    fn a_field_result_is_not_split_after_its_first_character() {
+        let rtf = format!(
+            r"{HEADER}\pard {{\field{{\*\fldinst PAGE }}{{\fldrslt \b Error!}}}}\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "**Error!**\n");
+    }
+
     #[test]
     fn tracked_deletions_are_not_shown() {
         let rtf = format!(
