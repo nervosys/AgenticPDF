@@ -982,6 +982,15 @@ fn to_text_style(props: CharProps) -> TextStyle {
         strikethrough: props.strike,
         underline: props.underline,
         hidden: props.hidden,
+        color: props
+            .color
+            .map(|[red, green, blue]| {
+                [
+                    f64::from(red) / 255.0,
+                    f64::from(green) / 255.0,
+                    f64::from(blue) / 255.0,
+                ]
+            }),
         size: props.half_points.map(|value| value as f64 / 2.0),
         ..TextStyle::default()
     }

@@ -78,7 +78,30 @@ pub struct CharProps {
     pub hidden: bool,
     /// Half-points, as everywhere in Word's binary format.
     pub half_points: Option<u16>,
+    /// Text colour, where the run states one. `None` is Word's "automatic",
+    /// which is the reader's default rather than a colour the document names.
+    pub color: Option<[u8; 3]>,
 }
+
+/// The sixteen colours `sprmCIco` indexes, with "automatic" at zero.
+const ICO_PALETTE: [[u8; 3]; 16] = [
+    [0x00, 0x00, 0x00], // black
+    [0x00, 0x00, 0xFF], // blue
+    [0x00, 0xFF, 0xFF], // cyan
+    [0x00, 0xFF, 0x00], // green
+    [0xFF, 0x00, 0xFF], // magenta
+    [0xFF, 0x00, 0x00], // red
+    [0xFF, 0xFF, 0x00], // yellow
+    [0xFF, 0xFF, 0xFF], // white
+    [0x00, 0x00, 0x80], // dark blue
+    [0x00, 0x80, 0x80], // dark cyan
+    [0x00, 0x80, 0x00], // dark green
+    [0x80, 0x00, 0x80], // dark magenta
+    [0x80, 0x00, 0x00], // dark red
+    [0x80, 0x80, 0x00], // dark yellow
+    [0x80, 0x80, 0x80], // dark grey
+    [0xC0, 0xC0, 0xC0], // light grey
+];
 
 /// The `sprmCIstd` character-style reference in a CHPX, if any.
 pub fn chpx_istd(grpprl: &[u8]) -> Option<u16> {
@@ -94,6 +117,9 @@ pub fn chpx_istd(grpprl: &[u8]) -> Option<u16> {
 /// Apply a CHPX over `current`, resolving toggles against `style_base`.
 pub fn apply_chpx(grpprl: &[u8], current: CharProps, style_base: CharProps) -> CharProps {
     let mut props = current;
+    // Word states a colour twice, exactly and as a palette index. Whichever
+    // order they arrive in, the exact one is the answer.
+    let mut saw_exact_color = false;
     walk(grpprl, |sprm, operand| match sprm {
         // The toggle sprms: bold, italic, strikethrough, hidden.
         0x0835 => {
@@ -126,6 +152,23 @@ pub fn apply_chpx(grpprl: &[u8], current: CharProps, style_base: CharProps) -> C
         }
         // sprmCHps: font size in half-points.
         0x4A43 => props.half_points = u16_at(operand, 0),
+        // sprmCCv: an exact colour, as red, green, blue and an "automatic"
+        // flag. Word writes this alongside the palette index below, and it is
+        // the more precise of the two, so it wins where both appear.
+        0x6870 => {
+            props.color = match operand {
+                [red, green, blue, auto, ..] if *auto == 0 => Some([*red, *green, *blue]),
+                _ => None,
+            };
+            saw_exact_color = true;
+        }
+        // sprmCIco: an index into Word's fixed palette, zero being automatic.
+        0x2A42 if !saw_exact_color => {
+            props.color = operand
+                .first()
+                .and_then(|index| ICO_PALETTE.get((*index as usize).checked_sub(1)?))
+                .copied();
+        }
         _ => {}
     });
     props
@@ -316,6 +359,57 @@ mod tests {
             out.extend_from_slice(operand);
         }
         out
+    }
+
+    /// Word states a run's colour twice, and the exact one is the answer.
+    ///
+    /// Both appear in a document Word wrote: `sprmCCv` with the literal bytes
+    /// and `sprmCIco` with an index into a fixed palette. Neither was read, so
+    /// the .doc of a document whose .docx and .odt both reported white text
+    /// reported no colour at all.
+    #[test]
+    fn reads_a_runs_colour_from_either_sprm() {
+        // The pair Word writes for white text, which is how this was found.
+        let both = apply_chpx(
+            &grpprl(&[(0x6870, &[0xFF, 0xFF, 0xFF, 0x00]), (0x2A42, &[8])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert_eq!(both.color, Some([0xFF, 0xFF, 0xFF]));
+
+        // The index alone, where that is all a producer writes.
+        let index = apply_chpx(
+            &grpprl(&[(0x2A42, &[6])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert_eq!(index.color, Some([0xFF, 0x00, 0x00]), "index 6 is red");
+
+        // The exact value wins whichever order they arrive in.
+        let reversed = apply_chpx(
+            &grpprl(&[(0x2A42, &[1]), (0x6870, &[0x2F, 0x54, 0x96, 0x00])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert_eq!(reversed.color, Some([0x2F, 0x54, 0x96]));
+    }
+
+    /// "Automatic" is the reader's default, not a colour the document names.
+    #[test]
+    fn an_automatic_colour_is_no_colour() {
+        let auto_flag = apply_chpx(
+            &grpprl(&[(0x6870, &[0xFF, 0x00, 0x00, 0x01])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert_eq!(auto_flag.color, None);
+
+        let index_zero = apply_chpx(
+            &grpprl(&[(0x2A42, &[0])]),
+            CharProps::default(),
+            CharProps::default(),
+        );
+        assert_eq!(index_zero.color, None);
     }
 
     #[test]

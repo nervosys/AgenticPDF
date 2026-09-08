@@ -81,6 +81,8 @@ enum Destination {
     ListMarker,
     /// The `\stylesheet` group, read to learn which style numbers are headings.
     StyleSheet,
+    /// The `\colortbl` group, read so `\cf` can name a colour.
+    ColorTable,
     /// Content to discard entirely (font tables, colour tables, pictures,
     /// unknown `\*\` destinations).
     Discard,
@@ -115,6 +117,11 @@ struct Parser<'a> {
     /// stylesheet — as a reader that treats it purely as a resource does —
     /// loses every heading in every document Word produced.
     heading_styles: HashMap<i64, u8>,
+    /// The `\colortbl` entries, indexed as `\cf` names them. `None` is the
+    /// automatic colour, which the table's first entry always is.
+    colors: Vec<Option<[f64; 3]>>,
+    /// Channels gathered for the entry being read.
+    pending_color: Option<[u8; 3]>,
     /// Style number → the nesting level its name carries, for the built-in
     /// list styles. Word states a list's depth here and nowhere else: the
     /// paragraph gets `\s21` and an `\ilvl0` that means "as the style says".
@@ -158,6 +165,8 @@ impl<'a> Parser<'a> {
             table_rows: Vec::new(),
             heading_styles: HashMap::new(),
             list_styles: HashMap::new(),
+            colors: Vec::new(),
+            pending_color: None,
             style_depth: None,
             quote_styles: std::collections::HashSet::new(),
             style_number: None,
@@ -298,12 +307,38 @@ impl<'a> Parser<'a> {
 
         match word {
             // -- Destinations ------------------------------------------
-            "fonttbl" | "colortbl" | "listtable" | "listoverridetable" | "pict" | "object"
+            "fonttbl" | "listtable" | "listoverridetable" | "pict" | "object"
             | "themedata" | "datastore" | "generator" | "xmlnstbl" | "latentstyles" | "rsidtbl"
             | "header" | "footer" | "headerl" | "headerr" | "footerl" | "footerr" | "footnote"
             | "annotation" | "bkmkstart" | "bkmkend" | "field" | "fldinst" | "filetbl"
             | "revtbl" | "upr" => {
                 self.state.destination = Destination::Discard;
+            }
+            // Read rather than skipped: without it `\cf` names an index into
+            // a table nobody built, and the run's colour is lost. The .docx and
+            // .odt of the same document both keep it.
+            "colortbl" => {
+                self.state.destination = Destination::ColorTable;
+                self.colors.clear();
+                self.pending_color = None;
+            }
+            "red" | "green" | "blue" if self.state.destination == Destination::ColorTable => {
+                let value = parameter.unwrap_or(0).clamp(0, 255) as u8;
+                let entry = self.pending_color.get_or_insert([0u8; 3]);
+                let channel = match word {
+                    "red" => 0,
+                    "green" => 1,
+                    _ => 2,
+                };
+                entry[channel] = value;
+            }
+            // `\cf0` is "automatic", which is to say the reader's default
+            // rather than a colour the document states.
+            "cf" => {
+                self.state.style.color = parameter
+                    .filter(|index| *index > 0)
+                    .and_then(|index| self.colors.get(index as usize).copied())
+                    .flatten();
             }
             // Read rather than skipped: this is where Word records which style
             // numbers are headings.
@@ -441,6 +476,20 @@ impl<'a> Parser<'a> {
         match self.state.destination {
             Destination::Discard => {}
             Destination::ListMarker => self.pending_marker.push(ch),
+            // Entries are separated by semicolons, and an entry with no
+            // components at all is "automatic" -- the table opens with one.
+            Destination::ColorTable => {
+                if ch == ';' {
+                    let entry = self.pending_color.take().map(|[r, g, b]| {
+                        [
+                            f64::from(r) / 255.0,
+                            f64::from(g) / 255.0,
+                            f64::from(b) / 255.0,
+                        ]
+                    });
+                    self.colors.push(entry);
+                }
+            }
             // A style definition ends with its human-readable name, terminated
             // by a semicolon.
             Destination::StyleSheet => {
@@ -968,6 +1017,52 @@ mod tests {
         let rtf = format!(r"{HEADER}\pard{{\listtext\'b7\tab}}\ilvl0 Item\par}}");
         let markdown = markdown_of(&rtf);
         assert!(!markdown.contains('\u{00B7}'), "marker leaked: {markdown}");
+    }
+
+    /// `\cf` names an entry in `\colortbl`, which was being skipped whole.
+    ///
+    /// Without the table the index means nothing and the colour is lost: the
+    /// same document read as .docx and .odt kept it. Entry zero is the
+    /// "automatic" colour, which the table opens with and which is the
+    /// reader's default rather than anything the document states.
+    #[test]
+    fn reads_colours_through_the_colour_table() {
+        let rtf = format!(
+            r"{HEADER}{{\colortbl;\red255\green0\blue0;\red255\green255\blue255;}}\
+             \pard\cf2 white\par \pard\cf1 red\par \pard\cf0 automatic\par}}"
+        );
+        let document = parse_rtf(rtf.as_bytes());
+        let colours: Vec<Option<[f64; 3]>> = document.sections[0]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                // The first run holding text, not the first run: a control
+                // word's delimiting space is text too, and it arrives before
+                // the colour that follows it applies.
+                Block::Paragraph { content, .. } => content.iter().find_map(|inline| match inline {
+                    Inline::Run(run) if !run.text.trim().is_empty() => Some(run.style.color),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            colours,
+            vec![
+                Some([1.0, 1.0, 1.0]),
+                Some([1.0, 0.0, 0.0]),
+                None,
+            ]
+        );
+    }
+
+    /// The colour table is read, not emitted.
+    #[test]
+    fn the_colour_table_is_not_emitted_as_prose() {
+        let rtf = format!(
+            r"{HEADER}{{\colortbl;\red255\green255\blue255;}}\pard\cf1 text\par}}"
+        );
+        assert_eq!(markdown_of(&rtf), "text\n");
     }
 
     #[test]
