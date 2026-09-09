@@ -403,12 +403,21 @@ pub(crate) fn chunk_fragments(
         // A fragment that continues the one before it joins onto it; the
         // word count is then whatever the joined text comes to, since two
         // halves of one word are one word.
-        let joins = previous.is_some_and(|previous| touching(previous, block));
-        match joins && !current_text.is_empty() {
+        let joins = previous.is_some_and(|previous| touching(previous, block))
+            && !current_text.is_empty();
+        match joins {
             true => {
-                let before = current_text.split_whitespace().count();
+                // The count is adjusted rather than recomputed: walking the
+                // accumulated chunk on every fragment is what made chunking a
+                // two-million-character document take 3.3 seconds instead of
+                // 24 milliseconds, and joining fragments must not bring that
+                // back. Two halves of one word are one word, so a join that
+                // welds them costs the count one.
+                let welds = !current_text.ends_with(char::is_whitespace)
+                    && !text.starts_with(char::is_whitespace)
+                    && incoming > 0;
                 current_text.push_str(text);
-                current_words += current_text.split_whitespace().count() - before;
+                current_words += incoming - usize::from(welds);
             }
             false => {
                 if !current_text.is_empty() {

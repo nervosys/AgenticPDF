@@ -31,7 +31,12 @@ pub fn search(data: &[u8], document: &Document, query: &str) -> Result<Value, Pd
             .search(query)?
             .into_iter()
             .map(|(chunk, text)| {
-                json!({ "section": chunk.section, "block": chunk.blocks[0], "text": text })
+                json!({
+                    "section": chunk.section,
+                    "block": chunk.blocks[0],
+                    "kind": "body",
+                    "text": text,
+                })
             })
             .collect()
     } else {
@@ -41,30 +46,66 @@ pub fn search(data: &[u8], document: &Document, query: &str) -> Result<Value, Pd
                 document.format().label()
             )));
         };
-        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-        if terms.is_empty() {
-            return Ok(json!({ "hits": [] }));
-        }
-
-        let mut found = Vec::new();
-        for (section, division) in semantic.sections.iter().enumerate() {
-            for (block, content) in division.blocks.iter().enumerate() {
-                let mut text = String::new();
-                doc::block_text_into(content, &mut text);
-                let haystack = text.to_lowercase();
-                if terms.iter().all(|term| haystack.contains(term.as_str())) {
-                    found.push(json!({
-                        "section": section,
-                        "block": block,
-                        "text": text.trim(),
-                    }));
-                }
-            }
-        }
-        found
+        scan_semantic(semantic, query)
     };
 
     Ok(json!({ "hits": hits }))
+}
+
+/// Search a document that has no index, by reading all of it.
+///
+/// Everywhere the model keeps words, not only the body: a sheet's name and a
+/// slide's title are what a searcher tries first, the notes beside a slide are
+/// still what the deck says, and a note is content the body points at rather
+/// than holds.
+fn scan_semantic(semantic: &doc::SemanticDoc, query: &str) -> Vec<Value> {
+    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut found = Vec::new();
+        let mut consider = |section: usize, block: usize, kind: &str, text: String| {
+            let haystack = text.to_lowercase();
+            if terms.iter().all(|term| haystack.contains(term.as_str())) {
+                found.push(json!({
+                    "section": section,
+                    "block": block,
+                    "kind": kind,
+                    "text": text.trim(),
+                }));
+            }
+        };
+
+        for (section, division) in semantic.sections.iter().enumerate() {
+            // A sheet's name and a slide's title are where a searcher looks
+            // first, and were the one part of a spreadsheet or a deck that
+            // could not be found at all.
+            if let Some(title) = &division.title {
+                consider(section, 0, "title", title.clone());
+            }
+            for (block, content) in division.blocks.iter().enumerate() {
+                let mut text = String::new();
+                doc::block_text_into(content, &mut text);
+                consider(section, block, "body", text);
+            }
+            // What a presentation says beside a slide is still what it says.
+            for (block, content) in division.notes.iter().enumerate() {
+                let mut text = String::new();
+                doc::block_text_into(content, &mut text);
+                consider(section, block, "notes", text);
+            }
+        }
+        // A note is content the body points at rather than holds, and it lives
+        // beside the sections rather than in one.
+        for (block, footnote) in semantic.footnotes.iter().enumerate() {
+            let mut text = String::new();
+            for content in &footnote.blocks {
+                doc::block_text_into(content, &mut text);
+            }
+            consider(0, block, "footnote", text);
+        }
+    found
 }
 
 /// Check a quotation against recorded provenance.
@@ -154,6 +195,42 @@ mod tests {
     fn adf_bytes() -> Vec<u8> {
         let document = Document::open(MARKDOWN).unwrap();
         convert(&document, "report.md", "adf").unwrap()
+    }
+
+    /// A document keeps words in four places, and all four are searchable.
+    ///
+    /// The scan walked each section's body blocks and nothing else, so a
+    /// sheet's name, a slide's title, the notes beside a slide and a footnote's
+    /// text were all present in the document and unfindable in it — which is
+    /// worse than being absent, because the answer comes back confidently
+    /// empty. A spreadsheet's sheet names were the whole of what a searcher
+    /// would try first.
+    #[test]
+    fn search_looks_everywhere_the_document_keeps_words() {
+        use crate::doc::{Block, Footnote, Section, SemanticDoc};
+
+        let mut document = SemanticDoc::default();
+        document.sections.push(Section {
+            title: Some("Quarterly Review".into()),
+            blocks: vec![Block::paragraph("Revenue grew across EMEA.")],
+            notes: vec![Block::paragraph("Mention the lambda tolerance.")],
+            ..Section::default()
+        });
+        document.footnotes.push(Footnote {
+            label: None,
+            blocks: vec![Block::paragraph("The source of the figure.")],
+        });
+
+        for (query, kind) in [
+            ("quarterly", "title"),
+            ("revenue", "body"),
+            ("lambda", "notes"),
+            ("source", "footnote"),
+        ] {
+            let hits = scan_semantic(&document, query);
+            assert_eq!(hits.len(), 1, "{query}: {hits:?}");
+            assert_eq!(hits[0]["kind"], kind, "{query}");
+        }
     }
 
     #[test]
