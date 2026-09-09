@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 816 Rust, 950 TypeScript |
+| Tests | 817 Rust, 950 TypeScript |
 | Hostile input | 3,739 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -147,6 +147,15 @@ blocks and nothing else. A spreadsheet's sheet names and a deck's slide titles,
 the first thing anyone would type, could not be found at all; nor could the
 notes beside a slide, nor a footnote's text. A word present and unfindable is
 worse than one absent, because the answer comes back confidently empty.
+
+Asked end to end — every line `search` hands over must verify as `matched` at
+the locator `search` gave for it — it found the cost of that fix: the new hits
+carried a locator that already meant something else, and `verify` does not
+answer "I cannot tell". Asked about a slide's title at block zero it found the
+first body block recorded there and reported the source as *edited since
+import*, which is a claim about the document's history and was false. There is
+now one index space for everything quotable, and provenance records all of it:
+2,153 citations verify where the body alone offered 479.
 
 **Agreement is not correctness.** A differential between readers is blind to
 anything they all get wrong together, and no amount of extra formats or extra
