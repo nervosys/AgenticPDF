@@ -19,11 +19,19 @@ pub enum Reason {
     /// Rendered at a sub-perceptible font size.
     TinyText,
     /// Marked invisible by the author while remaining machine-readable —
-    /// `display:none`, `visibility:hidden`, Word's `w:vanish`, white-on-white.
+    /// `display:none`, `visibility:hidden`, `opacity:0`, Word's `w:vanish`.
     ///
     /// This is the signal the geometric checks above cannot see: the text sits
     /// on the page at a normal size and is simply not painted. It is reported
     /// by the semantic formats, which state their own visibility.
+    ///
+    /// **Not** white-on-white, except where a document states the background
+    /// alongside the colour, as CSS does. Whether white text is concealed or
+    /// ordinary depends on what is behind it, and the model carries no
+    /// background for the Office formats: the white text of a payload and the
+    /// white text of a table header Word styled itself are the same run. This
+    /// claimed to catch it and did not, which on a defence is worse than
+    /// saying nothing.
     Hidden,
 }
 
