@@ -43,19 +43,50 @@ pub fn parse(data: &[u8], format: Format) -> Result<SemanticDoc, PdfError> {
 /// set and nothing at or below it can be read, while raising it starts catching
 /// legitimate fine print.
 ///
-/// Colour is deliberately not judged here. White text is invisible on a white
-/// page and perfectly ordinary on a dark one, and the model carries no
-/// background to tell those apart: in the same document above, the white text
-/// of a table header styled by Word itself is indistinguishable from the white
-/// text of a payload. Calling both hidden would report every such table as an
-/// injection.
+/// Colour is judged only against what the run is painted on. White text is
+/// invisible on a white page and perfectly ordinary on a dark one, so the
+/// question is not "is this white" but "is this the colour of its background" --
+/// the same test the HTML reader has always applied, which needs an element to
+/// state a colour and a background together. The model now carries the
+/// background, taken from the run's own shading, its paragraph's, or its
+/// cell's, and a run that states none sits on the page, which is white.
+///
+/// This is what keeps the white text of a table header Word styled itself out
+/// of the report: it is painted on the fill the header states, and differs
+/// from it.
+///
+/// Only where a reader states the background, which today means `.docx` and
+/// HTML. The others say nothing about shading, and a reader that cannot see a
+/// fill must not conclude there is none -- so their colours are not judged at
+/// all, exactly as before. Each is a separate piece of work, and the sound
+/// order is one format at a time rather than one rule for all of them.
 fn flag_unreadable_text(document: &mut SemanticDoc) {
     /// Points at or below which text cannot be read at all.
     const UNREADABLE: f64 = 1.0;
+    /// How near two colours must be to be the same colour. Generous: the
+    /// concealment only works when the two are indistinguishable, and a
+    /// difference a reader could see is a difference at all.
+    const SAME: f64 = 0.04;
+
+    let invisible = |style: &crate::doc::TextStyle| {
+        // Both, or neither. An absent background is not "the page": it is a
+        // reader that does not report shading, and treating the two the same
+        // called every white table header an injection -- in the .odt, .rtf,
+        // .doc and .odp of the very documents whose .docx it had just got
+        // right. A reader opts in by saying what the text sits on, including
+        // saying it is the page.
+        let (Some(color), Some(background)) = (style.color, style.background) else {
+            return false;
+        };
+        color
+            .iter()
+            .zip(&background)
+            .all(|(a, b)| (a - b).abs() <= SAME)
+    };
 
     for section in &mut document.sections {
         let mut flag = |run: &mut crate::doc::Run| {
-            if run.style.size.is_some_and(|size| size <= UNREADABLE) {
+            if run.style.size.is_some_and(|size| size <= UNREADABLE) || invisible(&run.style) {
                 run.style.hidden = true;
             }
         };

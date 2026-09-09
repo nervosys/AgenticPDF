@@ -184,6 +184,7 @@ pub(crate) fn layer_style(base: &TextStyle, over: &TextStyle) -> TextStyle {
         font: over.font.clone().or_else(|| base.font.clone()),
         size: over.size.or(base.size),
         color: over.color.or(base.color),
+        background: over.background.or(base.background),
     }
 }
 
@@ -393,6 +394,15 @@ pub struct TextStyle {
     /// RGB in 0.0-1.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f64; 3]>,
+    /// What the run is painted on: its own shading, or the shading of the
+    /// paragraph or cell holding it. `None` is the page itself, which is
+    /// white.
+    ///
+    /// Carried so that colour can be judged at all. White text is invisible on
+    /// paper and is a table header on a dark fill, and without knowing which
+    /// is behind it a reader can only decline to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<[f64; 3]>,
 }
 
 /// A reference to an entry in `SemanticDoc.assets`.

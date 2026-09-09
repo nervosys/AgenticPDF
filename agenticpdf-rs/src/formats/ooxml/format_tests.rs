@@ -605,16 +605,12 @@ fn docx_registers_embedded_images() {
 /// through all four readers and flagged it in none, so the check is shared by
 /// every format rather than added to each.
 ///
-/// Colour is deliberately not judged: in that same document the white text of a
-/// table header styled by Word is indistinguishable from the white text of a
-/// payload, and the model carries no background to tell them apart.
 #[test]
 fn text_too_small_to_read_is_flagged_as_hidden() {
     // `w:sz` is in half-points, so 2 is one point and 24 is twelve.
     let zip = docx(
         r#"<w:p><w:r><w:rPr><w:sz w:val="2"/></w:rPr><w:t>PAYLOAD</w:t></w:r></w:p>
-           <w:p><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>ordinary</w:t></w:r></w:p>
-           <w:p><w:r><w:rPr><w:color w:val="FFFFFF"/></w:rPr><w:t>white</w:t></w:r></w:p>"#,
+           <w:p><w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>ordinary</w:t></w:r></w:p>"#,
     );
     // Through `formats::parse`, not the per-format helper above: the check is
     // shared by every format and applied once, where documents are opened.
@@ -624,6 +620,45 @@ fn text_too_small_to_read_is_flagged_as_hidden() {
     assert_eq!(hidden[0].1.trim(), "PAYLOAD");
     // Still extracted, as hidden text always is -- reported, not dropped.
     assert!(to_markdown(&document).contains("PAYLOAD"));
+}
+
+/// White text is concealed on paper and a table header on a fill.
+///
+/// The question is never "is this white" but "is this the colour of what it
+/// sits on", which needs the background — so this reader follows shading at
+/// every level a document states it: the run, its paragraph, its cell, and the
+/// table style behind that. Where it finds none there is none, and the answer
+/// is the page.
+///
+/// Both halves matter equally. Missing the first leaves the commonest
+/// injection uncaught; getting the second wrong reports every styled table in
+/// every ordinary document as an attack, which is worse, because a warning
+/// nobody can trust is a warning nobody reads.
+#[test]
+fn white_text_is_judged_against_what_it_sits_on() {
+    let zip = docx(
+        r#"<w:p><w:r><w:rPr><w:color w:val="FFFFFF"/></w:rPr>
+             <w:t>ON PAPER</w:t></w:r></w:p>
+           <w:p><w:r><w:rPr><w:color w:val="FFFFFF"/>
+             <w:shd w:val="clear" w:fill="FFFFFF"/></w:rPr>
+             <w:t>ON WHITE SHADING</w:t></w:r></w:p>
+           <w:p><w:pPr><w:shd w:val="clear" w:fill="002060"/></w:pPr>
+             <w:r><w:rPr><w:color w:val="FFFFFF"/></w:rPr>
+             <w:t>on a dark paragraph</w:t></w:r></w:p>
+           <w:tbl><w:tr><w:tc>
+             <w:tcPr><w:shd w:val="clear" w:fill="008000"/></w:tcPr>
+             <w:p><w:r><w:rPr><w:color w:val="FFFFFF"/></w:rPr>
+               <w:t>header on a fill</w:t></w:r></w:p>
+           </w:tc></w:tr></w:tbl>"#,
+    );
+    let document = crate::formats::parse(&zip, Format::Docx).expect("parse");
+
+    let hidden: Vec<String> = document
+        .hidden_text()
+        .into_iter()
+        .map(|(_, text)| text.trim().to_string())
+        .collect();
+    assert_eq!(hidden, vec!["ON PAPER", "ON WHITE SHADING"], "{hidden:?}");
 }
 
 #[test]

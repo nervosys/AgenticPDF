@@ -282,10 +282,15 @@ impl DocxReader<'_> {
                         // Read before the call: `read_run` borrows self.
                         // A cell's table style sits under the paragraph's own,
                         // which sits under the run's direct properties.
-                        let inherited = crate::doc::layer_style(
+                        let mut inherited = crate::doc::layer_style(
                             &self.cell_style,
                             &self.styles.text_style(&properties.style_id),
                         );
+                        // The paragraph's own shading is nearer the run than
+                        // the style's, and nearer than the cell's.
+                        if properties.background.is_some() {
+                            inherited.background = properties.background;
+                        }
                         self.read_run(reader, &element, &inherited, &mut content)
                     }
                     "hyperlink" => self.read_hyperlink(reader, &element, &mut content),
@@ -355,6 +360,7 @@ impl DocxReader<'_> {
                             properties.heading = Some((level.clamp(0, 8) as u8) + 1);
                         }
                     }
+                    "shd" => properties.background = parse_color(element.attr_local("fill")),
                     "numPr" => properties.numbering = Some(NumberingRef::default()),
                     "ilvl" => {
                         if let Some(reference) = properties.numbering.as_mut() {
@@ -418,7 +424,10 @@ impl DocxReader<'_> {
                 Event::End(name) if name == start.qname => break,
                 Event::Start(element) if self.skip_fallback(reader, &element) => {}
                 Event::Start(element) if element.in_ns(ns::W) => match element.local.as_str() {
-                    "rPr" => self.read_run_properties(reader, &element, &mut style),
+                    "rPr" => {
+                        self.read_run_properties(reader, &element, &mut style);
+                        paper_behind(&mut style);
+                    }
                     "t" => {
                         let preserve_space = element.attr("xml:space") == Some("preserve");
                         let text = crate::xml::text_of(reader, &element.qname);
@@ -718,6 +727,12 @@ impl DocxReader<'_> {
                         position.read(&element);
                         self.cell_style = self.inherited_cell_style(&position);
                     }
+                    // The cell's fill, which everything in it sits on.
+                    "shd" => {
+                        if let Some(fill) = parse_color(element.attr_local("fill")) {
+                            self.cell_style.background = Some(fill);
+                        }
+                    }
                     "gridSpan" => {
                         col_span = attr_i64(&element, "val").unwrap_or(1).clamp(1, 1000) as usize;
                     }
@@ -768,6 +783,23 @@ struct Paragraph {
 
 /// Apply one `<w:rPr>` child to a text style.
 ///
+/// What a run with no shading anywhere is painted on.
+///
+/// This reader follows shading at every level a document states it -- the run,
+/// its paragraph, its cell, and the table style behind that -- so where it has
+/// found none there is none, and the answer is the page. Saying so is what
+/// lets a colour be judged at all: the rule is that the text matches its
+/// background, and a background nobody stated is not a match, it is a
+/// question. A reader that does not follow shading must leave it unanswered.
+fn paper_behind(style: &mut TextStyle) {
+    /// The page a document is printed on.
+    const PAPER: [f64; 3] = [1.0, 1.0, 1.0];
+
+    if style.color.is_some() && style.background.is_none() {
+        style.background = Some(PAPER);
+    }
+}
+
 /// A free function because the same properties appear in two places: on a run,
 /// and in a style definition. Word puts a "Quote" paragraph's italic only in
 /// the style, so a reader that looks at runs alone reports the quote as upright
@@ -797,6 +829,10 @@ fn apply_run_property(element: &Element, style: &mut TextStyle) {
                 .map(str::to_string);
         }
         "color" => style.color = parse_color(element.attr_local("val")),
+        // What the run is painted on. `w:fill` is the shading colour; `auto`
+        // means the page, which `parse_color` already reads as no colour --
+        // and the page is white, which `paper_behind` then supplies.
+        "shd" => style.background = parse_color(element.attr_local("fill")),
         _ => {}
     }
 }
@@ -812,6 +848,9 @@ struct ParagraphProperties {
     indent: f64,
     quote: bool,
     page_break: bool,
+    /// `<w:shd>` on the paragraph: what its runs are painted on, unless a run
+    /// states its own.
+    background: Option<[f64; 3]>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -998,8 +1037,13 @@ impl Styles {
                         styles.numbering.entry(id.clone()).or_default().id = value;
                     }
                 }
+                // `shd` among them: a table style states a header's fill in
+                // the same place it states the header's white text, and
+                // reading the colour without the fill left that header
+                // looking like white text on paper -- which is the one thing
+                // this reader must not call concealed.
                 "b" | "bCs" | "i" | "iCs" | "strike" | "dstrike" | "u" | "vanish" | "webHidden"
-                | "vertAlign" | "sz" | "szCs" | "rFonts" | "color" => {
+                | "vertAlign" | "sz" | "szCs" | "rFonts" | "color" | "shd" => {
                     if let Some(id) = &current {
                         let into = match &conditional {
                             Some(kind) => styles

@@ -196,6 +196,11 @@ mod style_bits {
     pub const HAS_FONT: u16 = 1 << 8;
     pub const HAS_SIZE: u16 = 1 << 9;
     pub const HAS_COLOR: u16 = 1 << 10;
+    /// What the run is painted on, where the document states it. A spare bit
+    /// rather than a new record: an older reader ignores the flag and the
+    /// bytes it guards, which is the same answer it gave before the field
+    /// existed.
+    pub const HAS_BACKGROUND: u16 = 1 << 11;
 }
 
 // ============================================================================
@@ -626,6 +631,7 @@ fn write_style(out: &mut Writer, style: &TextStyle, table: &mut StringTable) {
         (style.font.is_some(), style_bits::HAS_FONT),
         (style.size.is_some(), style_bits::HAS_SIZE),
         (style.color.is_some(), style_bits::HAS_COLOR),
+        (style.background.is_some(), style_bits::HAS_BACKGROUND),
     ] {
         if set {
             bits |= bit;
@@ -641,6 +647,11 @@ fn write_style(out: &mut Writer, style: &TextStyle, table: &mut StringTable) {
     }
     if let Some(color) = style.color {
         for channel in color {
+            out.f64(channel);
+        }
+    }
+    if let Some(background) = style.background {
+        for channel in background {
             out.f64(channel);
         }
     }
@@ -670,6 +681,11 @@ fn read_style(reader: &mut Reader<'_>, heap: &StringHeap<'_>) -> Result<TextStyl
             None
         },
         color: if has(style_bits::HAS_COLOR) {
+            Some([reader.f64()?, reader.f64()?, reader.f64()?])
+        } else {
+            None
+        },
+        background: if has(style_bits::HAS_BACKGROUND) {
             Some([reader.f64()?, reader.f64()?, reader.f64()?])
         } else {
             None
