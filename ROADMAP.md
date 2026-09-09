@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 814 Rust, 950 TypeScript |
+| Tests | 816 Rust, 950 TypeScript |
 | Hostile input | 3,739 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -140,6 +140,13 @@ cell laid out and then discarded, footnote text on no page at all, and a
 picture's alt text — the only words a picture has — in the extracted text and
 nowhere else. None was visible from any comparison of readers, because they all
 sit downstream of reading.
+
+The same question asked of **search** — every word a document holds must bring
+back at least one result — found that the scan walked each section's body
+blocks and nothing else. A spreadsheet's sheet names and a deck's slide titles,
+the first thing anyone would type, could not be found at all; nor could the
+notes beside a slide, nor a footnote's text. A word present and unfindable is
+worse than one absent, because the answer comes back confidently empty.
 
 **Agreement is not correctness.** A differential between readers is blind to
 anything they all get wrong together, and no amount of extra formats or extra
