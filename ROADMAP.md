@@ -21,8 +21,8 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 812 Rust, 950 TypeScript |
-| Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
+| Tests | 813 Rust, 950 TypeScript |
+| Hostile input | 3,739 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
 
