@@ -52,6 +52,34 @@ pub fn search(data: &[u8], document: &Document, query: &str) -> Result<Value, Pd
     Ok(json!({ "hits": hits }))
 }
 
+/// Where each quotable piece of a document sits, as one index space.
+///
+/// Provenance addresses text by section and block, so two pieces sharing a
+/// pair are indistinguishable -- and `verify` does not answer "I cannot tell":
+/// asked about a slide's title at block zero it found the section's first
+/// body block recorded there, saw different text, and reported the source as
+/// *edited since import*. That is a claim about the document's history, and it
+/// was false.
+///
+/// So each section numbers its body blocks first, then its title, then the
+/// notes beside it; and the footnotes, which belong to no section, follow the
+/// sections as a section of their own. Nothing shares a pair.
+mod locate {
+    use crate::doc::{Section, SemanticDoc};
+
+    pub fn title(division: &Section) -> u32 {
+        division.blocks.len() as u32
+    }
+
+    pub fn note(division: &Section, index: usize) -> u32 {
+        (division.blocks.len() + 1 + index) as u32
+    }
+
+    pub fn footnote_section(semantic: &SemanticDoc) -> u32 {
+        semantic.sections.len() as u32
+    }
+}
+
 /// Search a document that has no index, by reading all of it.
 ///
 /// Everywhere the model keeps words, not only the body: a sheet's name and a
@@ -82,7 +110,7 @@ fn scan_semantic(semantic: &doc::SemanticDoc, query: &str) -> Vec<Value> {
             // first, and were the one part of a spreadsheet or a deck that
             // could not be found at all.
             if let Some(title) = &division.title {
-                consider(section, 0, "title", title.clone());
+                consider(section, locate::title(division) as usize, "title", title.clone());
             }
             for (block, content) in division.blocks.iter().enumerate() {
                 let mut text = String::new();
@@ -90,20 +118,21 @@ fn scan_semantic(semantic: &doc::SemanticDoc, query: &str) -> Vec<Value> {
                 consider(section, block, "body", text);
             }
             // What a presentation says beside a slide is still what it says.
-            for (block, content) in division.notes.iter().enumerate() {
+            for (index, content) in division.notes.iter().enumerate() {
                 let mut text = String::new();
                 doc::block_text_into(content, &mut text);
-                consider(section, block, "notes", text);
+                consider(section, locate::note(division, index) as usize, "notes", text);
             }
         }
         // A note is content the body points at rather than holds, and it lives
         // beside the sections rather than in one.
+        let notes_section = locate::footnote_section(semantic) as usize;
         for (block, footnote) in semantic.footnotes.iter().enumerate() {
             let mut text = String::new();
             for content in &footnote.blocks {
                 doc::block_text_into(content, &mut text);
             }
-            consider(0, block, "footnote", text);
+            consider(notes_section, block, "footnote", text);
         }
     found
 }
@@ -166,21 +195,49 @@ pub fn write_adf(semantic: &doc::SemanticDoc, source: &str, format: Format) -> V
     let mut writer = AdfWriter::new();
     let source_id = writer.intern_source(source);
 
-    for (section, division) in semantic.sections.iter().enumerate() {
+    let mut record = |section: u32, block: u32, text: &str| {
+        if text.trim().is_empty() {
+            return;
+        }
+        writer.add_provenance(crate::adf::provenance::Provenance {
+            section,
+            block,
+            source: source_id,
+            page: 0,
+            // No geometry: the semantic model does not carry it, and an
+            // invented bounding box is worse than an absent one.
+            bbox: [0.0; 4],
+            hash: crate::adf::provenance::Provenance::hash_text(text.trim()),
+        });
+    };
+
+    // Everything `search` can return, so an agent that finds a line can then
+    // cite it. Recording only the body meant a quotation from a sheet's name
+    // or a footnote came back unverifiable, having just been handed to the
+    // agent by this same library.
+    for (index, division) in semantic.sections.iter().enumerate() {
+        let section = index as u32;
         for (block, content) in division.blocks.iter().enumerate() {
             let mut text = String::new();
             doc::block_text_into(content, &mut text);
-            writer.add_provenance(crate::adf::provenance::Provenance {
-                section: section as u32,
-                block: block as u32,
-                source: source_id,
-                page: 0,
-                // No geometry: the semantic model does not carry it, and an
-                // invented bounding box is worse than an absent one.
-                bbox: [0.0; 4],
-                hash: crate::adf::provenance::Provenance::hash_text(text.trim()),
-            });
+            record(section, block as u32, &text);
         }
+        if let Some(title) = &division.title {
+            record(section, locate::title(division), title);
+        }
+        for (note, content) in division.notes.iter().enumerate() {
+            let mut text = String::new();
+            doc::block_text_into(content, &mut text);
+            record(section, locate::note(division, note), &text);
+        }
+    }
+    let notes_section = locate::footnote_section(semantic);
+    for (block, footnote) in semantic.footnotes.iter().enumerate() {
+        let mut text = String::new();
+        for content in &footnote.blocks {
+            doc::block_text_into(content, &mut text);
+        }
+        record(notes_section, block as u32, &text);
     }
     writer.write(semantic, format.id())
 }
