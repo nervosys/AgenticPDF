@@ -1,16 +1,16 @@
 /**
- * aPDF (Agentic PDF) Real-World Use Cases
+ * aPDF (Iron Documents) Real-World Use Cases
  *
  * Practical examples demonstrating how the aPDF format enables
  * AI-native document workflows across research, compliance,
  * knowledge management, and multi-agent systems.
  */
 
-import AgenticPDF from '../agenticpdf';
+import IronDocuments from '../irondocuments';
 import type {
   APDFBibEntry,
   APDFArtifact,
-} from '../agenticpdf';
+} from '../irondocuments';
 
 // ============================================================================
 // Use Case 1: Multi-Agent Research Assistant
@@ -28,7 +28,7 @@ interface AgentMessage {
 async function multiAgentResearchAssistant(file: File): Promise<void> {
   console.log('=== Use Case 1: Multi-Agent Research Assistant ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -146,7 +146,7 @@ async function compliancePolicyAudit(
 ): Promise<ComplianceResult[]> {
   console.log('\n=== Use Case 2: Compliance & Policy Audit ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -246,7 +246,7 @@ async function buildKnowledgeGraph(files: File[]): Promise<KnowledgeGraph> {
   const edges: KnowledgeEdge[] = [];
 
   for (const file of files) {
-    const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+    const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
     try {
       const apdf = await pdf.generateAPDFMetadata();
@@ -398,7 +398,7 @@ async function smartDocumentRouter(files: File[]): Promise<RoutingDecision[]> {
   const decisions: RoutingDecision[] = [];
 
   for (const file of files) {
-    const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+    const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
     try {
       const apdf = await pdf.generateAPDFMetadata();
@@ -511,8 +511,8 @@ interface DocumentDiff {
 async function diffDocumentRevisions(oldFile: File, newFile: File): Promise<DocumentDiff> {
   console.log('\n=== Use Case 5: Document Revision Diff ===\n');
 
-  const pdfOld = await AgenticPDF.fromFile(oldFile, { lazyLoad: true });
-  const pdfNew = await AgenticPDF.fromFile(newFile, { lazyLoad: true });
+  const pdfOld = await IronDocuments.fromFile(oldFile, { lazyLoad: true });
+  const pdfNew = await IronDocuments.fromFile(newFile, { lazyLoad: true });
 
   try {
     const [apdfOld, apdfNew] = await Promise.all([
@@ -622,7 +622,7 @@ async function automatedLiteratureSurvey(files: File[]): Promise<SurveyCluster[]
   const papers: PaperInfo[] = [];
 
   for (const file of files) {
-    const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+    const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
     try {
       const apdf = await pdf.generateAPDFMetadata();
       papers.push({
@@ -717,7 +717,7 @@ async function automatedLiteratureSurvey(files: File[]): Promise<SurveyCluster[]
 async function apdfToMarkdownPublisher(file: File): Promise<string> {
   console.log('\n=== Use Case 7: aPDF → Markdown Publishing Pipeline ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -893,7 +893,7 @@ async function buildEmbeddingCacheWithProvenance(
 ): Promise<EmbeddingRecord[]> {
   console.log('\n=== Use Case 8: Embedding Cache with Provenance ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();

@@ -11,8 +11,8 @@ import {
   PretextLayoutLine,
   PretextLayoutLineRange,
   PretextCursor,
-  AgenticPDF,
-} from '../../agenticpdf';
+  IronDocuments,
+} from '../../irondocuments';
 
 // PretextLayout uses Canvas/OffscreenCanvas for measurement.
 // In Node/Jest we have neither, so it falls back to the heuristic context
@@ -326,30 +326,30 @@ describe('PretextLayout', () => {
     });
   });
 
-  // ── AgenticPDF convenience methods ────────────────────────────────────
+  // ── IronDocuments convenience methods ────────────────────────────────────
 
-  describe('AgenticPDF.prepareText() / layoutText()', () => {
+  describe('IronDocuments.prepareText() / layoutText()', () => {
     test('prepareText delegates to PretextLayout', () => {
-      const p = AgenticPDF.prepareText('Hello World', FONT, { enablePretextLayout: true });
+      const p = IronDocuments.prepareText('Hello World', FONT, { enablePretextLayout: true });
       expect(p.text).toBe('Hello World');
       expect(p.segments).toBeDefined();
     });
 
     test('layoutText returns lines', () => {
-      const p = AgenticPDF.prepareText('Hello World', FONT, { enablePretextLayout: true });
-      const result = AgenticPDF.layoutText(p, 200, 24, { enablePretextLayout: true });
+      const p = IronDocuments.prepareText('Hello World', FONT, { enablePretextLayout: true });
+      const result = IronDocuments.layoutText(p, 200, 24, { enablePretextLayout: true });
       expect(result.lines).toBeDefined();
       expect(result.lineCount).toBeGreaterThanOrEqual(1);
       expect(result.height).toBe(result.lineCount * 24);
     });
 
     test('prepareText throws without enablePretextLayout', () => {
-      expect(() => AgenticPDF.prepareText('Hello', FONT)).toThrow('PretextLayout is not enabled');
+      expect(() => IronDocuments.prepareText('Hello', FONT)).toThrow('PretextLayout is not enabled');
     });
 
     test('layoutText throws without enablePretextLayout', () => {
       const p = PretextLayout.prepareWithSegments('Hello', FONT);
-      expect(() => AgenticPDF.layoutText(p, 200, 24)).toThrow('PretextLayout is not enabled');
+      expect(() => IronDocuments.layoutText(p, 200, 24)).toThrow('PretextLayout is not enabled');
     });
   });
 
@@ -440,13 +440,13 @@ describe('PretextLayout', () => {
       PretextLayout.clearCache();
       expect(PretextLayout.isCacheDirty()).toBe(false);
       // Should not throw even when cache is clean
-      expect(() => AgenticPDF.clearAllCaches()).not.toThrow();
+      expect(() => IronDocuments.clearAllCaches()).not.toThrow();
     });
 
     test('clearAllCaches clears pretext when cache is dirty', () => {
       PretextLayout.prepare('populate cache', FONT);
       expect(PretextLayout.isCacheDirty()).toBe(true);
-      AgenticPDF.clearAllCaches();
+      IronDocuments.clearAllCaches();
       expect(PretextLayout.isCacheDirty()).toBe(false);
     });
   });

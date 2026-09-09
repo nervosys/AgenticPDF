@@ -8,7 +8,7 @@
  * - Different processing strategies
  */
 
-import AgenticPDF, { SemanticChunk, PDFMetadata, DocumentType } from '../agenticpdf';
+import IronDocuments, { SemanticChunk, PDFMetadata, DocumentType } from '../irondocuments';
 
 interface ProcessingResult {
     fileName: string;
@@ -124,11 +124,11 @@ export class BatchProcessor {
         const startTime = Date.now();
         console.log(`   📄 [${index + 1}/${total}] Processing: ${file.name}`);
 
-        let pdf: AgenticPDF | null = null;
+        let pdf: IronDocuments | null = null;
 
         try {
             // Load PDF with memory constraints
-            pdf = await AgenticPDF.fromFile(file, {
+            pdf = await IronDocuments.fromFile(file, {
                 lazyLoad: true,
                 maxMemoryUsage: 50 * 1024 * 1024, // 50MB per file
                 cachePages: false
@@ -181,7 +181,7 @@ export class BatchProcessor {
     }
 
     private async generateDocumentSummary(
-        pdf: AgenticPDF,
+        pdf: IronDocuments,
         chunks: SemanticChunk[],
         metadata: PDFMetadata
     ): Promise<DocumentSummary> {

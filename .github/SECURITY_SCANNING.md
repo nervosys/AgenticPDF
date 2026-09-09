@@ -1,6 +1,6 @@
 # Security Scanning and CI/CD
 
-This document outlines the security scanning and continuous integration measures implemented for AgenticPDF.
+This document outlines the security scanning and continuous integration measures implemented for IronDocuments.
 
 ## 🛡️ Security Workflows
 

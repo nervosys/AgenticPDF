@@ -103,8 +103,8 @@ tests/integration/cli-test-output/
 tests/integration/cli-security-test-output/
 
 # Root-level build artifacts (real outputs are in dist/)
-agenticpdf.d.ts
-agenticpdf-browser.js
+irondocuments.d.ts
+irondocuments-browser.js
 
 # Editor directories and files
 .vscode/*
@@ -129,9 +129,9 @@ agenticpdf-browser.js
 # Android build output. The shared objects are produced by build-libs.sh and
 # the build tree by Gradle; the app's own sources are not build output and were
 # only ever excluded by the unanchored `app/` rule above.
-agenticpdf-rs/apps/reader/android/app/build/
-agenticpdf-rs/apps/reader/android/app/src/main/jniLibs/
-agenticpdf-rs/apps/reader/android/.gradle/
+irondocuments-rs/apps/reader/android/app/build/
+irondocuments-rs/apps/reader/android/app/src/main/jniLibs/
+irondocuments-rs/apps/reader/android/.gradle/
 
 # JetBrains IDEs
 *.iml
@@ -164,8 +164,8 @@ tests/playwright-report/
 junit.xml
 
 # Browser build artifacts
-demos/agenticpdf-browser.js
-demos/agenticpdf-core.js
+demos/irondocuments-browser.js
+demos/irondocuments-core.js
 *.js.map
 
 # Playwright
@@ -208,24 +208,24 @@ codeql-results.*
 .codeql/
 
 # Rust build artifacts
-agenticpdf-rs/target/
+irondocuments-rs/target/
 
 # Temp test output
 test-output.txt
 test-ontology-output.txt
 
 # Utility scripts (keep in repo for team use)
-# validate-workflows.cjs_temp_agenticpdf.js
-_temp_agenticpdf.js
+# validate-workflows.cjs_temp_irondocuments.js
+_temp_irondocuments.js
 
-# Optional real-producer fixtures for agenticpdf-rs tests. Office stamps the
+# Optional real-producer fixtures for irondocuments-rs tests. Office stamps the
 # author's name into every file it writes, so these stay local.
-agenticpdf-rs/tests/fixtures/
+irondocuments-rs/tests/fixtures/
 
 # Build artifacts from the reader app's wasm bundle.
-agenticpdf-rs/apps/reader/web/pkg/
-agenticpdf-rs/apps/reader/android/app/src/main/jniLibs/
-agenticpdf-rs/apps/reader/android/.gradle/
-agenticpdf-rs/apps/reader/android/build/
-agenticpdf-rs/apps/reader/android/app/build/
-agenticpdf-rs/apps/reader/ios/libs/
+irondocuments-rs/apps/reader/web/pkg/
+irondocuments-rs/apps/reader/android/app/src/main/jniLibs/
+irondocuments-rs/apps/reader/android/.gradle/
+irondocuments-rs/apps/reader/android/build/
+irondocuments-rs/apps/reader/android/app/build/
+irondocuments-rs/apps/reader/ios/libs/

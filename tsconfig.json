@@ -20,7 +20,7 @@
         "emitDecoratorMetadata": true
     },
     "include": [
-        "agenticpdf.ts",
+        "irondocuments.ts",
         "cli.ts",
         "playwright.config.ts",
         "tests/**/*"

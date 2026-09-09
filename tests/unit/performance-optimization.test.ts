@@ -1,4 +1,4 @@
-import { AgenticPDF, PerformanceMonitor, MemoryPool } from '../../agenticpdf';
+import { IronDocuments, PerformanceMonitor, MemoryPool } from '../../irondocuments';
 
 describe('Performance Optimization Tests', () => {
     describe('1. Parser Caching', () => {
@@ -11,7 +11,7 @@ describe('Performance Optimization Tests', () => {
             ]);
 
             // First parse
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
             if (!ContentStreamParser) {
                 expect(true).toBe(true); // Skip test if internal access not available
                 return;
@@ -28,7 +28,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should have cache size limits', () => {
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
             if (!ContentStreamParser) {
                 expect(true).toBe(true); // Skip if not accessible
                 return;
@@ -42,7 +42,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should clear cache on demand', () => {
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
             if (!ContentStreamParser?.clearCache) {
                 expect(true).toBe(true); // Skip if not accessible
                 return;
@@ -56,7 +56,7 @@ describe('Performance Optimization Tests', () => {
             // Create a large content stream (> 1000 bytes)
             const largeData = new Uint8Array(2000).fill(32); // Space characters
 
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
             if (!ContentStreamParser) {
                 expect(true).toBe(true); // Skip if not accessible
                 return;
@@ -76,7 +76,7 @@ describe('Performance Optimization Tests', () => {
             const data2 = new Uint8Array([49, 50, 51]); // "123" (same)
             const data3 = new Uint8Array([52, 53, 54]); // "456" (different)
 
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
             if (!ContentStreamParser) {
                 expect(true).toBe(true);
                 return;
@@ -99,7 +99,7 @@ describe('Performance Optimization Tests', () => {
 
     describe('2. Color Space Caching', () => {
         test('should cache color space objects', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor) {
                 expect(true).toBe(true);
                 return;
@@ -116,7 +116,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should cache color space arrays', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor?.parseColorSpace) {
                 expect(true).toBe(true);
                 return;
@@ -131,7 +131,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should have color space cache size limits', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor) {
                 expect(true).toBe(true);
                 return;
@@ -142,7 +142,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should clear color space caches', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor?.clearCaches) {
                 expect(true).toBe(true);
                 return;
@@ -152,7 +152,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should evict old entries when cache is full', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor) {
                 expect(true).toBe(true);
                 return;
@@ -170,7 +170,7 @@ describe('Performance Optimization Tests', () => {
 
     describe('3. Color Conversion Optimization', () => {
         test('should cache gray to RGB conversions', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor?.grayToRGB) {
                 expect(true).toBe(true);
                 return;
@@ -185,7 +185,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should cache CMYK to RGB conversions', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor?.cmykToRGB) {
                 expect(true).toBe(true);
                 return;
@@ -201,7 +201,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should cache common color values', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor) {
                 expect(true).toBe(true);
                 return;
@@ -220,7 +220,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should have conversion cache size limits', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor) {
                 expect(true).toBe(true);
                 return;
@@ -231,7 +231,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should handle cache overflow gracefully', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
             if (!PDFColorSpaceProcessor?.grayToRGB) {
                 expect(true).toBe(true);
                 return;
@@ -249,12 +249,12 @@ describe('Performance Optimization Tests', () => {
 
     describe('4. Memory Management', () => {
         test('should clear all caches', () => {
-            expect(() => AgenticPDF.clearAllCaches()).not.toThrow();
+            expect(() => IronDocuments.clearAllCaches()).not.toThrow();
         });
 
         test('should provide memory statistics', () => {
             // Create PDF instance without parsing
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             const stats = pdf.getMemoryStats();
 
@@ -271,7 +271,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should unload pages to free memory', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             // Unload all pages
             pdf.unloadPages();
@@ -283,7 +283,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should keep specified pages when unloading', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             // Unload all except page 1
             pdf.unloadPages([1]);
@@ -295,7 +295,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should clear resources on close', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             pdf.close();
 
@@ -307,17 +307,17 @@ describe('Performance Optimization Tests', () => {
 
     describe('5. Performance Monitoring', () => {
         afterEach(() => {
-            AgenticPDF.disablePerformanceMonitoring();
-            AgenticPDF.clearPerformanceMetrics();
+            IronDocuments.disablePerformanceMonitoring();
+            IronDocuments.clearPerformanceMetrics();
         });
 
         test('should enable/disable performance monitoring', () => {
-            expect(() => AgenticPDF.enablePerformanceMonitoring()).not.toThrow();
-            expect(() => AgenticPDF.disablePerformanceMonitoring()).not.toThrow();
+            expect(() => IronDocuments.enablePerformanceMonitoring()).not.toThrow();
+            expect(() => IronDocuments.disablePerformanceMonitoring()).not.toThrow();
         });
 
         test('should track performance metrics when enabled', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
 
@@ -334,27 +334,27 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should not track metrics when disabled', () => {
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
 
             const metric = PerformanceMonitor.startOperation('test-operation');
             expect(metric.startTime).toBe(0);
         });
 
         test('should get performance metrics', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
             const metric = PerformanceMonitor.startOperation('test-op');
             PerformanceMonitor.endOperation(metric);
 
-            const metrics = AgenticPDF.getPerformanceMetrics();
+            const metrics = IronDocuments.getPerformanceMetrics();
             expect(Array.isArray(metrics)).toBe(true);
 
             PerformanceMonitor.disable();
         });
 
         test('should get performance summary', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
 
@@ -364,7 +364,7 @@ describe('Performance Optimization Tests', () => {
             const metric2 = PerformanceMonitor.startOperation('test-op');
             PerformanceMonitor.endOperation(metric2);
 
-            const summary = AgenticPDF.getPerformanceSummary();
+            const summary = IronDocuments.getPerformanceSummary();
             expect(typeof summary).toBe('object');
 
             if (summary['test-op']) {
@@ -377,22 +377,22 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should clear performance metrics', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
             const metric = PerformanceMonitor.startOperation('test-op');
             PerformanceMonitor.endOperation(metric);
 
-            AgenticPDF.clearPerformanceMetrics();
+            IronDocuments.clearPerformanceMetrics();
 
-            const metrics = AgenticPDF.getPerformanceMetrics();
+            const metrics = IronDocuments.getPerformanceMetrics();
             expect(metrics.length).toBe(0);
 
             PerformanceMonitor.disable();
         });
 
         test('should limit metrics storage', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
 
@@ -402,14 +402,14 @@ describe('Performance Optimization Tests', () => {
                 PerformanceMonitor.endOperation(metric);
             }
 
-            const metrics = AgenticPDF.getPerformanceMetrics();
+            const metrics = IronDocuments.getPerformanceMetrics();
             expect(metrics.length).toBeLessThanOrEqual(1000);
 
             PerformanceMonitor.disable();
         });
 
         test('should measure operation duration accurately', (done) => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
 
             PerformanceMonitor.enable();
 
@@ -527,7 +527,7 @@ describe('Performance Optimization Tests', () => {
 
     describe('7. Progressive Loading', () => {
         test('should support lazy loading option', () => {
-            const pdf = new AgenticPDF({ lazyLoad: true });
+            const pdf = new IronDocuments({ lazyLoad: true });
 
             // Lazy load should not throw
             expect(true).toBe(true);
@@ -536,7 +536,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should load pages on demand with lazy loading', async () => {
-            const pdf = new AgenticPDF({ lazyLoad: true });
+            const pdf = new IronDocuments({ lazyLoad: true });
 
             // getPage should work with lazy loading (returns undefined for no content)
             const page = await pdf.getPage(1);
@@ -548,7 +548,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should track memory usage with lazy loading', () => {
-            const pdf = new AgenticPDF({ lazyLoad: true });
+            const pdf = new IronDocuments({ lazyLoad: true });
 
             const stats = pdf.getMemoryStats();
             expect(stats.pagesCached).toBeGreaterThanOrEqual(0);
@@ -559,10 +559,10 @@ describe('Performance Optimization Tests', () => {
 
     describe('8. Integration Tests', () => {
         test('should improve performance with caching enabled', async () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
             PerformanceMonitor.enable();
 
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             // First operation
             const metric1 = PerformanceMonitor.startOperation('test-integration');
@@ -579,17 +579,17 @@ describe('Performance Optimization Tests', () => {
 
             pdf.close();
             PerformanceMonitor.disable();
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
         });
 
         test('should handle memory cleanup correctly', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             // Get initial stats
             const stats1 = pdf.getMemoryStats();
 
             // Clear caches
-            AgenticPDF.clearAllCaches();
+            IronDocuments.clearAllCaches();
 
             // Get stats after cleanup
             const stats2 = pdf.getMemoryStats();
@@ -603,18 +603,18 @@ describe('Performance Optimization Tests', () => {
 
         test('should support all optimization features together', () => {
             // Enable all optimizations
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
             PerformanceMonitor.enable();
 
-            const pdf = new AgenticPDF({
+            const pdf = new IronDocuments({
                 lazyLoad: true,
                 maxMemoryUsage: 10 * 1024 * 1024 // 10MB
             });
 
             // Use various features
             const stats = pdf.getMemoryStats();
-            const metrics = AgenticPDF.getPerformanceMetrics();
-            const summary = AgenticPDF.getPerformanceSummary();
+            const metrics = IronDocuments.getPerformanceMetrics();
+            const summary = IronDocuments.getPerformanceSummary();
 
             expect(stats).toBeDefined();
             expect(metrics).toBeDefined();
@@ -622,24 +622,24 @@ describe('Performance Optimization Tests', () => {
 
             // Cleanup
             pdf.unloadPages();
-            AgenticPDF.clearAllCaches();
+            IronDocuments.clearAllCaches();
             pdf.close();
 
             PerformanceMonitor.disable();
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
         });
     });
 
     describe('9. Edge Cases and Error Handling', () => {
         test('should handle empty cache operations', () => {
-            expect(() => AgenticPDF.clearAllCaches()).not.toThrow();
+            expect(() => IronDocuments.clearAllCaches()).not.toThrow();
 
-            const stats = AgenticPDF.getPerformanceMetrics();
+            const stats = IronDocuments.getPerformanceMetrics();
             expect(Array.isArray(stats)).toBe(true);
         });
 
         test('should handle memory stats for closed PDF', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
             pdf.close();
 
             const stats = pdf.getMemoryStats();
@@ -648,7 +648,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should handle unload with no pages', () => {
-            const pdf = new AgenticPDF({ lazyLoad: false });
+            const pdf = new IronDocuments({ lazyLoad: false });
 
             expect(() => pdf.unloadPages()).not.toThrow();
             expect(() => pdf.unloadPages([])).not.toThrow();
@@ -657,7 +657,7 @@ describe('Performance Optimization Tests', () => {
         });
 
         test('should handle performance monitoring when disabled', () => {
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
 
             const metric = PerformanceMonitor.startOperation('test-disabled');
             expect(metric.startTime).toBe(0);
@@ -678,11 +678,11 @@ describe('Performance Optimization Tests', () => {
 
     describe('10. Performance Benchmarks', () => {
         test('should measure parser performance', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
             PerformanceMonitor.enable();
 
             const mockData = new Uint8Array(100).fill(32);
-            const ContentStreamParser = (AgenticPDF as any).__ContentStreamParser;
+            const ContentStreamParser = (IronDocuments as any).__ContentStreamParser;
 
             if (ContentStreamParser) {
                 const metric = PerformanceMonitor.startOperation('parser-benchmark');
@@ -699,14 +699,14 @@ describe('Performance Optimization Tests', () => {
             }
 
             PerformanceMonitor.disable();
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
         });
 
         test('should measure color conversion performance', () => {
-            AgenticPDF.enablePerformanceMonitoring();
+            IronDocuments.enablePerformanceMonitoring();
             PerformanceMonitor.enable();
 
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
 
             if (PDFColorSpaceProcessor?.cmykToRGB) {
                 const metric = PerformanceMonitor.startOperation('color-conversion-benchmark');
@@ -722,11 +722,11 @@ describe('Performance Optimization Tests', () => {
             }
 
             PerformanceMonitor.disable();
-            AgenticPDF.disablePerformanceMonitoring();
+            IronDocuments.disablePerformanceMonitoring();
         });
 
         test('should show performance improvement with caching', () => {
-            const PDFColorSpaceProcessor = (AgenticPDF as any).__PDFColorSpaceProcessor;
+            const PDFColorSpaceProcessor = (IronDocuments as any).__PDFColorSpaceProcessor;
 
             if (PDFColorSpaceProcessor?.cmykToRGB) {
                 // Clear cache

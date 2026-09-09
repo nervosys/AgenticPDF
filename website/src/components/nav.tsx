@@ -38,7 +38,7 @@ export function Nav() {
           >
             A
           </span>
-          AgenticPDF
+          IronDocuments
         </Link>
 
         {/* Desktop nav */}
@@ -64,7 +64,7 @@ export function Nav() {
         <div className="hidden md:flex items-center gap-3">
           <ThemeToggle />
           <a
-            href="https://github.com/nervosys/AgenticPDF"
+            href="https://github.com/nervosys/IronDocuments"
             target="_blank"
             rel="noopener noreferrer"
             className="px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
@@ -129,7 +129,7 @@ function ThemeToggle() {
     const html = document.documentElement;
     const next = html.getAttribute("data-theme") === "dark" ? "light" : "dark";
     html.setAttribute("data-theme", next);
-    localStorage.setItem("agenticpdf-theme", next);
+    localStorage.setItem("irondocuments-theme", next);
   };
 
   return (

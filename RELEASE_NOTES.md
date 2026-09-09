@@ -1,9 +1,9 @@
-# AgenticPDF v1.0.0 Release Notes
+# IronDocuments v1.0.0 Release Notes
 
 **Release Date:** March 2026  
 **License:** AGPL-3.0-or-later  
 
-The first stable release of AgenticPDF — a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems.
+The first stable release of IronDocuments — a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems.
 
 ## Major Features
 
@@ -42,7 +42,7 @@ The first stable release of AgenticPDF — a comprehensive, production-ready PDF
 - **OTLP Traces & Metrics**: Built-in instrumentation via `@opentelemetry/api`
 - **Graceful Degradation**: Falls back to no-ops when OTEL packages are absent
 - **Configurable**: Standard `OTEL_*` environment variables
-- **Optional SDK Module**: Import `agenticpdf/otel` for full SDK bootstrap
+- **Optional SDK Module**: Import `irondocuments/otel` for full SDK bootstrap
 
 ### PretextLayout Engine
 - **Native Multiline Text Layout**: Zero-dependency text measurement and line-breaking engine (inspired by [pretext](https://github.com/chenglou/pretext))
@@ -52,9 +52,9 @@ The first stable release of AgenticPDF — a comprehensive, production-ready PDF
 - **Canvas + Server Fallback**: Canvas/OffscreenCanvas measurement with LRU cache; heuristic fallback for server-side environments
 
 ### Ontology & Agent Discovery
-- **Machine-Readable API**: `AgenticPDF.describe()` returns JSON-LD ontology
-- **Capability Map**: `AgenticPDF.getCapabilities()` organized by category
-- **Method Signatures**: `AgenticPDF.getMethodSignatures()` for code generation
+- **Machine-Readable API**: `IronDocuments.describe()` returns JSON-LD ontology
+- **Capability Map**: `IronDocuments.getCapabilities()` organized by category
+- **Method Signatures**: `IronDocuments.getMethodSignatures()` for code generation
 - **Workflow Templates**: 7 pre-built workflow templates for common tasks
 
 ## Security
@@ -84,7 +84,7 @@ Three comprehensive security audit passes (25+ total fixes):
 ## Technical Highlights
 
 ### Single File Architecture
-- Complete implementation in one TypeScript file (`agenticpdf.ts`)
+- Complete implementation in one TypeScript file (`irondocuments.ts`)
 - TypeScript-native with full type safety and IntelliSense
 - Maximum portability — easy integration into any project
 
@@ -114,12 +114,12 @@ Three comprehensive security audit passes (25+ total fixes):
 - **API Explorer** (`demos/examples-demo.html`) — Interactive API demonstrations
 
 ### TypeScript CLI
-- `apdf` / `agenticpdf` npm bin commands for text extraction, metadata, search, and more
+- `apdf` / `irondocuments` npm bin commands for text extraction, metadata, search, and more
 
-### Rust CLI (`agenticpdf-rs/`)
+### Rust CLI (`irondocuments-rs/`)
 - Native `apdf` binary — 801 KB release build (opt-level "z", LTO, stripped)
 - 10 commands: `text`, `meta`, `annotations`, `outline`, `images`, `chunk`, `all`, `describe`, `info`, `generate`
-- `apdf describe` outputs full JSON-LD ontology (673 lines)
+- `irondoc describe` outputs full JSON-LD ontology (673 lines)
 - 10 Rust tests, zero warnings
 
 ### Website
@@ -132,15 +132,15 @@ Three comprehensive security audit passes (25+ total fixes):
 ### Installation
 
 ```bash
-npm install agenticpdf
+npm install irondocuments
 ```
 
 ### Basic Usage
 
 ```typescript
-import AgenticPDF from 'agenticpdf';
+import IronDocuments from 'irondocuments';
 
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const text = await pdf.extractText();
 const chunks = await pdf.generateSemanticChunks();
 pdf.close();
@@ -149,20 +149,20 @@ pdf.close();
 ### Optional OTEL Instrumentation
 
 ```typescript
-import 'agenticpdf/otel'; // Boots the OTEL SDK from .env
-import AgenticPDF from 'agenticpdf';
+import 'irondocuments/otel'; // Boots the OTEL SDK from .env
+import IronDocuments from 'irondocuments';
 ```
 
 ## Distribution
 
-- **NPM**: `npm install agenticpdf`
-- **Single File**: Copy `agenticpdf.ts` directly
-- **CDN**: `https://unpkg.com/agenticpdf/dist/agenticpdf.js`
+- **NPM**: `npm install irondocuments`
+- **Single File**: Copy `irondocuments.ts` directly
+- **CDN**: `https://unpkg.com/irondocuments/dist/irondocuments.js`
 
 ## License
 
-AgenticPDF is released under the **AGPL-3.0-or-later** license.
+IronDocuments is released under the **AGPL-3.0-or-later** license.
 
 ---
 
-For documentation, examples, and API reference, visit the [GitHub repository](https://github.com/nervosys/AgenticPDF).
+For documentation, examples, and API reference, visit the [GitHub repository](https://github.com/nervosys/IronDocuments).

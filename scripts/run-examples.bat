@@ -1,10 +1,10 @@
 @echo off
-REM AgenticPDF Examples Runner for Windows
-REM This batch file provides easy access to run AgenticPDF examples
+REM IronDocuments Examples Runner for Windows
+REM This batch file provides easy access to run IronDocuments examples
 
 echo.
 echo ====================================
-echo    AgenticPDF Examples Runner
+echo    IronDocuments Examples Runner
 echo ====================================
 echo.
 

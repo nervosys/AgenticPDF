@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AgenticPDF — Rendering Engine Demo</title>
-    <script src="agenticpdf-browser.js"></script>
+    <title>IronDocuments — Rendering Engine Demo</title>
+    <script src="irondocuments-browser.js"></script>
     <style>
         :root {
             --bg: #0e0e10;
@@ -472,7 +472,7 @@
 <body>
 
 <header>
-    <h1><span>AgenticPDF</span> Rendering Engine</h1>
+    <h1><span>IronDocuments</span> Rendering Engine</h1>
     <span class="badge">GPU-Accelerated</span>
 </header>
 
@@ -890,7 +890,7 @@
             canvas.width = canvasWidth;
             canvas.height = canvasHeight;
 
-            // Render via AgenticPDF engine
+            // Render via IronDocuments engine
             const tRender0 = performance.now();
 
             try {
@@ -1332,15 +1332,15 @@
 
     // ── Load PDF ──
     async function init() {
-        log('Initializing AgenticPDF rendering engine…');
+        log('Initializing IronDocuments rendering engine…');
 
-        if (typeof AgenticPDF === 'undefined') {
-            log('AgenticPDF library not found!', 'error');
-            loadingText.textContent = 'Error: agenticpdf-browser.js not loaded';
+        if (typeof IronDocuments === 'undefined') {
+            log('IronDocuments library not found!', 'error');
+            loadingText.textContent = 'Error: irondocuments-browser.js not loaded';
             return;
         }
 
-        log('AgenticPDF library loaded');
+        log('IronDocuments library loaded');
 
         try {
             loadingText.textContent = 'Fetching sample.pdf…';
@@ -1355,10 +1355,10 @@
             $('docFileSize').textContent = fileSizeKB + ' KB';
 
             loadingText.textContent = 'Parsing PDF…';
-            log('Parsing with AgenticPDF.fromBuffer…');
+            log('Parsing with IronDocuments.fromBuffer…');
 
             const t0 = performance.now();
-            pdfDoc = await AgenticPDF.fromBuffer(buf, {
+            pdfDoc = await IronDocuments.fromBuffer(buf, {
                 lazyLoad: false,
                 enableWorkers: false
             });

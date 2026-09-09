@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of accurate PDF glyph width calculations in AgenticPDF. The implementation uses actual PDF font metrics instead of canvas `measureText()` approximations to ensure precise text positioning and alignment.
+This document describes the implementation of accurate PDF glyph width calculations in IronDocuments. The implementation uses actual PDF font metrics instead of canvas `measureText()` approximations to ensure precise text positioning and alignment.
 
 ## Problem Statement
 
@@ -18,7 +18,7 @@ This document describes the implementation of accurate PDF glyph width calculati
 
 ### 1. Font Metric Extraction (parseFontResource)
 
-**Location**: `agenticpdf.ts` ~line 1342-1447
+**Location**: `irondocuments.ts` ~line 1342-1447
 
 **Key Data Extracted**:
 ```typescript
@@ -60,7 +60,7 @@ interface FontResource {
 
 ### 2. Glyph Metrics Calculator (PDFGlyphMetrics)
 
-**Location**: `agenticpdf.ts` ~line 4310-4455
+**Location**: `irondocuments.ts` ~line 4310-4455
 
 **Class Design**:
 ```typescript
@@ -147,7 +147,7 @@ widths = Map {     // Overrides for specific glyphs
 
 ### 3. Graphics Executor Integration
 
-**Location**: `agenticpdf.ts` ~line 4460+
+**Location**: `irondocuments.ts` ~line 4460+
 
 **State Tracking**:
 ```typescript
@@ -367,7 +367,7 @@ const width = PDFGlyphMetrics.getCharWidth(200, font, 12);
 **Compare with Reference PDF Viewer**:
 1. Render same PDF in Adobe Acrobat
 2. Measure text positions with ruler tool
-3. Compare with AgenticPDF rendering
+3. Compare with IronDocuments rendering
 4. Verify alignment matches within 1 pixel
 
 **Algorithmic Verification**:
@@ -396,7 +396,7 @@ function verifyWidth(char: string, font: FontResource, fontSize: number) {
 
 ### 1. Embedded Font Programs
 
-**Issue**: AgenticPDF doesn't parse embedded font programs (TrueType, OpenType, CFF).
+**Issue**: IronDocuments doesn't parse embedded font programs (TrueType, OpenType, CFF).
 
 **Impact**: 
 - Uses widths array from font dictionary (accurate)
@@ -494,7 +494,7 @@ if (charCode >= 32 && charCode <= 126 && font.widths) {
 
 ### Basic Usage
 ```typescript
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const page = await pdf.getPage(1);
 
 // Font metrics automatically extracted during parsing
@@ -581,7 +581,7 @@ console.log(`Total width: ${totalWidth}px`);
 
 ## Conclusion
 
-Accurate glyph width calculations are essential for correct PDF rendering. By using actual PDF font metrics instead of canvas approximations, AgenticPDF achieves:
+Accurate glyph width calculations are essential for correct PDF rendering. By using actual PDF font metrics instead of canvas approximations, IronDocuments achieves:
 
 ✅ **Pixel-perfect text alignment**
 ✅ **No drift across long documents**

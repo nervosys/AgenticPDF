@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of PDF image rendering in AgenticPDF. The implementation handles the `Do` operator to display XObject images on the canvas with proper coordinate transformations.
+This document describes the implementation of PDF image rendering in IronDocuments. The implementation handles the `Do` operator to display XObject images on the canvas with proper coordinate transformations.
 
 ## Problem Statement
 
@@ -19,7 +19,7 @@ This document describes the implementation of PDF image rendering in AgenticPDF.
 
 ### 1. XObject Parsing (parseResources)
 
-**Location**: `agenticpdf.ts` ~line 1256-1373
+**Location**: `irondocuments.ts` ~line 1256-1373
 
 **Key Components**:
 
@@ -108,7 +108,7 @@ endobj
 
 ### 2. Do Operator Handler
 
-**Location**: `agenticpdf.ts` ~line 4549 (in executeOperator switch)
+**Location**: `irondocuments.ts` ~line 4549 (in executeOperator switch)
 
 **PDF Syntax**:
 ```pdf
@@ -152,7 +152,7 @@ for (const op of operations) {
 
 ### 3. Image Rendering (renderImage)
 
-**Location**: `agenticpdf.ts` ~line 5042-5097
+**Location**: `irondocuments.ts` ~line 5042-5097
 
 **Implementation Flow**:
 
@@ -602,14 +602,14 @@ Expected: Silently skip, no error
 **Visual Comparison**:
 1. Render PDF in Adobe Acrobat
 2. Screenshot page
-3. Render in AgenticPDF
+3. Render in IronDocuments
 4. Compare pixel-by-pixel or visually
 
 **Automated Testing**:
 ```typescript
 describe('Image Rendering', () => {
   it('should render JPEG images', async () => {
-    const pdf = await AgenticPDF.fromFile('test-image.pdf');
+    const pdf = await IronDocuments.fromFile('test-image.pdf');
     const page = await pdf.getPage(1);
     
     expect(page.resources?.xObjects.size).toBeGreaterThan(0);
@@ -696,7 +696,7 @@ EI               % End inline image
 ### Basic Image Rendering
 
 ```typescript
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const page = await pdf.getPage(1);
 
 // Images automatically extracted
@@ -735,7 +735,7 @@ class CustomImageRenderer extends PDFGraphicsExecutor {
 ### Image Extraction
 
 ```typescript
-async function extractImages(pdf: AgenticPDF): Promise<Blob[]> {
+async function extractImages(pdf: IronDocuments): Promise<Blob[]> {
   const images: Blob[] = [];
   
   for (let i = 1; i <= pdf.metadata.pageCount; i++) {

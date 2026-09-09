@@ -1,11 +1,11 @@
 /**
- * Mock utilities for AgenticPDF testing
+ * Mock utilities for IronDocuments testing
  * Provides mock implementations for external dependencies
  */
 
 import { File as NodeFile } from 'node:buffer';
 
-import { EmbeddingProvider, StreamOptions, ProgressInfo } from '../../agenticpdf';
+import { EmbeddingProvider, StreamOptions, ProgressInfo } from '../../irondocuments';
 
 // `File` only became a global in Node 20; package.json supports >=18, and the
 // CI matrix still covers 18.x. node:buffer has exported the same class since

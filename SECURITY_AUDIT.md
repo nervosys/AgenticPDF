@@ -1,4 +1,4 @@
-# AgenticPDF — Security Audit Report
+# IronDocuments — Security Audit Report
 
 > **Audit Date:** 2026-08-31 (Revision 4)  
 > **Previous Audit:** 2026-08-26 (Revision 3)  
@@ -6,13 +6,13 @@
 > **Auditor:** Automated security analysis + manual code review  
 > **Classification:** UNCLASSIFIED // FOUO  
 > **Applicable Frameworks:** CVE, MITRE ATT&CK, NIST FIPS 140-3, CMMC 2.0 Level 2  
-> **Scope:** Core library (`agenticpdf.ts`), CLI (`cli.ts`), Rust/WASM (`agenticpdf-rs/`), dev server (`server.cjs`), website (`website/`)
+> **Scope:** Core library (`irondocuments.ts`), CLI (`cli.ts`), Rust/WASM (`irondocuments-rs/`), dev server (`server.cjs`), website (`website/`)
 
 ---
 
 ## Executive Summary
 
-AgenticPDF is a zero-dependency, single-file TypeScript PDF processing library with a companion Rust CLI/WASM module and Next.js documentation website. This revision updates the 2026-03-14 audit with new findings from expanded scope (CLI file operations, dev server, website CSP, regex safety, PRNG usage) and verifies all previously identified controls.
+IronDocuments is a zero-dependency, single-file TypeScript PDF processing library with a companion Rust CLI/WASM module and Next.js documentation website. This revision updates the 2026-03-14 audit with new findings from expanded scope (CLI file operations, dev server, website CSP, regex safety, PRNG usage) and verifies all previously identified controls.
 
 **Revision 4 rating: LOW.** Every finding this audit has ever raised is now
 closed (§1.3c). Three of the seven were fixed in this revision, and four turned
@@ -61,7 +61,7 @@ advisory scanning rather than review dependency lists by hand.
 
 ### 1.1 Known PDF Parsing CVEs
 
-The following CVE categories are relevant to PDF parsers. Each is assessed against AgenticPDF's implementation.
+The following CVE categories are relevant to PDF parsers. Each is assessed against IronDocuments's implementation.
 
 | CVE Category                                       | Risk | Mitigation Status                                                                                                                                                             |
 | -------------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -74,7 +74,7 @@ The following CVE categories are relevant to PDF parsers. Each is assessed again
 | **JBIG2 decoder vulnerabilities** (CVE-2021-30860) | NONE | JBIG2 data is passed through without decoding. Browser-level rendering only. No custom JBIG2 decoder.                                                                         |
 | **Heap corruption in font parsing**                | LOW  | Font data used as lookup tables only. No TrueType/OpenType instruction VM. No glyph outline processing.                                                                       |
 
-### 1.2 AgenticPDF-Specific Attack Surfaces
+### 1.2 IronDocuments-Specific Attack Surfaces
 
 | Surface              | Description                                  | Mitigation                                                                |
 | -------------------- | -------------------------------------------- | ------------------------------------------------------------------------- |
@@ -106,7 +106,7 @@ rather than assumed:
 ```
 quick-xml 0.30.0 <- zbus_xml <- zbus-lockstep <- atspi-common
                  <- atspi <- accesskit_unix <- accesskit_winit
-                 <- egui-winit <- eframe <- apdf-reader
+                 <- egui-winit <- eframe <- irondoc-reader
 ```
 
 `accesskit_unix` is the **Linux AT-SPI accessibility backend**. Three
@@ -114,7 +114,7 @@ consequences follow, and all three are what downgrade this from critical to
 tracked:
 
 1. **It never sees a document.** This crate's own XML is a hand-written parser
-   (`agenticpdf-rs/src/xml.rs`) with no `quick-xml` dependency; `quick-xml` here
+   (`irondocuments-rs/src/xml.rs`) with no `quick-xml` dependency; `quick-xml` here
    parses D-Bus introspection data, not OOXML, ODF or EPUB. Untrusted document
    input cannot reach it.
 2. **It is absent from every shipped artefact except the Linux desktop build.**
@@ -219,9 +219,9 @@ read as end-of-stream.
 | **F-002** | CWE-22   | **MEDIUM** | `cli.ts:531,581,624,681,748,1174,1236,1346`  | Path traversal in text/JSON/HTML output — 8 `writeFileSync()` calls accept `options.output` with no path normalization or directory confinement. CLI user can specify `../../etc/crontab`.                                     |
 | **F-003** | CWE-693  | **MEDIUM** | `server.cjs:49`                              | Dev server missing security headers — No `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, or `Referrer-Policy` headers on responses.                                                                    |
 | **F-004** | CWE-693  | **MEDIUM** | `website/next.config.mjs`                    | Website has no CSP headers configured — No middleware or headers config for Content-Security-Policy. Static export relies on hosting provider headers.                                                                         |
-| **F-005** | CWE-338  | **MEDIUM** | `agenticpdf.ts:5119,19072,19094,19117,19139` | `Math.random()` used for session and annotation IDs — 5 call sites use `Date.now() + Math.random()` for ID generation. While not used for security tokens, IDs are predictable and could collide.                              |
-| **F-006** | CWE-1333 | **LOW**    | `agenticpdf.ts:13242`                        | ReDoS via user-controlled regex — `searchText()` with `options.regex=true` passes user input directly to `new RegExp()`. A try-catch handles syntax errors, but no complexity/length guard prevents catastrophic backtracking. |
-| **F-007** | CWE-1333 | **LOW**    | `agenticpdf.ts:20754`                        | Unescaped PDF content in regex — `firstName` from parsed author metadata interpolated into `new RegExp()` without escaping. Malicious author names with regex metacharacters could cause unexpected matching or ReDoS.         |
+| **F-005** | CWE-338  | **MEDIUM** | `irondocuments.ts:5119,19072,19094,19117,19139` | `Math.random()` used for session and annotation IDs — 5 call sites use `Date.now() + Math.random()` for ID generation. While not used for security tokens, IDs are predictable and could collide.                              |
+| **F-006** | CWE-1333 | **LOW**    | `irondocuments.ts:13242`                        | ReDoS via user-controlled regex — `searchText()` with `options.regex=true` passes user input directly to `new RegExp()`. A try-catch handles syntax errors, but no complexity/length guard prevents catastrophic backtracking. |
+| **F-007** | CWE-1333 | **LOW**    | `irondocuments.ts:20754`                        | Unescaped PDF content in regex — `firstName` from parsed author metadata interpolated into `new RegExp()` without escaping. Malicious author names with regex metacharacters could cause unexpected matching or ReDoS.         |
 
 ### 1.3c Remediation Status of F-001 - F-007 *(R4)*
 
@@ -236,7 +236,7 @@ source rather than inferred from the earlier text.
 | F-002 | ✅ **CLOSED** (was already fixed before R4) | `validateOutputPath()` at `cli.ts:33` confines writes to the working directory and is applied at all ten `writeFileSync` sites - two more than R2 counted. |
 | F-003 | ✅ **FIXED in R4** | `server.cjs` now sends `Content-Security-Policy` alongside the `nosniff`, `X-Frame-Options` and `Referrer-Policy` headers it had gained earlier. |
 | F-004 | ✅ **FIXED in R4** | `website/src/app/layout.tsx` emits a `<meta http-equiv="Content-Security-Policy">`, verified present in `out/index.html` after a build. Two limits are stated in the file rather than glossed: `frame-ancestors` is ignored in meta form, and a static export cannot mint per-request nonces, so `script-src` must permit `'unsafe-inline'`. This is a floor, not a substitute for hosting-provider headers. |
-| F-005 | ✅ **CLOSED** (was already fixed before R4) | ID generation uses `crypto.getRandomValues()` in the browser and `randomBytes()` under Node; `Math.random()` survives only as a last-resort fallback where neither exists, and is documented as such at `agenticpdf.ts:6926`. |
+| F-005 | ✅ **CLOSED** (was already fixed before R4) | ID generation uses `crypto.getRandomValues()` in the browser and `randomBytes()` under Node; `Math.random()` survives only as a last-resort fallback where neither exists, and is documented as such at `irondocuments.ts:6926`. |
 | F-006 | ✅ **FIXED in R4** | `search()` now rejects patterns over `MAX_SEARCH_PATTERN_LENGTH` (1000), enforces a `SEARCH_TIME_BUDGET_MS` (2000 ms) deadline inside the exec loop, and advances `lastIndex` on a zero-length match so `a*` cannot spin forever. A deadline is the honest guard here: pattern-shape heuristics of the kind R2 suggested reject valid regexes and miss novel catastrophic ones. |
 | F-007 | ✅ **FIXED in R4** | `escapeRegExp()` is applied to `firstName` before it is interpolated into the ORCID pattern. This was the most serious of the seven and the only one where the input is **attacker-controlled**: the name comes from document metadata, so a crafted PDF chose the regex. Verified behaviourally against the real function: `(a+)+$` escapes to a literal, matches the literal text, does not match a long run of `a`, and returns in 0 ms on the input that previously backtracked. |
 
@@ -307,7 +307,7 @@ const orcidPattern = new RegExp(escapedName + '[\\s\\S]{0,200}(\\d{4}-\\d{4}-\\d
 
 | ATT&CK ID     | Technique                          | Applicability   | Assessment                                                                                                                                                                                 |
 | ------------- | ---------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **T1203**     | Exploitation for Client Execution  | MEDIUM          | PDF parsers are a known exploitation target. AgenticPDF has no execution engine — all content is extracted as data, never executed. No spawning of child processes.                        |
+| **T1203**     | Exploitation for Client Execution  | MEDIUM          | PDF parsers are a known exploitation target. IronDocuments has no execution engine — all content is extracted as data, never executed. No spawning of child processes.                        |
 | **T1204.002** | User Execution: Malicious File     | MEDIUM          | Users may open crafted PDFs. Mitigated by `validateSecurityConstraints()` pre-check, size limits, and JavaScript detection.                                                                |
 | **T1059**     | Command and Scripting Interpreter  | NONE            | No script execution capability. JavaScript in PDFs is parsed as an opaque string, never evaluated.                                                                                         |
 | **T1566.001** | Phishing: Spearphishing Attachment | LOW             | PDF is a common phishing vector. Library does not handle file download or email integration — that is the caller's responsibility.                                                         |
@@ -331,7 +331,7 @@ const orcidPattern = new RegExp(escapedName + '[\\s\\S]{0,200}(\\d{4}-\\d{4}-\\d
 | **Process Isolation**         | Optional Web Worker support via `useWebWorkers` configuration                                                                                                                                                                                   |
 | **SSRF Protection** *(NEW)*   | `isPrivateHost()` blocks localhost, private RFC 1918 ranges, link-local, and cloud metadata endpoints (169.254.169.254, metadata.google.internal). Protocol restricted to http/https. Single-hop redirect limit with re-validation at each hop. |
 | **Path Traversal Prevention** | `server.cjs` uses `path.resolve() + path.sep` correctly. CLI has partial protection (needs F-001/F-002 fixes).                                                                                                                                  |
-| **Confused-Deputy Confinement** *(R3)* | MCP file access is confined to roots by **canonicalization** (`agenticpdf-rs/src/sandbox.rs`), which resolves `..` and follows symlinks before the prefix test. A textual prefix check is fooled by both. The CLI is deliberately not confined: its operator already has a shell. |
+| **Confused-Deputy Confinement** *(R3)* | MCP file access is confined to roots by **canonicalization** (`irondocuments-rs/src/sandbox.rs`), which resolves `..` and follows symlinks before the prefix test. A textual prefix check is fooled by both. The CLI is deliberately not confined: its operator already has a shell. |
 | **Memory Safety** *(R3)*      | **Zero `unsafe` in the core library.** All 22 occurrences are in the two FFI shims (`android.rs`, `apple.rs`), where `extern "C"`/JNI require it, and every entry point wraps its body in `catch_unwind` so a panic cannot unwind across the boundary. |
 | **Resource Bounding** *(R3)*  | Constant caps on every attacker-driven loop in the new decoders (§1.3b), verified by adversarial tests rather than by inspection.                                                                                                                |
 
@@ -341,14 +341,14 @@ const orcidPattern = new RegExp(escapedName + '[\\s\\S]{0,200}(\\d{4}-\\d{4}-\\d
 
 ### 3.1 Cryptographic Module Assessment
 
-> **Correction to Revisions 1–2.** Those revisions stated that AgenticPDF
+> **Correction to Revisions 1–2.** Those revisions stated that IronDocuments
 > "does **not** implement cryptographic operations" and that PDF encryption was
 > "a planned Phase 17 feature". **That is no longer true, and the claim is
 > withdrawn.** The Rust crate implements four cryptographic primitives today.
 > An audit that understates its own crypto surface is worse than no audit, so
 > the inventory below replaces the claim rather than qualifying it.
 
-**Cryptographic inventory (`agenticpdf-rs/`), as built:**
+**Cryptographic inventory (`irondocuments-rs/`), as built:**
 
 | Primitive   | Location               | Purpose                                                        | FIPS-approved algorithm? |
 | ----------- | ---------------------- | -------------------------------------------------------------- | ------------------------ |
@@ -410,7 +410,7 @@ When implementing PDF encryption support:
 | No custom hashing         | ❌ **CORRECTED (R3)** — SHA-256 and MD5 are implemented in-crate. See §3.1. SHA-256 is verified against FIPS 180-4 vectors; MD5 exists only to derive PDF decryption keys as ISO 32000 specifies.          |
 | No key derivation         | ❌ **CORRECTED (R3)** — the standard security handler's key derivation is implemented (`src/crypt/mod.rs`). It is not PBKDF2/scrypt/Argon2; it is the padded-MD5 construction the PDF format mandates.     |
 | Constant-time operations  | ⚠️ Not implemented, and documented as such at `src/adf/sha256.rs`: it hashes public content with no key, no nonce and no secret-dependent branch. The note explicitly warns against reusing it for HMAC or password hashing without revisiting that. |
-| Random number generation  | ✅ **RESOLVED (R4)** — IDs are minted from `crypto.getRandomValues()` in the browser and `randomBytes()` under Node (`agenticpdf.ts:6926`). `Math.random()` remains only as a fallback for environments providing neither, and the code says so. F-005 closed. |
+| Random number generation  | ✅ **RESOLVED (R4)** — IDs are minted from `crypto.getRandomValues()` in the browser and `randomBytes()` under Node (`irondocuments.ts:6926`). `Math.random()` remains only as a fallback for environments providing neither, and the code says so. F-005 closed. |
 | No certificate validation | ✅ Not applicable until signature support (Phase 19)                                                                                                                                                       |
 
 ---
@@ -421,7 +421,7 @@ CMMC 2.0 Level 2 maps to NIST SP 800-171 Rev 2 with 110 security controls across
 
 > **Scoping note (R3), which governs everything below.** CMMC applies to systems
 > that store, process or transmit **CUI**. This repository is a *component*, and
-> it is **public** (`github.com/nervosys/AgenticPDF`). No CUI is present in the
+> it is **public** (`github.com/nervosys/IronDocuments`). No CUI is present in the
 > repository and none should be introduced: the render-correctness test corpus is
 > the maintainer's own personal documents held **outside** the repository and
 > deliberately never committed, and this revision re-verified that nothing from
@@ -450,7 +450,7 @@ CMMC 2.0 Level 2 maps to NIST SP 800-171 Rev 2 with 110 security controls across
 | AU.L2-3.3.2 | Trace actions to individual users | N/A — Library does not manage user identity                                                                      |
 | AU.L2-3.3.4 | Alert on audit process failure    | N/A — No audit daemon                                                                                            |
 
-**Recommendation:** Integrators should log all `AgenticPDF` method calls (especially `fromFile`, `extractText`, `getFormData`, `exportAs`) in their audit trail per NIST SP 800-171 AU requirements.
+**Recommendation:** Integrators should log all `IronDocuments` method calls (especially `fromFile`, `extractText`, `getFormData`, `exportAs`) in their audit trail per NIST SP 800-171 AU requirements.
 
 ### 4.3 Identification & Authentication (IA)
 
@@ -500,8 +500,8 @@ CMMC 2.0 Level 2 maps to NIST SP 800-171 Rev 2 with 110 security controls across
 | **Build dependencies**           | Jest, TypeScript, ESLint (dev only, not shipped)                                                                          |
 | **Website dependencies** *(NEW)* | `next` ^15.3.0, `react` ^19.1.0, `shiki` ^4.0.2, `tailwindcss` ^4.1.0 — all current, no known CVEs                        |
 | **Rust dependencies** *(NEW)*    | `wasm-bindgen` 0.2, `serde` 1.0, `serde_json` 1.0, `miniz_oxide` 0.8, `clap` 4.0 — all stable, widely used, no known CVEs |
-| **SBOM generation**              | ✅ `AgenticPDF.generateSBOM()` — CycloneDX format                                                                          |
-| **Provenance**                   | ✅ Source at `github.com/nervosys/AgenticPDF`                                                                              |
+| **SBOM generation**              | ✅ `IronDocuments.generateSBOM()` — CycloneDX format                                                                          |
+| **Provenance**                   | ✅ Source at `github.com/nervosys/IronDocuments`                                                                              |
 | **Code signing**                 | ⚠️ RECOMMENDED — npm package signing via `npm publish --provenance`                                                        |
 | **Vulnerability scanning**       | ⚠️ **PARTIAL (R3)** — `npm audit` and `cargo audit` are now *run* and their results triaged in §1.3a, but they are still not wired into CI. Wiring them in is the outstanding half. |
 | **Rust crate audit**             | ⚠️ **CORRECTED (R3)** — the claim "no known CVEs" no longer holds: 466 transitive crates carry two HIGH advisories in `quick-xml` 0.30.0, reachable only from the Linux desktop accessibility stack (§1.3a). "Widely used" is not the same as "unaffected", and the earlier row read as though it were. |
@@ -513,7 +513,7 @@ CMMC 2.0 Level 2 maps to NIST SP 800-171 Rev 2 with 110 security controls across
 
 ## 5. SSRF Protection Assessment *(NEW Section)*
 
-The `fromUrl()` / `loadFromUrl()` implementation at `agenticpdf.ts:1334-1380` provides comprehensive SSRF protection:
+The `fromUrl()` / `loadFromUrl()` implementation at `irondocuments.ts:1334-1380` provides comprehensive SSRF protection:
 
 ### 5.1 Protocol Validation
 - Only `http:` and `https:` protocols accepted
@@ -639,7 +639,7 @@ DNS rebinding attacks (initial DNS lookup → public IP, subsequent → private 
 
 ## 9. Dependency Audit Summary *(NEW Section)*
 
-### 9.1 Rust Crates (`agenticpdf-rs/Cargo.toml`)
+### 9.1 Rust Crates (`irondocuments-rs/Cargo.toml`)
 
 | Crate               | Version           | Status     | Notes                                |
 | ------------------- | ----------------- | ---------- | ------------------------------------ |
@@ -774,7 +774,7 @@ loses its entries cannot be audited.
 
 ## 12. Conclusion
 
-AgenticPDF presents a **low-medium risk profile** for deployment in DoD and regulated environments:
+IronDocuments presents a **low-medium risk profile** for deployment in DoD and regulated environments:
 
 - **Zero runtime dependencies** eliminate supply chain attack vectors
 - **No code execution** from parsed PDFs prevents exploitation via T1203/T1059
@@ -787,7 +787,7 @@ AgenticPDF presents a **low-medium risk profile** for deployment in DoD and regu
 **What Revision 3 changed, stated plainly rather than folded into a rating.**
 Three claims in the earlier revisions were wrong and are withdrawn, not softened:
 
-1. *"AgenticPDF does not implement cryptographic operations."* It implements
+1. *"IronDocuments does not implement cryptographic operations."* It implements
    four primitives. §3.1 inventories them. The build is **not FIPS 140-3
    compliant** — approved algorithms are not a validated module — and RC4 and MD5
    are present as read-only format interoperability, not as chosen protections.

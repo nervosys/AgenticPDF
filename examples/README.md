@@ -1,6 +1,6 @@
-# AgenticPDF Examples
+# IronDocuments Examples
 
-This directory contains comprehensive examples demonstrating the capabilities of the AgenticPDF library. Each example focuses on different aspects and use cases of PDF processing with AI integration.
+This directory contains comprehensive examples demonstrating the capabilities of the IronDocuments library. Each example focuses on different aspects and use cases of PDF processing with AI integration.
 
 ## � Quick Start
 
@@ -59,7 +59,7 @@ await aiIntegrationExample(file, 'your-api-key');
 - Memory management best practices
 
 **Key Features Demonstrated:**
-- `AgenticPDF.fromFile()`, `fromUrl()`, `fromBuffer()`
+- `IronDocuments.fromFile()`, `fromUrl()`, `fromBuffer()`
 - `extractText()` with various options
 - `getMetadata()` and `getPage()`
 - `search()` functionality

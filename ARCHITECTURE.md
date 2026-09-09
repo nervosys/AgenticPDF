@@ -1,4 +1,4 @@
-# AgenticPDF Core Architecture
+# IronDocuments Core Architecture
 
 ## Overview
 
@@ -10,14 +10,14 @@ This is a **complete, native TypeScript implementation** of a PDF processing pip
 
 ## The Rust engine, the format, and the app
 
-The project's centre of gravity is `agenticpdf-rs/`. It is a separate,
+The project's centre of gravity is `irondocuments-rs/`. It is a separate,
 self-contained implementation, not a binding to the TypeScript above.
 
 | Layer | Location | What it is |
 | --- | --- | --- |
-| **Engine** | `agenticpdf-rs/src/` | Reads **17 formats** — PDF, OOXML, OpenDocument, legacy binary Office, EPUB, RTF, HTML, Markdown, CSV, text — into one semantic model, plus a typesetter that gives non-PDF formats real page geometry. |
-| **ADF** | `agenticpdf-rs/src/adf/` | The engine's own binary format, and the only one it *writes*: chunk-indexed random access, a retrieval index stored inside the file, per-block provenance, and an append-only CRDT edit log. |
-| **App** | `agenticpdf-rs/apps/reader/` | An agentic-first reader and editor on [Dewey](https://github.com/nervosys/Dewey). Desktop, Android and mobile web run today; iOS compiles but is unbuilt (needs macOS). |
+| **Engine** | `irondocuments-rs/src/` | Reads **17 formats** — PDF, OOXML, OpenDocument, legacy binary Office, EPUB, RTF, HTML, Markdown, CSV, text — into one semantic model, plus a typesetter that gives non-PDF formats real page geometry. |
+| **ADF** | `irondocuments-rs/src/adf/` | The engine's own binary format, and the only one it *writes*: chunk-indexed random access, a retrieval index stored inside the file, per-block provenance, and an append-only CRDT edit log. |
+| **App** | `irondocuments-rs/apps/reader/` | An agentic-first reader and editor on [Dewey](https://github.com/nervosys/Dewey). Desktop, Android and mobile web run today; iOS compiles but is unbuilt (needs macOS). |
 
 Two properties are worth knowing before reading any of that code, because they
 explain most of its structure:
@@ -31,7 +31,7 @@ explain most of its structure:
   actions. A capability cannot exist for one caller and not the others — which
   is what keeps the agent ontology an accurate description of the program.
 
-`agenticpdf-rs/README.md` covers the engine and format; `apps/reader/android/`
+`irondocuments-rs/README.md` covers the engine and format; `apps/reader/android/`
 and `apps/reader/ios/` have their own READMEs, including what is and is not
 verified on each platform.
 
@@ -243,7 +243,7 @@ Canvas Element (visual output)
 ### Basic Loading and Rendering
 
 ```typescript
-import { getDocument, renderPage } from './agenticpdf-core';
+import { getDocument, renderPage } from './irondocuments-core';
 
 // Load PDF
 const response = await fetch('document.pdf');
@@ -517,4 +517,4 @@ When adding features, follow the established architecture:
 
 ## License
 
-This is an original implementation written from scratch as part of the AgenticPDF project.
+This is an original implementation written from scratch as part of the IronDocuments project.

@@ -7,17 +7,17 @@ export default function CliPage() {
         CLI Reference
       </h1>
       <p className="mb-10" style={{ color: "var(--text-muted)" }}>
-        AgenticPDF includes a full-featured command-line interface for PDF processing.
+        IronDocuments includes a full-featured command-line interface for PDF processing.
       </p>
 
       {/* Installation */}
       <section className="mb-10">
         <h2 className="text-2xl font-bold mb-4" style={{ color: "var(--text)" }}>Installation</h2>
         <HighlightedCode code={`# Global install
-npm install -g agenticpdf
+npm install -g irondocuments
 
 # Or use npx
-npx agenticpdf --help`} language="bash" />
+npx idoc --help`} language="bash" />
       </section>
 
       {/* Commands */}
@@ -30,57 +30,57 @@ npx agenticpdf --help`} language="bash" />
           {
             name: "info",
             desc: "Display PDF metadata and document information.",
-            example: `agenticpdf info -i document.pdf\nagenticpdf info -i document.pdf --pretty`,
+            example: `idoc info -i document.pdf\nirondocuments info -i document.pdf --pretty`,
           },
           {
             name: "extract",
             desc: "Extract text content from a PDF.",
-            example: `agenticpdf extract -i document.pdf\nagenticpdf extract -i document.pdf -p 1-5 -o output.txt\nagenticpdf extract -i document.pdf --stream`,
+            example: `idoc extract -i document.pdf\nirondocuments extract -i document.pdf -p 1-5 -o output.txt\nirondocuments extract -i document.pdf --stream`,
           },
           {
             name: "convert",
             desc: "Convert a PDF to text, JSON, HTML, or Markdown.",
-            example: `agenticpdf convert -i document.pdf -f markdown -o output.md\nagenticpdf convert -i document.pdf -f json --pretty\nagenticpdf convert -i document.pdf -f html -o output.html`,
+            example: `idoc convert -i document.pdf -f markdown -o output.md\nirondocuments convert -i document.pdf -f json --pretty\nirondocuments convert -i document.pdf -f html -o output.html`,
           },
           {
             name: "analyze",
             desc: "Run AI-powered analysis including structural analysis, NER, and summarization.",
-            example: `agenticpdf analyze -i document.pdf\nagenticpdf analyze -i document.pdf --ai`,
+            example: `idoc analyze -i document.pdf\nirondocuments analyze -i document.pdf --ai`,
           },
           {
             name: "chunk",
             desc: "Generate semantic chunks for RAG pipelines.",
-            example: `agenticpdf chunk -i document.pdf\nagenticpdf chunk -i document.pdf --chunk-size 1000 -o chunks.json`,
+            example: `idoc chunk -i document.pdf\nirondocuments chunk -i document.pdf --chunk-size 1000 -o chunks.json`,
           },
           {
             name: "images",
             desc: "Extract embedded images from a PDF.",
-            example: `agenticpdf images -i document.pdf -o ./images/`,
+            example: `idoc images -i document.pdf -o ./images/`,
           },
           {
             name: "forms",
             desc: "Extract form fields and their values.",
-            example: `agenticpdf forms -i document.pdf`,
+            example: `idoc forms -i document.pdf`,
           },
           {
             name: "ingest",
             desc: "Unified agentic ingestion — metadata, structure, and semantic chunks in one call.",
-            example: `agenticpdf ingest -i document.pdf -o result.json\nagenticpdf ingest -i document.pdf --ndjson\nagenticpdf ingest -i document.pdf --include-text -o full.json`,
+            example: `idoc ingest -i document.pdf -o result.json\nirondocuments ingest -i document.pdf --ndjson\nirondocuments ingest -i document.pdf --include-text -o full.json`,
           },
           {
             name: "tool-schema",
             desc: "Output JSON tool/function schemas for LLM agents.",
-            example: `agenticpdf tool-schema --tool-schema openai\nagenticpdf tool-schema --tool-schema anthropic\nagenticpdf tool-schema --tool-schema mcp`,
+            example: `idoc tool-schema --tool-schema openai\nirondocuments tool-schema --tool-schema anthropic\nirondocuments tool-schema --tool-schema mcp`,
           },
           {
             name: "generate",
             desc: "Generate an aPDF binary file (PDF + metadata envelope).",
-            example: `agenticpdf generate -i paper.pdf -o paper.apdf`,
+            example: `idoc generate -i paper.pdf -o paper.apdf`,
           },
           {
             name: "typeset",
             desc: "Typeset PDF for web display with themed HTML output.",
-            example: `agenticpdf typeset -i document.pdf -o output.html`,
+            example: `idoc typeset -i document.pdf -o output.html`,
           },
         ].map((cmd) => (
           <div key={cmd.name} className="mb-8">
@@ -136,20 +136,20 @@ npx agenticpdf --help`} language="bash" />
           Workflow Examples
         </h2>
         <HighlightedCode code={`# Extract text, then analyze with AI
-agenticpdf extract -i paper.pdf -o text.txt
-agenticpdf analyze -i paper.pdf --ai
+idoc extract -i paper.pdf -o text.txt
+idoc analyze -i paper.pdf --ai
 
 # Batch convert directory
 for f in *.pdf; do
-  agenticpdf convert -i "$f" -f markdown -o "output/$(basename "$f" .pdf).md"
+  idoc convert -i "$f" -f markdown -o "output/$(basename "$f" .pdf).md"
 done
 
 # Stream large document to chunks
-agenticpdf chunk -i large-doc.pdf --stream --chunk-size 1500 -o chunks.json
+idoc chunk -i large-doc.pdf --stream --chunk-size 1500 -o chunks.json
 
 # Quick info + images in one pass  
-agenticpdf info -i report.pdf --pretty
-agenticpdf images -i report.pdf -o ./report-images/`} language="bash" />
+idoc info -i report.pdf --pretty
+idoc images -i report.pdf -o ./report-images/`} language="bash" />
       </section>
     </div>
   );

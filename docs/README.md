@@ -1,4 +1,4 @@
-# AgenticPDF Documentation
+# IronDocuments Documentation
 
 ## Directory Structure
 
@@ -39,8 +39,8 @@ Key documentation files in the root directory:
 ## 🛠️ API Documentation
 
 TypeScript API documentation:
-- **agenticpdf.d.ts** - TypeScript type definitions
-- **agenticpdf.ts** - Main library source with JSDoc comments
+- **irondocuments.d.ts** - TypeScript type definitions
+- **irondocuments.ts** - Main library source with JSDoc comments
 
 ## 📖 Usage Guides
 
@@ -78,6 +78,6 @@ All documentation follows:
 
 ## 🆘 Need Help?
 
-- **Issues:** [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
+- **Issues:** [GitHub Issues](https://github.com/nervosys/IronDocuments/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/nervosys/IronDocuments/discussions)
 - **Security:** See [SECURITY.md](../SECURITY.md) for reporting vulnerabilities

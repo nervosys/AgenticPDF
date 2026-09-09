@@ -8,19 +8,19 @@
  * Phase 21: AI/RAG (embedding generator, vector store helper, document diff, summarization, structured extraction)
  */
 
-import { AgenticPDF, EmbeddingProvider, VectorStoreAdapter } from '../../agenticpdf';
+import { IronDocuments, EmbeddingProvider, VectorStoreAdapter } from '../../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const SAMPLE_PDF = path.join(__dirname, '..', '..', 'demos', 'sample.pdf');
 
 let pdfBuffer: ArrayBuffer;
-let pdf: AgenticPDF;
+let pdf: IronDocuments;
 
 beforeAll(async () => {
   const raw = fs.readFileSync(SAMPLE_PDF);
   pdfBuffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-  pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+  pdf = await IronDocuments.fromBuffer(pdfBuffer);
 });
 
 afterAll(() => {
@@ -224,19 +224,19 @@ describe('Phase 20: PDF/A Converter', () => {
 describe('Phase 21: Cosine Similarity', () => {
   test('cosineSimilarity of identical vectors is 1', () => {
     const v = new Float32Array([1, 2, 3]);
-    expect(AgenticPDF.cosineSimilarity(v, v)).toBeCloseTo(1.0, 5);
+    expect(IronDocuments.cosineSimilarity(v, v)).toBeCloseTo(1.0, 5);
   });
 
   test('cosineSimilarity of orthogonal vectors is 0', () => {
     const a = new Float32Array([1, 0, 0]);
     const b = new Float32Array([0, 1, 0]);
-    expect(AgenticPDF.cosineSimilarity(a, b)).toBeCloseTo(0.0, 5);
+    expect(IronDocuments.cosineSimilarity(a, b)).toBeCloseTo(0.0, 5);
   });
 
   test('cosineSimilarity of opposite vectors is -1', () => {
     const a = new Float32Array([1, 0, 0]);
     const b = new Float32Array([-1, 0, 0]);
-    expect(AgenticPDF.cosineSimilarity(a, b)).toBeCloseTo(-1.0, 5);
+    expect(IronDocuments.cosineSimilarity(a, b)).toBeCloseTo(-1.0, 5);
   });
 });
 
@@ -330,7 +330,7 @@ describe('Phase 21: Vector Store Helper', () => {
 
 describe('Phase 21: Document Diff', () => {
   test('compareWith self returns high similarity', async () => {
-    const pdf2 = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf2 = await IronDocuments.fromBuffer(pdfBuffer);
     const diff = await pdf.compareWith(pdf2);
     expect(diff).toBeDefined();
     expect(diff.overallSimilarity).toBeGreaterThanOrEqual(0.9);

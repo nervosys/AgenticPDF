@@ -1,4 +1,4 @@
-# Security Patches for AgenticPDF CLI
+# Security Patches for IronDocuments CLI
 
 ## Critical Security Fixes
 
@@ -276,7 +276,7 @@ Direct casting of Node.js Buffer to ArrayBuffer without proper conversion.
 ### Current Code
 ```typescript
 const fileBuffer = fs.readFileSync(inputPath);
-const pdf = await AgenticPDF.fromBuffer(
+const pdf = await IronDocuments.fromBuffer(
     fileBuffer.buffer as ArrayBuffer,  // ⚠️ Unsafe
     { lazyLoad: true, maxMemoryUsage: 200 * 1024 * 1024 }
 );
@@ -292,7 +292,7 @@ const arrayBuffer = fileBuffer.buffer.slice(
     fileBuffer.byteOffset + fileBuffer.byteLength
 );
 
-const pdf = await AgenticPDF.fromBuffer(arrayBuffer, {
+const pdf = await IronDocuments.fromBuffer(arrayBuffer, {
     lazyLoad: true,
     maxMemoryUsage: 200 * 1024 * 1024
 });
@@ -315,7 +315,7 @@ Missing error handling for file system operations.
 
 ### Current Code
 ```typescript
-async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticPDF> {
+async function loadPDF(inputPath: string, options: CLIOptions): Promise<IronDocuments> {
     if (!inputPath) {
         throw new Error('Input file is required. Use -i or --input to specify the PDF file.');
     }
@@ -335,7 +335,7 @@ async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticP
 
 ### Fixed Code
 ```typescript
-async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticPDF> {
+async function loadPDF(inputPath: string, options: CLIOptions): Promise<IronDocuments> {
     if (!inputPath) {
         throw new Error('Input file is required. Use -i or --input to specify the PDF file.');
     }
@@ -388,7 +388,7 @@ async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticP
 
     // ✅ Handle PDF loading errors
     try {
-        const pdf = await AgenticPDF.fromBuffer(arrayBuffer, {
+        const pdf = await IronDocuments.fromBuffer(arrayBuffer, {
             lazyLoad: true,
             maxMemoryUsage: 200 * 1024 * 1024
         });
@@ -450,9 +450,9 @@ npm test
 npm test -- --testNamePattern="security"
 
 # Manual security testing
-apdf images -i test.pdf -o "../../../../etc/passwd"  # Should fail
-apdf chunk -i test.pdf --chunk-size -1               # Should fail
-apdf chunk -i test.pdf --chunk-size 99999999         # Should fail
+irondoc images -i test.pdf -o "../../../../etc/passwd"  # Should fail
+irondoc chunk -i test.pdf --chunk-size -1               # Should fail
+irondoc chunk -i test.pdf --chunk-size 99999999         # Should fail
 ```
 
 ### 5. Update tests

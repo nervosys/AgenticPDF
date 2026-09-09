@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
 /**
- * AgenticPDF CLI Entry Point (apdf)
+ * IronDocuments CLI Entry Point (apdf)
  * 
  * This file is the executable entry point for the CLI when installed via npm.
  * It launches the TypeScript CLI using tsx.
  * 
  * Usage:
- *   apdf <command> [options]
- *   agenticpdf <command> [options]
+ *   irondoc <command> [options]
+ *   idoc <command> [options]
  * 
- * After installing via: npm install -g agenticpdf
+ * After installing via: npm install -g irondocuments
  */
 
 import { spawn } from 'child_process';
@@ -67,7 +67,7 @@ child.on('exit', (code) => {
 
 // Handle errors
 child.on('error', (error) => {
-    console.error('\x1b[31m✗\x1b[0m Error running AgenticPDF CLI:', error.message);
+    console.error('\x1b[31m✗\x1b[0m Error running IronDocuments CLI:', error.message);
     console.error('\x1b[33m⚠\x1b[0m Make sure tsx is installed:');
     console.error('  Local: npm install tsx');
     console.error('  Global: npm install -g tsx');

@@ -3,7 +3,7 @@
  * Tests text, image, form, and annotation extraction
  */
 
-import { AgenticPDF } from '../../agenticpdf';
+import { IronDocuments } from '../../irondocuments';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 

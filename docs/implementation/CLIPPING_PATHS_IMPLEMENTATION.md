@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the implementation of PDF clipping path operators in AgenticPDF. Clipping paths define regions where painting operations occur, with everything outside the clipping region being invisible.
+This document describes the implementation of PDF clipping path operators in IronDocuments. Clipping paths define regions where painting operations occur, with everything outside the clipping region being invisible.
 
 ## Problem Statement
 
@@ -94,7 +94,7 @@ f      % Only visible within clipping region
 
 ### GraphicsState Extension
 
-**Location**: `agenticpdf.ts` ~line 4490
+**Location**: `irondocuments.ts` ~line 4490
 
 ```typescript
 interface GraphicsState {
@@ -115,7 +115,7 @@ interface GraphicsState {
 
 ### Clipping State in PDFGraphicsExecutor
 
-**Location**: `agenticpdf.ts` ~line 4570
+**Location**: `irondocuments.ts` ~line 4570
 
 ```typescript
 class PDFGraphicsExecutor {
@@ -130,7 +130,7 @@ class PDFGraphicsExecutor {
 
 ### W Operator Implementation (Nonzero Winding)
 
-**Location**: `agenticpdf.ts` ~line 4922
+**Location**: `irondocuments.ts` ~line 4922
 
 ```typescript
 private clipNonZero(): void {
@@ -152,7 +152,7 @@ private clipNonZero(): void {
 
 ### W\* Operator Implementation (Even-Odd)
 
-**Location**: `agenticpdf.ts` ~line 4932
+**Location**: `irondocuments.ts` ~line 4932
 
 ```typescript
 private clipEvenOdd(): void {
@@ -200,7 +200,7 @@ Canvas `ctx.restore()` automatically restores the previous clip region.
 
 **Save Graphics State** (updated):
 
-**Location**: `agenticpdf.ts` ~line 4664
+**Location**: `irondocuments.ts` ~line 4664
 
 ```typescript
 private saveGraphicsState(): void {
@@ -218,7 +218,7 @@ private saveGraphicsState(): void {
 
 **Restore Graphics State** (updated):
 
-**Location**: `agenticpdf.ts` ~line 4697
+**Location**: `irondocuments.ts` ~line 4697
 
 ```typescript
 private restoreGraphicsState(): void {
@@ -553,7 +553,7 @@ ctx.fillRect(0, 0, 500, 500);
 ```typescript
 describe('Clipping Paths', () => {
   it('should clip with nonzero winding', async () => {
-    const pdf = await AgenticPDF.fromFile('clip-test.pdf');
+    const pdf = await IronDocuments.fromFile('clip-test.pdf');
     const page = await pdf.getPage(1);
     
     const canvas = document.createElement('canvas');
@@ -642,7 +642,7 @@ describe('Clipping Paths', () => {
 ### Basic Clipping
 
 ```typescript
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const page = await pdf.getPage(1);
 
 // Clipping handled automatically during rendering

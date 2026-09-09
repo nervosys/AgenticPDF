@@ -11,19 +11,19 @@
  * - Additional extractText deep paths
  */
 
-import { AgenticPDF } from '../../agenticpdf';
+import { IronDocuments } from '../../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const SAMPLE_PDF = path.join(__dirname, '..', '..', 'demos', 'sample.pdf');
 
 let pdfBuffer: ArrayBuffer;
-let pdf: AgenticPDF;
+let pdf: IronDocuments;
 
 beforeAll(async () => {
   const raw = fs.readFileSync(SAMPLE_PDF);
   pdfBuffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-  pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+  pdf = await IronDocuments.fromBuffer(pdfBuffer);
 });
 
 afterAll(() => {
@@ -412,7 +412,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should parse minimal PDF', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     expect(minPdf).toBeDefined();
     expect(minPdf.getPageCount()).toBeGreaterThanOrEqual(1);
     minPdf.close();
@@ -420,7 +420,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should extract text from minimal PDF', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     const text = await minPdf.extractText();
     const fullText = text.map(t => t.text).join(' ');
     expect(fullText).toContain('Hello');
@@ -429,7 +429,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should handle getFormFields on simple PDF', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     const fields = await minPdf.getFormFields();
     expect(fields).toEqual([]);
     minPdf.close();
@@ -437,7 +437,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should handle getAnnotations on simple PDF', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     const annots = await minPdf.getAnnotations();
     expect(Array.isArray(annots)).toBe(true);
     minPdf.close();
@@ -445,7 +445,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should save minimal PDF without error', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     const blob = await minPdf.save();
     expect(blob.size).toBeGreaterThan(0);
     
@@ -457,7 +457,7 @@ describe('Synthetic minimal PDF', () => {
 
   test('should export minimal PDF as text', async () => {
     const buffer = buildMinimalPDF();
-    const minPdf = await AgenticPDF.fromBuffer(buffer);
+    const minPdf = await IronDocuments.fromBuffer(buffer);
     const result = await minPdf.exportAs('text');
     const txt = typeof result === 'string' ? result : await result.text();
     expect(txt).toContain('Hello');

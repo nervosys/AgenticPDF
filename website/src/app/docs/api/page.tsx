@@ -4,10 +4,10 @@ const methods = [
   {
     category: "Factory Methods",
     items: [
-      { sig: "static async fromFile(file: File | Blob, options?: PDFOptions): Promise<AgenticPDF>", desc: "Load a PDF from a File or Blob object (browser)." },
-      { sig: "static async fromUrl(url: string, options?: PDFOptions): Promise<AgenticPDF>", desc: "Fetch and load a PDF from a URL." },
-      { sig: "static async fromBuffer(buffer: ArrayBuffer, options?: PDFOptions): Promise<AgenticPDF>", desc: "Load a PDF from an ArrayBuffer (Node.js / browser)." },
-      { sig: "static fromStream(stream: ReadableStream<Uint8Array>, options?: PDFOptions): AgenticPDF", desc: "Load a PDF from a ReadableStream for progressive parsing." },
+      { sig: "static async fromFile(file: File | Blob, options?: PDFOptions): Promise<IronDocuments>", desc: "Load a PDF from a File or Blob object (browser)." },
+      { sig: "static async fromUrl(url: string, options?: PDFOptions): Promise<IronDocuments>", desc: "Fetch and load a PDF from a URL." },
+      { sig: "static async fromBuffer(buffer: ArrayBuffer, options?: PDFOptions): Promise<IronDocuments>", desc: "Load a PDF from an ArrayBuffer (Node.js / browser)." },
+      { sig: "static fromStream(stream: ReadableStream<Uint8Array>, options?: PDFOptions): IronDocuments", desc: "Load a PDF from a ReadableStream for progressive parsing." },
     ],
   },
   {
@@ -75,7 +75,7 @@ const methods = [
     ],
   },
   {
-    category: "aPDF (Agentic PDF)",
+    category: "aPDF (Iron Documents)",
     items: [
       { sig: "async generateAPDFMetadata(): Promise<APDFDocument>", desc: "Generate aPDF metadata with identifiers, structure, and AI content." },
       { sig: "async generateAPDFBinary(options?): Promise<Uint8Array>", desc: "Generate an aPDF binary file (PDF + metadata envelope)." },
@@ -109,7 +109,7 @@ export default function ApiPage() {
         API Reference
       </h1>
       <p className="mb-10" style={{ color: "var(--text-muted)" }}>
-        Complete reference for the <code>AgenticPDF</code> class and related APIs.
+        Complete reference for the <code>IronDocuments</code> class and related APIs.
       </p>
 
       {methods.map((group) => (

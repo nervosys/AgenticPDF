@@ -96,7 +96,7 @@ export default function StreamingDemoPage() {
   return (
     <DemoShell
       title="Streaming Demo"
-      description="Watch AgenticPDF process Shannon's 1948 paper in real-time using async generators. Supports abort signals for cancellation."
+      description="Watch IronDocuments process Shannon's 1948 paper in real-time using async generators. Supports abort signals for cancellation."
     >
       {/* Controls */}
       <div className="flex flex-wrap gap-3 mb-8">
@@ -173,9 +173,9 @@ export default function StreamingDemoPage() {
             content: (
               <CodeBlock
                 filename="streaming.ts"
-                code={`import { AgenticPDF } from 'agenticpdf';
+                code={`import { IronDocuments } from 'irondocuments';
 
-const pdf = await AgenticPDF.fromUrl('/shannon1948.pdf', {
+const pdf = await IronDocuments.fromUrl('/shannon1948.pdf', {
   lazyLoad: true,
   streamOptions: {
     chunkSize: 1024 * 1024,

@@ -8,17 +8,17 @@
  * - PDFWriter serialization
  */
 
-import AgenticPDF, {
+import IronDocuments, {
   FormFieldType,
   AnnotationType,
-} from '../../agenticpdf';
+} from '../../irondocuments';
 
 // ============================================================================
 // ContentStreamParser
 // ============================================================================
 
 // ContentStreamParser is not exported, so we access it via the module internals
-// We'll test it through the AgenticPDF import and internal class access
+// We'll test it through the IronDocuments import and internal class access
 let ContentStreamParser: any;
 let PDFExporter: any;
 let FormExtractor: any;
@@ -31,7 +31,7 @@ let PDFObjectType: any;
 beforeAll(() => {
   // These classes aren't exported but exist in the module scope
   // We access them via the module's internal scope through test helpers
-  const mod = require('../../agenticpdf');
+  const mod = require('../../irondocuments');
   ContentStreamParser = mod.ContentStreamParser;
   PDFExporter = mod.PDFExporter;
   FormExtractor = mod.FormExtractor;

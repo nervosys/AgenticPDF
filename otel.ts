@@ -2,7 +2,7 @@
 // Copyright (c) 2026 NERVOSYS, LLC. Dual-licensed under the GNU AGPLv3 or a
 // commercial license; see LICENSE and LICENSE-AGPL.txt.
 /**
- * otel.ts — OpenTelemetry instrumentation for AgenticPDF.
+ * otel.ts — OpenTelemetry instrumentation for IronDocuments.
  *
  * Initialises the OTEL SDK using standard OTEL_* environment variables
  * (loaded from .env via loadEnv()). Provides a tracer and meter that the
@@ -60,7 +60,7 @@ loadEnv();
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-/** Minimal subset of OTEL Tracer used by AgenticPDF. */
+/** Minimal subset of OTEL Tracer used by IronDocuments. */
 export interface OtelTracer {
   startActiveSpan<T>(name: string, fn: (span: OtelSpan) => T): T;
 }
@@ -134,11 +134,11 @@ export function ensureOtelStarted(): void {
     try {
       parsed = new URL(endpoint);
     } catch {
-      console.warn('[agenticpdf:otel] Invalid OTEL_EXPORTER_OTLP_ENDPOINT — OTEL disabled');
+      console.warn('[irondocuments:otel] Invalid OTEL_EXPORTER_OTLP_ENDPOINT — OTEL disabled');
       return;
     }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      console.warn('[agenticpdf:otel] OTEL endpoint must use http(s) — OTEL disabled');
+      console.warn('[irondocuments:otel] OTEL endpoint must use http(s) — OTEL disabled');
       return;
     }
 
@@ -151,12 +151,12 @@ export function ensureOtelStarted(): void {
     const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = require('@opentelemetry/semantic-conventions');
     const otelApi = require('@opentelemetry/api');
 
-    const serviceName = process.env.OTEL_SERVICE_NAME || 'agenticpdf';
+    const serviceName = process.env.OTEL_SERVICE_NAME || 'irondocuments';
 
     const attributes = {
       [ATTR_SERVICE_NAME]: serviceName,
       [ATTR_SERVICE_VERSION]: '1.0.0',
-      'library.name': 'agenticpdf',
+      'library.name': 'irondocuments',
     };
 
     // SDK 2.x replaced the `Resource` class with `resourceFromAttributes`.
@@ -183,8 +183,8 @@ export function ensureOtelStarted(): void {
     sdk.start();
 
     // Grab tracer & meter from the running SDK
-    _tracer = otelApi.trace.getTracer('agenticpdf', '1.0.0') as OtelTracer;
-    _meter = otelApi.metrics.getMeter('agenticpdf', '1.0.0') as OtelMeter;
+    _tracer = otelApi.trace.getTracer('irondocuments', '1.0.0') as OtelTracer;
+    _meter = otelApi.metrics.getMeter('irondocuments', '1.0.0') as OtelMeter;
 
     // Graceful shutdown
     if (typeof process.on === 'function') {
@@ -201,7 +201,7 @@ export function ensureOtelStarted(): void {
     const code = (error as { code?: string } | null)?.code;
     if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_MODULE_NOT_FOUND') {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[agenticpdf:otel] OTEL requested but failed to start — ${message}`);
+      console.warn(`[irondocuments:otel] OTEL requested but failed to start — ${message}`);
     }
   }
 }

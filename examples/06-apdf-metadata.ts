@@ -1,5 +1,5 @@
 /**
- * aPDF (Agentic PDF) Metadata Examples
+ * aPDF (Iron Documents) Metadata Examples
  *
  * This example demonstrates the aPDF format — a rich, machine-readable
  * metadata envelope for PDF documents optimized for:
@@ -9,7 +9,7 @@
  * - Structured export for downstream systems
  */
 
-import AgenticPDF from '../agenticpdf';
+import IronDocuments from '../irondocuments';
 
 // ============================================================================
 // Example 1: Generate aPDF metadata from a research paper
@@ -18,7 +18,7 @@ import AgenticPDF from '../agenticpdf';
 async function generateAPDFFromPaper(file: File): Promise<void> {
   console.log('=== Example 1: aPDF Metadata from Research Paper ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -90,7 +90,7 @@ async function generateAPDFFromPaper(file: File): Promise<void> {
 async function exportAsAPDF(file: File): Promise<string> {
   console.log('\n=== Example 2: Export as aPDF JSON ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   try {
     // Export via the standard exportAs() API
@@ -128,7 +128,7 @@ async function buildHuggingFacePaperIndex(files: File[]): Promise<PaperIndex[]> 
   const index: PaperIndex[] = [];
 
   for (const file of files) {
-    const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+    const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
     try {
       const apdf = await pdf.generateAPDFMetadata();
@@ -177,7 +177,7 @@ interface RAGDocument {
 async function apdfRAGPipeline(file: File): Promise<RAGDocument[]> {
   console.log('\n=== Example 4: aPDF-Powered RAG Pipeline ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -218,8 +218,8 @@ async function apdfRAGPipeline(file: File): Promise<RAGDocument[]> {
 async function compareDocuments(fileA: File, fileB: File): Promise<void> {
   console.log('\n=== Example 5: Document Comparison via aPDF ===\n');
 
-  const pdfA = await AgenticPDF.fromFile(fileA, { lazyLoad: true });
-  const pdfB = await AgenticPDF.fromFile(fileB, { lazyLoad: true });
+  const pdfA = await IronDocuments.fromFile(fileA, { lazyLoad: true });
+  const pdfB = await IronDocuments.fromFile(fileB, { lazyLoad: true });
 
   try {
     const [apdfA, apdfB] = await Promise.all([
@@ -271,7 +271,7 @@ async function compareDocuments(fileA: File, fileB: File): Promise<void> {
 async function generateJsonLD(file: File): Promise<object> {
   console.log('\n=== Example 6: JSON-LD Linked Data Export ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   try {
     const apdf = await pdf.generateAPDFMetadata();

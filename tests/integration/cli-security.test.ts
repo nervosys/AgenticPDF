@@ -1,5 +1,5 @@
 /**
- * AgenticPDF CLI Security Tests
+ * IronDocuments CLI Security Tests
  * 
  * Tests for security fixes and vulnerability prevention
  */

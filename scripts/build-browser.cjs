@@ -1,11 +1,11 @@
-// Build script for agenticpdf-browser.js
-// Compiles agenticpdf.ts to browser-compatible JavaScript
+// Build script for irondocuments-browser.js
+// Compiles irondocuments.ts to browser-compatible JavaScript
 
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-console.log('🔨 Building AgenticPDF browser bundle...');
+console.log('🔨 Building IronDocuments browser bundle...');
 
 // Create temp directory for build
 const tempDir = path.join(__dirname, '.temp-build');
@@ -29,7 +29,7 @@ const browserTsConfig = {
         removeComments: false,
         sourceMap: false
     },
-    include: [path.join(__dirname, "../agenticpdf.ts")],
+    include: [path.join(__dirname, "../irondocuments.ts")],
     exclude: ["node_modules", "dist", "coverage", "tests", "examples"]
 };
 
@@ -45,7 +45,7 @@ try {
     console.log('✅ TypeScript compiled successfully');
 
     // Read compiled JavaScript
-    const compiledPath = path.join(tempDir, 'agenticpdf.js');
+    const compiledPath = path.join(tempDir, 'irondocuments.js');
     let jsContent = fs.readFileSync(compiledPath, 'utf-8');
 
     console.log('🔧 Processing for browser compatibility...');
@@ -71,7 +71,7 @@ try {
 
     // Wrap in IIFE and expose to window
     const browserBundle = `/**
- * AgenticPDF - Browser Bundle
+ * IronDocuments - Browser Bundle
  * Modern, TypeScript-native PDF processing library
  * Version: 1.0.1
  * Compiled: ${new Date().toISOString()}
@@ -84,7 +84,7 @@ ${jsContent}
 
     // Export to global scope
     if (typeof window !== 'undefined') {
-        window.AgenticPDF = AgenticPDF;
+        window.IronDocuments = IronDocuments;
         window.TextExtractor = TextExtractor;
         window.ImageExtractor = ImageExtractor;
         window.FormExtractor = FormExtractor;
@@ -94,7 +94,7 @@ ${jsContent}
         window.ThemeManager = ThemeManager;
     }
     if (typeof global !== 'undefined') {
-        global.AgenticPDF = AgenticPDF;
+        global.IronDocuments = IronDocuments;
         global.TextExtractor = TextExtractor;
         global.ImageExtractor = ImageExtractor;
         global.FormExtractor = FormExtractor;
@@ -108,18 +108,18 @@ ${jsContent}
 `;
 
     // Write browser bundle
-    const outputPath = path.join(__dirname, 'agenticpdf-browser.js');
+    const outputPath = path.join(__dirname, 'irondocuments-browser.js');
     fs.writeFileSync(outputPath, browserBundle);
 
-    console.log('✅ Browser bundle created: agenticpdf-browser.js');
+    console.log('✅ Browser bundle created: irondocuments-browser.js');
 
     // Copy to project root
-    const rootPath = path.join(__dirname, '..', 'agenticpdf-browser.js');
+    const rootPath = path.join(__dirname, '..', 'irondocuments-browser.js');
     fs.copyFileSync(outputPath, rootPath);
     console.log('✅ Copied to project root');
 
     // Copy to demos folder for testing
-    const demosPath = path.join(__dirname, '..', 'demos', 'agenticpdf-browser.js');
+    const demosPath = path.join(__dirname, '..', 'demos', 'irondocuments-browser.js');
     fs.copyFileSync(outputPath, demosPath);
     console.log('✅ Copied to demos folder');
 

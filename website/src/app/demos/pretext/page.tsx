@@ -89,7 +89,7 @@ const sampleTexts: Record<string, string> = {
     "The quick brown fox jumps over the lazy dog. Typography is the art and technique of arranging type to make written language legible, readable, and appealing when displayed. The arrangement of type involves selecting typefaces, point sizes, line lengths, line-spacing, and letter-spacing.",
   cjk: "吾輩は猫である。名前はまだ無い。どこで生まれたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。",
   mixed:
-    "AgenticPDF v1.0.0 — AI-native PDF処理ライブラリ。Streaming-first architecture with 零依存関係 (zero dependencies). Supports 日本語、中文、한국어 and more.",
+    "IronDocuments v1.0.0 — AI-native PDF処理ライブラリ。Streaming-first architecture with 零依存関係 (zero dependencies). Supports 日本語、中文、한국어 and more.",
   code: "function fibonacci(n: number): number {\n  if (n <= 1) return n;\n  return fibonacci(n - 1) + fibonacci(n - 2);\n}\n\nconsole.log(fibonacci(10)); // 55",
 };
 
@@ -355,15 +355,15 @@ export default function PretextDemoPage() {
             content: (
               <CodeBlock
                 filename="pretext-layout.ts"
-                code={`import { AgenticPDF, PretextLayout } from 'agenticpdf';
+                code={`import { IronDocuments, PretextLayout } from 'irondocuments';
 
 // Enable pretext layout
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   enablePretextLayout: true
 });
 
 // Prepare text with measurements
-const prepared = AgenticPDF.prepareText(
+const prepared = IronDocuments.prepareText(
   'The quick brown fox jumps over the lazy dog.',
   '16px system-ui',
   { whiteSpace: 'normal' }
@@ -371,7 +371,7 @@ const prepared = AgenticPDF.prepareText(
 // prepared.widths: Float64Array of per-character widths
 
 // Layout with line-breaking
-const result = AgenticPDF.layoutText(prepared, 400, 24);
+const result = IronDocuments.layoutText(prepared, 400, 24);
 console.log(\`Total lines: \${result.lineCount}\`);
 console.log(\`Total height: \${result.height}px\`);
 

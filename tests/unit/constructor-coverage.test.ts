@@ -3,22 +3,22 @@
  * Tests direct constructor usage and private method paths not covered by factory methods
  */
 
-import { AgenticPDF, PDFOptions } from '../../agenticpdf';
+import { IronDocuments, PDFOptions } from '../../irondocuments';
 import { MockPDFGenerator, MockReadableStream } from '../mocks';
 
 describe('Constructor and Direct Instantiation Coverage', () => {
     describe('Direct Constructor Usage', () => {
         it('should create instance with no options', () => {
-            const pdf = new (AgenticPDF as any)(); // Access constructor directly
-            expect(pdf).toBeInstanceOf(AgenticPDF);
+            const pdf = new (IronDocuments as any)(); // Access constructor directly
+            expect(pdf).toBeInstanceOf(IronDocuments);
             expect((pdf as any).options).toBeDefined();
             expect((pdf as any).options.renderOptions).toBeDefined();
         });
 
         it('should create instance with empty options object', () => {
             const options: PDFOptions = {};
-            const pdf = new (AgenticPDF as any)(options);
-            expect(pdf).toBeInstanceOf(AgenticPDF);
+            const pdf = new (IronDocuments as any)(options);
+            expect(pdf).toBeInstanceOf(IronDocuments);
             expect((pdf as any).options).toBe(options);
             expect((pdf as any).options.renderOptions).toBeDefined();
         });
@@ -30,8 +30,8 @@ describe('Constructor and Direct Instantiation Coverage', () => {
                     imageQuality: 0.95
                 }
             };
-            const pdf = new (AgenticPDF as any)(options);
-            expect(pdf).toBeInstanceOf(AgenticPDF);
+            const pdf = new (IronDocuments as any)(options);
+            expect(pdf).toBeInstanceOf(IronDocuments);
             expect((pdf as any).options.renderOptions.scale).toBe(2.0);
         });
 
@@ -51,8 +51,8 @@ describe('Constructor and Direct Instantiation Coverage', () => {
                 useWebWorkers: true,
                 workerUrl: '/custom-worker.js'
             };
-            const pdf = new (AgenticPDF as any)(options);
-            expect(pdf).toBeInstanceOf(AgenticPDF);
+            const pdf = new (IronDocuments as any)(options);
+            expect(pdf).toBeInstanceOf(IronDocuments);
             expect((pdf as any).options).toEqual(options);
             expect((pdf as any).options.renderOptions).toBeDefined();
         });
@@ -62,7 +62,7 @@ describe('Constructor and Direct Instantiation Coverage', () => {
         let pdf: any;
 
         beforeEach(() => {
-            pdf = new (AgenticPDF as any)();
+            pdf = new (IronDocuments as any)();
         });
 
         it('should call loadFromStream method directly', () => {
@@ -159,7 +159,7 @@ describe('Constructor and Direct Instantiation Coverage', () => {
 
     describe('Internal State Management', () => {
         it('should initialize all private properties correctly', () => {
-            const pdf = new (AgenticPDF as any)();
+            const pdf = new (IronDocuments as any)();
 
             expect(pdf.buffer).toBeUndefined();
             expect(pdf.stream).toBeUndefined();
@@ -177,12 +177,12 @@ describe('Constructor and Direct Instantiation Coverage', () => {
 
     describe('Options Validation and Edge Cases', () => {
         it('should handle null options with error', () => {
-            expect(() => new (AgenticPDF as any)(null)).toThrow();
+            expect(() => new (IronDocuments as any)(null)).toThrow();
         });
 
         it('should handle undefined options gracefully', () => {
-            const pdf = new (AgenticPDF as any)(undefined);
-            expect(pdf).toBeInstanceOf(AgenticPDF);
+            const pdf = new (IronDocuments as any)(undefined);
+            expect(pdf).toBeInstanceOf(IronDocuments);
             expect((pdf as any).options).toBeDefined();
             expect((pdf as any).options.renderOptions).toBeDefined();
         });
@@ -198,7 +198,7 @@ describe('Constructor and Direct Instantiation Coverage', () => {
                 renderOptions: customRenderOptions
             };
 
-            const pdf = new (AgenticPDF as any)(options);
+            const pdf = new (IronDocuments as any)(options);
             expect((pdf as any).options.renderOptions).toBe(customRenderOptions);
         });
     });

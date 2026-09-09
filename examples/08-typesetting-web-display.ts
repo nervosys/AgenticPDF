@@ -6,8 +6,8 @@
  * accessible HTML, and print-ready typesetting.
  */
 
-import AgenticPDF from '../agenticpdf';
-import type { APDFDocument } from '../agenticpdf';
+import IronDocuments from '../irondocuments';
+import type { APDFDocument } from '../irondocuments';
 
 // ============================================================================
 // Example 1: Generate CSS Stylesheet from aPDF Display Hints
@@ -175,7 +175,7 @@ function generateCSS(apdf: APDFDocument, scopeSelector = '.apdf-document'): stri
 async function cssFromDisplayHints(file: File): Promise<string> {
   console.log('=== Example 1: CSS from aPDF Display Hints ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -209,7 +209,7 @@ async function cssFromDisplayHints(file: File): Promise<string> {
 async function responsiveHTMLArticle(file: File): Promise<string> {
   console.log('\n=== Example 2: Responsive HTML Article ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -422,7 +422,7 @@ interface FontAuditResult {
 async function fontAuditAndWebLoader(file: File): Promise<{ audit: FontAuditResult[]; loaderHTML: string }> {
   console.log('\n=== Example 3: Font Audit & Web Font Loader ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -485,7 +485,7 @@ async function fontAuditAndWebLoader(file: File): Promise<{ audit: FontAuditResu
 async function accessibleReadingView(file: File): Promise<string> {
   console.log('\n=== Example 4: Accessible Reading View ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -590,7 +590,7 @@ async function accessibleReadingView(file: File): Promise<string> {
 async function printReadyStylesheet(file: File): Promise<string> {
   console.log('\n=== Example 5: Print-Ready Typesetting Stylesheet ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -763,7 +763,7 @@ async function printReadyStylesheet(file: File): Promise<string> {
 async function socialMetaTags(file: File, pageUrl: string): Promise<string> {
   console.log('\n=== Example 6: Open Graph & Twitter Card Meta Tags ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -877,7 +877,7 @@ async function canvasRenderWithOverlay(
   // It demonstrates the API calls; in Node.js it logs what would happen.
   const isBrowser = typeof HTMLCanvasElement !== 'undefined';
 
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   try {
     const apdf = await pdf.generateAPDFMetadata();
@@ -993,7 +993,7 @@ interface ExportResult {
 async function displayAwareExportPipeline(file: File): Promise<ExportResult[]> {
   console.log('\n=== Example 8: Display-Aware Multi-Format Export ===\n');
 
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   try {
     const apdf = await pdf.generateAPDFMetadata();

@@ -1,11 +1,11 @@
 /**
- * Validation script for AgenticPDF Agent Skills & Tools Runtime.
+ * Validation script for IronDocuments Agent Skills & Tools Runtime.
  * Tests: skill registration, tool dispatch, security policies, middleware, context lifecycle.
  *
  * Usage: npx tsx scripts/test-agent-skills.ts
  */
 
-import AgenticPDF, {
+import IronDocuments, {
   AgentContext,
   type AgentSkill,
   type AgentTool,
@@ -14,7 +14,7 @@ import AgenticPDF, {
   type AgentMiddleware,
   type AgentSecurityPolicy,
   type AgentContextOptions,
-} from '../agenticpdf.ts';
+} from '../irondocuments.ts';
 
 let passed = 0;
 let failed = 0;
@@ -33,7 +33,7 @@ function assert(condition: boolean, message: string): void {
 
 console.log('\n🔹 1. Built-in Skill Registration');
 
-const skills = AgenticPDF.listSkills();
+const skills = IronDocuments.listSkills();
 assert(skills.length >= 6, `At least 6 built-in skills registered (got ${skills.length})`);
 
 const skillIds = skills.map(s => s.id);
@@ -44,7 +44,7 @@ assert(skillIds.includes('pdf-export'), 'pdf-export skill exists');
 assert(skillIds.includes('apdf-format'), 'apdf-format skill exists');
 assert(skillIds.includes('introspection'), 'introspection skill exists');
 
-const extraction = AgenticPDF.getSkill('pdf-extraction');
+const extraction = IronDocuments.getSkill('pdf-extraction');
 assert(extraction !== undefined, 'getSkill() returns pdf-extraction');
 assert(extraction!.tools.length === 6, `pdf-extraction has 6 tools (got ${extraction!.tools.length})`);
 
@@ -52,14 +52,14 @@ assert(extraction!.tools.length === 6, `pdf-extraction has 6 tools (got ${extrac
 
 console.log('\n🔹 2. Tool Listing & Filtering');
 
-const allTools = AgenticPDF.listTools();
+const allTools = IronDocuments.listTools();
 assert(allTools.length >= 24, `At least 24 tools total (got ${allTools.length})`);
 
-const extractionTools = AgenticPDF.listTools('extraction');
+const extractionTools = IronDocuments.listTools('extraction');
 assert(extractionTools.length === 5, `5 extraction tools (got ${extractionTools.length})`);
 assert(extractionTools.every(t => t.category === 'extraction'), 'All filtered tools have correct category');
 
-const introspectionTools = AgenticPDF.listTools('introspection');
+const introspectionTools = IronDocuments.listTools('introspection');
 assert(introspectionTools.length >= 4, `At least 4 introspection tools (got ${introspectionTools.length})`);
 
 // ── 3. Custom Skill Registration ───────────────────────────────────────────
@@ -83,37 +83,37 @@ const customSkill: AgentSkill = {
   tools: [customTool],
 };
 
-AgenticPDF.registerSkill(customSkill);
-assert(AgenticPDF.getSkill('test-custom-skill') !== undefined, 'Custom skill registered successfully');
+IronDocuments.registerSkill(customSkill);
+assert(IronDocuments.getSkill('test-custom-skill') !== undefined, 'Custom skill registered successfully');
 
 let duplicateError = false;
 try {
-  AgenticPDF.registerSkill(customSkill);
+  IronDocuments.registerSkill(customSkill);
 } catch {
   duplicateError = true;
 }
 assert(duplicateError, 'Duplicate skill registration throws error');
 
-const removed = AgenticPDF.unregisterSkill('test-custom-skill');
+const removed = IronDocuments.unregisterSkill('test-custom-skill');
 assert(removed === true, 'unregisterSkill() returns true');
-assert(AgenticPDF.getSkill('test-custom-skill') === undefined, 'Skill removed after unregister');
+assert(IronDocuments.getSkill('test-custom-skill') === undefined, 'Skill removed after unregister');
 
-const removedAgain = AgenticPDF.unregisterSkill('test-custom-skill');
+const removedAgain = IronDocuments.unregisterSkill('test-custom-skill');
 assert(removedAgain === false, 'unregisterSkill() returns false for missing skill');
 
 // Re-register for later tests
-AgenticPDF.registerSkill(customSkill);
+IronDocuments.registerSkill(customSkill);
 
 // ── 4. AgentContext with Introspection Tools ───────────────────────────────
 
 console.log('\n🔹 4. AgentContext with Introspection Tools');
 
 // Use a minimal "document" by constructing directly — introspection tools don't need a real PDF
-const dummyPdf = Object.create(AgenticPDF.prototype);
+const dummyPdf = Object.create(IronDocuments.prototype);
 dummyPdf._pages = [];
 dummyPdf._metadata = { pageCount: 0, pdfVersion: '1.7' };
 dummyPdf._closed = false;
-dummyPdf.createAgentSession = AgenticPDF.prototype.createAgentSession;
+dummyPdf.createAgentSession = IronDocuments.prototype.createAgentSession;
 
 const ctx = new AgentContext(dummyPdf);
 assert(ctx.session.sessionId.startsWith('session_'), 'Context created with valid session ID');
@@ -240,12 +240,12 @@ const throwingSkill: AgentSkill = {
     handler: async () => { throw new Error('intentional error'); },
   }],
 };
-AgenticPDF.registerSkill(throwingSkill);
+IronDocuments.registerSkill(throwingSkill);
 middlewareLog.length = 0;
 const mwCtx2 = new AgentContext(dummyPdf, { middleware: [loggingMiddleware] });
 await mwCtx2.executeTool({ name: 'test_throw' });
 assert(middlewareLog.includes('error:test_throw'), 'onError middleware called on handler exception');
-AgenticPDF.unregisterSkill('test-throwing-skill');
+IronDocuments.unregisterSkill('test-throwing-skill');
 
 // ── 9. Skill Activation ────────────────────────────────────────────────────
 
@@ -295,21 +295,21 @@ assert(closedResult.error?.includes('closed'), 'Error mentions closed');
 
 console.log('\n🔹 12. Ontology Integration');
 
-const ontology = AgenticPDF.describe();
+const ontology = IronDocuments.describe();
 const concepts = ontology.concepts.map(c => c.id);
 assert(concepts.includes('AgentSkill'), 'AgentSkill concept in ontology');
 assert(concepts.includes('AgentTool'), 'AgentTool concept in ontology');
 assert(concepts.includes('AgentContext'), 'AgentContext concept in ontology');
 
-const capabilities = AgenticPDF.getCapabilities();
+const capabilities = IronDocuments.getCapabilities();
 const capIds = capabilities.map(c => c.id);
 assert(capIds.includes('agent-skills'), 'agent-skills capability exists');
 
-const workflows = AgenticPDF.getWorkflows();
+const workflows = IronDocuments.getWorkflows();
 const wfIds = workflows.map(w => w.id);
 assert(wfIds.includes('agent-tool-execution'), 'agent-tool-execution workflow exists');
 
-const schemas = AgenticPDF.getJSONSchemas();
+const schemas = IronDocuments.getJSONSchemas();
 assert(schemas.AgentTool !== undefined, 'AgentTool JSON schema exists');
 assert(schemas.AgentSkill !== undefined, 'AgentSkill JSON schema exists');
 assert(schemas.AgentToolCall !== undefined, 'AgentToolCall JSON schema exists');
@@ -318,12 +318,12 @@ assert(schemas.AgentSecurityPolicy !== undefined, 'AgentSecurityPolicy JSON sche
 assert(schemas.AgentMiddleware !== undefined, 'AgentMiddleware JSON schema exists');
 assert(schemas.AgentContextOptions !== undefined, 'AgentContextOptions JSON schema exists');
 
-const agentInfo = AgenticPDF.describeForAgent('openai');
+const agentInfo = IronDocuments.describeForAgent('openai');
 assert(agentInfo.agentGuidance.agentSkillsGuidance !== undefined, 'Agent guidance includes agentSkillsGuidance');
 
 // ── Cleanup ────────────────────────────────────────────────────────────────
 
-AgenticPDF.unregisterSkill('test-custom-skill');
+IronDocuments.unregisterSkill('test-custom-skill');
 
 // ── Results ────────────────────────────────────────────────────────────────
 

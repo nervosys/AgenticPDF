@@ -4,9 +4,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>aPDF Viewer — AgenticPDF</title>
+  <title>aPDF Viewer — IronDocuments</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-  <script src="agenticpdf-browser.js"></script>
+  <script src="irondocuments-browser.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -565,7 +565,7 @@
   <script>
     /* ================================================================
        aPDF Viewer — client-side aPDF metadata generation + PDF render
-       Uses AgenticPDF browser bundle APIs:
+       Uses IronDocuments browser bundle APIs:
          getMetadata(), getAIFeatures(), extractText(),
          getAllPages(), renderPage()
        ================================================================ */
@@ -681,7 +681,7 @@
         const buffer = await file.arrayBuffer();
         showProgress(20);
 
-        pdfDoc = await AgenticPDF.fromBuffer(buffer, { lazyLoad: false, enableWorkers: false });
+        pdfDoc = await IronDocuments.fromBuffer(buffer, { lazyLoad: false, enableWorkers: false });
         showProgress(40);
 
         const metadata = pdfDoc.getMetadata();
@@ -1017,7 +1017,7 @@
           suggestedTheme: theme,
         },
         provenance: {
-          generator: 'AgenticPDF (browser)',
+          generator: 'IronDocuments (browser)',
           generatorVersion: '1.0.0',
           generatedAt: new Date().toISOString(),
           pipeline: ['pdf-parse', 'structural-analysis', 'semantic-chunking', 'nlp-preparation'],

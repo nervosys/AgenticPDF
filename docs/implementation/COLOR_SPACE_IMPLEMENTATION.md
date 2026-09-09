@@ -8,7 +8,7 @@
 
 ## Overview
 
-This document details the implementation of advanced color space support in AgenticPDF, including ICCBased color profiles, Indexed (palette-based) colors, Pattern color spaces, Separation and DeviceN spot colors, and Calibrated color spaces.
+This document details the implementation of advanced color space support in IronDocuments, including ICCBased color profiles, Indexed (palette-based) colors, Pattern color spaces, Separation and DeviceN spot colors, and Calibrated color spaces.
 
 ---
 
@@ -881,4 +881,4 @@ H = ... (complex hue calculation)
 
 ---
 
-*This implementation significantly enhances AgenticPDF's color handling capabilities, enabling professional-grade PDF rendering with support for industry-standard color workflows.*
+*This implementation significantly enhances IronDocuments's color handling capabilities, enabling professional-grade PDF rendering with support for industry-standard color workflows.*

@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * AgenticPDF Examples Runner (Simplified)
+ * IronDocuments Examples Runner (Simplified)
  * 
- * A lightweight script to run AgenticPDF examples with Node.js compatibility.
+ * A lightweight script to run IronDocuments examples with Node.js compatibility.
  * This version includes fallbacks for Node.js environment.
  */
 
@@ -110,7 +110,7 @@ const mockExamples = [
 
 // Show help
 function showHelp(): void {
-    console.log(colorize('AgenticPDF Examples Runner', 'bright'));
+    console.log(colorize('IronDocuments Examples Runner', 'bright'));
     console.log(colorize('========================\n', 'cyan'));
     console.log('Usage:');
     console.log('  npm run examples                     # Interactive mode');
@@ -288,7 +288,7 @@ async function runSingleExample(example: any, file: any, apiKey?: string): Promi
 
 // Main interactive mode
 async function runInteractiveMode(): Promise<void> {
-    console.log(colorize('🚀 AgenticPDF Examples Runner (Simplified)', 'bright'));
+    console.log(colorize('🚀 IronDocuments Examples Runner (Simplified)', 'bright'));
     console.log(colorize('========================================\n', 'cyan'));
     console.log(colorize('ℹ️  Running in Node.js compatibility mode with mock examples', 'yellow'));
     console.log(colorize('💡 For full functionality, use: npm run examples:demo\n', 'blue'));

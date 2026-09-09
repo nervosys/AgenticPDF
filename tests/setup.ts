@@ -4,7 +4,7 @@
  */
 
 // Disable telemetry during tests
-process.env.AGENTICPDF_NO_TELEMETRY = '1';
+process.env.IRONDOCUMENTS_NO_TELEMETRY = '1';
 
 import * as Mocks from './mocks';
 

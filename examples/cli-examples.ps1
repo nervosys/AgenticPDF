@@ -1,7 +1,7 @@
-# AgenticPDF CLI Examples
+# IronDocuments CLI Examples
 # Practical examples for common PDF processing tasks
 
-Write-Host "AgenticPDF CLI - Usage Examples" -ForegroundColor Cyan
+Write-Host "IronDocuments CLI - Usage Examples" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor DarkGray
 Write-Host ""
 

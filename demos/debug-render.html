@@ -12,11 +12,11 @@ canvas { border: 1px solid #555; margin: 10px 0; display: block; }
 </style>
 </head>
 <body>
-<h2>AgenticPDF Debug Render Pipeline</h2>
+<h2>IronDocuments Debug Render Pipeline</h2>
 <div id="log"></div>
 <div id="canvases"></div>
 
-<script src="agenticpdf-browser.js"></script>
+<script src="irondocuments-browser.js"></script>
 <script>
 const logEl = document.getElementById('log');
 function log(msg, cls) {
@@ -32,9 +32,9 @@ function log(msg, cls) {
         log('=== Debug Render Pipeline ===');
 
         // 1. Check library
-        log(`AgenticPDF available: ${typeof AgenticPDF}`);
-        if (typeof AgenticPDF === 'undefined') {
-            log('FATAL: AgenticPDF not found', 'error');
+        log(`IronDocuments available: ${typeof IronDocuments}`);
+        if (typeof IronDocuments === 'undefined') {
+            log('FATAL: IronDocuments not found', 'error');
             return;
         }
 
@@ -47,7 +47,7 @@ function log(msg, cls) {
 
         // 3. Parse PDF
         log('Parsing PDF...');
-        const pdf = await AgenticPDF.fromBuffer(buf, { lazyLoad: false });
+        const pdf = await IronDocuments.fromBuffer(buf, { lazyLoad: false });
         log('PDF parsed', 'success');
 
         const meta = pdf.getMetadata();

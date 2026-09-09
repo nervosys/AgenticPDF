@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-We actively support the following versions of AgenticPDF with security updates:
+We actively support the following versions of IronDocuments with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
@@ -11,7 +11,7 @@ We actively support the following versions of AgenticPDF with security updates:
 
 ## Reporting a Vulnerability
 
-The AgenticPDF team takes security seriously. If you discover a security vulnerability, please follow these steps:
+The IronDocuments team takes security seriously. If you discover a security vulnerability, please follow these steps:
 
 ### 🔒 Private Disclosure
 
@@ -20,7 +20,7 @@ The AgenticPDF team takes security seriously. If you discover a security vulnera
 Instead, please report security issues privately by:
 
 1. **Email**: Send details to [security@nervosys.ai](mailto:security@nervosys.ai)
-2. **GitHub Security**: Use [GitHub's private vulnerability reporting](https://github.com/nervosys/AgenticPDF/security/advisories/new)
+2. **GitHub Security**: Use [GitHub's private vulnerability reporting](https://github.com/nervosys/IronDocuments/security/advisories/new)
 
 ### 📝 What to Include
 
@@ -53,7 +53,7 @@ We commit to the following response times:
 
 ## 🛡️ Security Best Practices
 
-When using AgenticPDF:
+When using IronDocuments:
 
 ### Input Validation
 
@@ -72,7 +72,7 @@ function validatePDFSource(url: string): boolean {
 
 // Use validation before processing
 if (validatePDFSource(pdfUrl)) {
-  const pdf = await AgenticPDF.fromUrl(pdfUrl);
+  const pdf = await IronDocuments.fromUrl(pdfUrl);
   // Process safely...
 }
 ```
@@ -81,7 +81,7 @@ if (validatePDFSource(pdfUrl)) {
 
 ```typescript
 // Set memory limits to prevent DoS
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   maxMemoryUsage: 50 * 1024 * 1024, // 50MB limit
   maxProcessingTime: 30000 // 30 second timeout
 });
@@ -104,7 +104,7 @@ const safeText = sanitizeText(text);
 
 ## 🔍 Security Features
 
-AgenticPDF includes several built-in security features:
+IronDocuments includes several built-in security features:
 
 ### Safe PDF Processing
 
@@ -143,14 +143,14 @@ Please be aware of these security considerations:
 
 ## 📋 Security Checklist
 
-For applications using AgenticPDF:
+For applications using IronDocuments:
 
 - [ ] Validate all PDF sources and inputs
 - [ ] Set appropriate memory and processing limits
 - [ ] Sanitize extracted content before display
 - [ ] Use HTTPS for URL-based PDF loading
 - [ ] Implement proper error handling
-- [ ] Keep AgenticPDF updated to latest version
+- [ ] Keep IronDocuments updated to latest version
 - [ ] Monitor for security advisories
 - [ ] Test with malicious/malformed PDF samples
 
@@ -166,13 +166,13 @@ For applications using AgenticPDF:
 
 ```bash
 # Check for updates
-npm outdated AgenticPDF
+npm outdated IronDocuments
 
 # Update to latest secure version
-npm update AgenticPDF
+npm update IronDocuments
 
 # Verify update
-npm ls AgenticPDF
+npm ls IronDocuments
 ```
 
 ## 📞 Contact
@@ -180,8 +180,8 @@ npm ls AgenticPDF
 For security-related questions or concerns:
 
 - **Security Email**: [security@nervosys.ai](mailto:security@nervosys.ai)
-- **General Issues**: [GitHub Issues](https://github.com/nervosys/AgenticPDF/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/nervosys/AgenticPDF/discussions)
+- **General Issues**: [GitHub Issues](https://github.com/nervosys/IronDocuments/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/nervosys/IronDocuments/discussions)
 
 ## 🏆 Responsible Disclosure
 
@@ -194,7 +194,7 @@ We appreciate security researchers who:
 
 ### Hall of Fame
 
-We maintain a list of security researchers who have helped improve AgenticPDF security. Contributors will be acknowledged (with permission) in:
+We maintain a list of security researchers who have helped improve IronDocuments security. Contributors will be acknowledged (with permission) in:
 
 - Security advisory credits
 - Repository contributors list
@@ -202,4 +202,4 @@ We maintain a list of security researchers who have helped improve AgenticPDF se
 
 ---
 
-**Thank you for helping keep AgenticPDF and its users safe!** 🛡️
+**Thank you for helping keep IronDocuments and its users safe!** 🛡️

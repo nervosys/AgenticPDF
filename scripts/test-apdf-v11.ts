@@ -4,14 +4,14 @@
  * Test script for aPDF v1.1 round-trip: unencrypted + encrypted.
  */
 
-import AgenticPDF from '../agenticpdf';
+import IronDocuments from '../irondocuments';
 import * as fs from 'fs';
 
 async function main(): Promise<void> {
   console.log('=== Test 1: Unencrypted v1.1 round-trip ===\n');
 
   const apdfData = new Uint8Array(fs.readFileSync('demos/sample-v11.apdf'));
-  const header = AgenticPDF.readAPDFHeader(apdfData);
+  const header = IronDocuments.readAPDFHeader(apdfData);
   console.log('Version:', header.version);
   console.log('Flags:', header.flags);
   console.log('PDF encrypted:', header.pdfEncrypted);
@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   console.log('PDF length:', header.pdfLength);
   console.log('Total size:', header.totalSize, '== file:', apdfData.length);
 
-  const { metadata, pdfData } = await AgenticPDF.readAPDF(apdfData);
+  const { metadata, pdfData } = await IronDocuments.readAPDF(apdfData);
   console.log('Title:', metadata.metadata.title);
   console.log('Pages:', metadata.metadata.pageCount);
 
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   console.log('PDF byte-for-byte match:', match);
   if (!match) throw new Error('PDF round-trip mismatch!');
 
-  const metaOnly = await AgenticPDF.readAPDFMetadata(apdfData);
+  const metaOnly = await IronDocuments.readAPDFMetadata(apdfData);
   console.log('Streaming metadata read OK:', metaOnly.metadata.title);
   console.log('\n✅ Unencrypted v1.1 tests passed!\n');
 
@@ -40,7 +40,7 @@ async function main(): Promise<void> {
 
   const pdfBuf = fs.readFileSync('demos/sample.pdf');
   const arrayBuffer = pdfBuf.buffer.slice(pdfBuf.byteOffset, pdfBuf.byteOffset + pdfBuf.byteLength) as ArrayBuffer;
-  const pdf = await AgenticPDF.fromBuffer(arrayBuffer, { lazyLoad: true });
+  const pdf = await IronDocuments.fromBuffer(arrayBuffer, { lazyLoad: true });
 
   try {
     const encBinary = await pdf.generateAPDFBinary({
@@ -49,18 +49,18 @@ async function main(): Promise<void> {
 
     console.log('Encrypted container:', encBinary.length, 'bytes');
 
-    const encHeader = AgenticPDF.readAPDFHeader(encBinary);
+    const encHeader = IronDocuments.readAPDFHeader(encBinary);
     console.log('Version:', encHeader.version);
     console.log('PDF encrypted:', encHeader.pdfEncrypted);
     console.log('Meta encrypted:', encHeader.metadataEncrypted);
     console.log('Meta offset:', encHeader.metadataOffset, '(expected 126 = 64 header + 62 enc header)');
 
     // Read unencrypted metadata without password
-    const encMeta = await AgenticPDF.readAPDFMetadata(encBinary);
+    const encMeta = await IronDocuments.readAPDFMetadata(encBinary);
     console.log('Metadata readable without password:', encMeta.metadata.title);
 
     // Decrypt PDF with correct password
-    const { metadata: decMeta, pdfData: decPdf } = await AgenticPDF.readAPDF(encBinary, 'test-password-123');
+    const { metadata: decMeta, pdfData: decPdf } = await IronDocuments.readAPDF(encBinary, 'test-password-123');
     console.log('Decrypted title:', decMeta.metadata.title);
 
     const encMatch = decPdf.length === originalPdf.length && decPdf.every((b, i) => b === originalPdf[i]);
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 
     // Test wrong password
     try {
-      await AgenticPDF.readAPDF(encBinary, 'wrong-password');
+      await IronDocuments.readAPDF(encBinary, 'wrong-password');
       throw new Error('Should have thrown on wrong password!');
     } catch (e: any) {
       if (e.message === 'Should have thrown on wrong password!') throw e;
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
 
     // Test no password on encrypted PDF
     try {
-      const result = await AgenticPDF.readAPDF(encBinary);
+      const result = await IronDocuments.readAPDF(encBinary);
       throw new Error('Should have thrown without password!');
     } catch (e: any) {
       if (e.message === 'Should have thrown without password!') throw e;
@@ -94,13 +94,13 @@ async function main(): Promise<void> {
       encryption: { password: 'full-enc-pass', encryptPDF: true, encryptMetadata: true },
     });
 
-    const fullEncHeader = AgenticPDF.readAPDFHeader(fullEncBinary);
+    const fullEncHeader = IronDocuments.readAPDFHeader(fullEncBinary);
     console.log('PDF encrypted:', fullEncHeader.pdfEncrypted);
     console.log('Meta encrypted:', fullEncHeader.metadataEncrypted);
 
     // Metadata should NOT be readable without password
     try {
-      await AgenticPDF.readAPDFMetadata(fullEncBinary);
+      await IronDocuments.readAPDFMetadata(fullEncBinary);
       throw new Error('Should have required password for encrypted metadata!');
     } catch (e: any) {
       if (e.message === 'Should have required password for encrypted metadata!') throw e;
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
     }
 
     // Full decrypt
-    const { metadata: fullMeta, pdfData: fullPdf } = await AgenticPDF.readAPDF(fullEncBinary, 'full-enc-pass');
+    const { metadata: fullMeta, pdfData: fullPdf } = await IronDocuments.readAPDF(fullEncBinary, 'full-enc-pass');
     const fullMatch = fullPdf.length === originalPdf.length && fullPdf.every((b, i) => b === originalPdf[i]);
     console.log('Full decrypt PDF match:', fullMatch);
     if (!fullMatch) throw new Error('Full encryption round-trip mismatch!');

@@ -1,4 +1,4 @@
-# AgenticPDF CLI - Quick Reference Card
+# IronDocuments CLI - Quick Reference Card
 
 ## 🚀 Getting Started
 
@@ -129,12 +129,12 @@ done
 
 ### PowerShell
 ```powershell
-.\agenticpdf-cli.ps1 extract -Input document.pdf -Output output.txt -Verbose
+.\irondocuments-cli.ps1 extract -Input document.pdf -Output output.txt -Verbose
 ```
 
 ### Bash
 ```bash
-./agenticpdf-cli.sh extract -i document.pdf -o output.txt -v
+./irondocuments-cli.sh extract -i document.pdf -o output.txt -v
 ```
 
 ## 🔍 Page Ranges

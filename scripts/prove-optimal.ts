@@ -2,7 +2,7 @@
  * prove-optimal.ts
  * Run: npx tsx scripts/prove-optimal.ts
  */
-import { AgenticPDF } from '../agenticpdf.ts';
+import { IronDocuments } from '../irondocuments.ts';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -17,10 +17,10 @@ function suppressDebugLogs(): () => void {
   return () => { console.log = orig; };
 }
 async function main() {
-  console.log('\n== AgenticPDF - Proof of Optimal Agentic AI Ingestion ==\n');
+  console.log('\n== IronDocuments - Proof of Optimal Agentic AI Ingestion ==\n');
   heading('1. ZERO-SHOT DISCOVERY');
   const t0 = performance.now();
-  const agentInfo = AgenticPDF.describeForAgent('generic') as any;
+  const agentInfo = IronDocuments.describeForAgent('generic') as any;
   const discoveryMs = (performance.now() - t0).toFixed(1);
   console.log('  API calls:        1');
   console.log('  Time:             ' + discoveryMs + ' ms');
@@ -33,7 +33,7 @@ async function main() {
   const raw = fs.readFileSync(SAMPLE);
   const buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
   const t1 = performance.now();
-  const pdf = await AgenticPDF.fromBuffer(buf);
+  const pdf = await IronDocuments.fromBuffer(buf);
   const loadMs = (performance.now() - t1).toFixed(1);
   let restore = suppressDebugLogs();
   const t2 = performance.now();
@@ -85,10 +85,10 @@ async function main() {
   console.log('  Header keys:      [' + Object.keys(headerRecord).join(', ') + ']');
   console.log('  Footer stats:     ' + JSON.stringify(footerRecord.stats));
   heading('4. TOOL SCHEMA EXPORT');
-  const openaiSchemas = AgenticPDF.getToolSchemas('openai') as any[];
-  const anthropicSchemas = AgenticPDF.getToolSchemas('anthropic') as any[];
-  const mcpManifest = AgenticPDF.getMCPManifest() as any;
-  const jsonSchemas = AgenticPDF.getJSONSchemas() as any;
+  const openaiSchemas = IronDocuments.getToolSchemas('openai') as any[];
+  const anthropicSchemas = IronDocuments.getToolSchemas('anthropic') as any[];
+  const mcpManifest = IronDocuments.getMCPManifest() as any;
+  const jsonSchemas = IronDocuments.getJSONSchemas() as any;
   const ingestToolOAI = openaiSchemas.find((t: any) => t.function?.name === 'ingest' || t.name === 'ingest');
   const ingestToolAnth = anthropicSchemas.find((t: any) => t.name === 'ingest');
   console.log('  OpenAI schemas:   ' + openaiSchemas.length + ' tools  (ingest present: ' + !!ingestToolOAI + ')');
@@ -100,7 +100,7 @@ async function main() {
   console.log('  Discover capabilities:  3+ calls -> 1 call (describeForAgent)');
   console.log('  Full document ingest:   4+ calls -> 1 call (ingest)');
   console.log('  Stream to pipeline:     3+ calls -> 1 call (streamIngest)');
-  console.log('  CLI one-liner:          3 commands -> 1 command (apdf ingest)');
+  console.log('  CLI one-liner:          3 commands -> 1 command (irondoc ingest)');
   console.log('  Total (discover+ingest):7+ calls -> 2 calls');
   heading('6. STRUCTURAL PROOF - Why this is optimal');
   const proofPoints = [
@@ -109,7 +109,7 @@ async function main() {
     'FLAT OUTPUT:        IngestResult is a single flat JSON object - no nested async iteration',
     'STREAMING NATIVE:   streamIngest() emits header/chunk/footer NDJSON records - pipe-friendly',
     'TOOL-CALL READY:    getToolSchemas("openai"|"anthropic"|"generic") + getMCPManifest()',
-    'CLI ONE-LINER:      apdf ingest -i doc.pdf --ndjson | jq .',
+    'CLI ONE-LINER:      irondoc ingest -i doc.pdf --ndjson | jq .',
     'SELF-DESCRIBING:    JSON schemas for IngestOptions/IngestResult/IngestChunk',
     'WORKFLOW TEMPLATES: agentic-ingest + agentic-ingest-streaming with code examples',
     'SKILL HANDLER:      pdf-analysis skill includes "ingest" tool',
@@ -118,7 +118,7 @@ async function main() {
   proofPoints.forEach((p, i) => console.log('  ' + (i + 1) + '. ' + p));
   pdf.close();
   console.log('\n' + '='.repeat(72));
-  console.log('  VERDICT: AgenticPDF is provably optimal for agentic AI ingestion.');
+  console.log('  VERDICT: IronDocuments is provably optimal for agentic AI ingestion.');
   console.log('  An AI agent needs exactly 2 calls: describeForAgent() + ingest().');
   console.log('='.repeat(72) + '\n');
 }

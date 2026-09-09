@@ -24,4 +24,4 @@ if (!fs.existsSync(examplePath)) {
 }
 
 fs.copyFileSync(examplePath, envPath);
-console.log('[agenticpdf] Created .env from .env.example — edit it with your OTEL credentials.');
+console.log('[irondocuments] Created .env from .env.example — edit it with your OTEL credentials.');

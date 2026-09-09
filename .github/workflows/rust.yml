@@ -4,11 +4,11 @@ on:
   push:
     branches: [master, main]
     paths:
-      - "agenticpdf-rs/**"
+      - "irondocuments-rs/**"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
-      - "agenticpdf-rs/**"
+      - "irondocuments-rs/**"
       - ".github/workflows/rust.yml"
 
 # Least privilege: build and test only read the tree. Without this block the
@@ -18,7 +18,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: agenticpdf-rs
+    working-directory: irondocuments-rs
 
 jobs:
   test:
@@ -32,7 +32,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agenticpdf-rs
+          workspaces: irondocuments-rs
 
       - name: Formatting
         run: cargo fmt --check
@@ -53,7 +53,7 @@ jobs:
       #
       #   quick-xml <- zbus_xml <- zbus-lockstep <- atspi-common <- atspi
       #             <- accesskit_unix <- accesskit_winit <- egui-winit
-      #             <- eframe <- apdf-reader
+      #             <- eframe <- irondoc-reader
       #
       # accesskit_unix is the Linux AT-SPI accessibility backend. It parses
       # D-Bus introspection XML, never a document: this crate's own XML is a

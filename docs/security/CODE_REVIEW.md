@@ -1,15 +1,15 @@
-# AgenticPDF CLI - Code Review
+# IronDocuments CLI - Code Review
 
 **Review Date:** October 3, 2025  
 **Reviewer:** AI Code Review  
-**Project:** AgenticPDF CLI v1.0.0  
+**Project:** IronDocuments CLI v1.0.0  
 **Status:** ✅ Production Ready with Recommendations
 
 ---
 
 ## Executive Summary
 
-The AgenticPDF CLI is a **well-implemented, production-ready** command-line interface with comprehensive test coverage (295 passing tests). The code demonstrates good TypeScript practices, proper error handling, and thoughtful architecture. However, there are several opportunities for improvement in areas of security, performance, maintainability, and user experience.
+The IronDocuments CLI is a **well-implemented, production-ready** command-line interface with comprehensive test coverage (295 passing tests). The code demonstrates good TypeScript practices, proper error handling, and thoughtful architecture. However, there are several opportunities for improvement in areas of security, performance, maintainability, and user experience.
 
 **Overall Grade: A- (92/100)**
 
@@ -18,7 +18,7 @@ The AgenticPDF CLI is a **well-implemented, production-ready** command-line inte
 ## 1. Architecture & Design ⭐⭐⭐⭐⭐ (5/5)
 
 ### Strengths
-✅ **Clean separation of concerns**: Entry point (`cli.js`) → CLI logic (`cli.ts`) → Library (`agenticpdf.ts`)  
+✅ **Clean separation of concerns**: Entry point (`cli.js`) → CLI logic (`cli.ts`) → Library (`irondocuments.ts`)  
 ✅ **Well-structured command pattern**: Each command has its own async function  
 ✅ **Good use of TypeScript**: Strong typing with `CLIOptions` interface  
 ✅ **Flexible argument parsing**: Supports both short and long flags  
@@ -83,7 +83,7 @@ const child = spawn('npx', ['--yes', 'tsx', cliPath, ...args], {
 
 ```typescript
 const fileBuffer = fs.readFileSync(inputPath);
-const pdf = await AgenticPDF.fromBuffer(
+const pdf = await IronDocuments.fromBuffer(
     fileBuffer.buffer as ArrayBuffer,  // ⚠️ Unsafe cast
     { /* ... */ }
 );
@@ -98,7 +98,7 @@ const arrayBuffer = fileBuffer.buffer.slice(
     fileBuffer.byteOffset,
     fileBuffer.byteOffset + fileBuffer.byteLength
 );
-const pdf = await AgenticPDF.fromBuffer(arrayBuffer, { /* ... */ });
+const pdf = await IronDocuments.fromBuffer(arrayBuffer, { /* ... */ });
 ```
 
 #### 🟡 Medium: Missing Input Validation
@@ -167,7 +167,7 @@ const fileBuffer = fs.readFileSync(inputPath);  // ⚠️ Can throw unhandled er
 
 **Fix:**
 ```typescript
-async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticPDF> {
+async function loadPDF(inputPath: string, options: CLIOptions): Promise<IronDocuments> {
     if (!inputPath) {
         throw new Error('Input file is required. Use -i or --input to specify the PDF file.');
     }
@@ -479,7 +479,7 @@ async function interactiveMode() {
 #### 💡 Add Shell Completion
 ```bash
 # ~/.bashrc or ~/.zshrc
-eval "$(apdf --completion)"
+eval "$(irondoc --completion)"
 ```
 
 ---
@@ -529,7 +529,7 @@ abstract class BaseCommand {
         }
     }
 
-    abstract run(pdf: AgenticPDF, options: CLIOptions): Promise<void>;
+    abstract run(pdf: IronDocuments, options: CLIOptions): Promise<void>;
 }
 ```
 
@@ -632,7 +632,7 @@ abstract class BaseCommand {
 
 ## Final Verdict
 
-**The AgenticPDF CLI is well-crafted and nearly production-ready.** The code demonstrates solid engineering practices with excellent test coverage and clear architecture. The two critical security issues **must be fixed before release**, but they are straightforward to address.
+**The IronDocuments CLI is well-crafted and nearly production-ready.** The code demonstrates solid engineering practices with excellent test coverage and clear architecture. The two critical security issues **must be fixed before release**, but they are straightforward to address.
 
 ### Action Items Before Release
 - [ ] Fix command injection vulnerability

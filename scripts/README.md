@@ -1,4 +1,4 @@
-# AgenticPDF Scripts
+# IronDocuments Scripts
 
 Utility scripts for development, testing, and demonstration.
 
@@ -6,20 +6,20 @@ Utility scripts for development, testing, and demonstration.
 
 ### CLI Testing Scripts
 
-#### `agenticpdf-cli.ps1`
+#### `irondocuments-cli.ps1`
 PowerShell wrapper for testing the CLI on Windows.
 
 **Usage:**
 ```powershell
-.\scripts\agenticpdf-cli.ps1 info -i demos\sample.pdf
+.\scripts\irondocuments-cli.ps1 info -i demos\sample.pdf
 ```
 
-#### `agenticpdf-cli.sh`
+#### `irondocuments-cli.sh`
 Bash wrapper for testing the CLI on Unix/Linux/macOS.
 
 **Usage:**
 ```bash
-./scripts/agenticpdf-cli.sh info -i demos/sample.pdf
+./scripts/irondocuments-cli.sh info -i demos/sample.pdf
 ```
 
 #### `test-cli.js`
@@ -89,10 +89,10 @@ scripts\run-examples.bat           # Windows
 ### Test CLI Locally
 ```bash
 # PowerShell (Windows)
-.\scripts\agenticpdf-cli.ps1 help
+.\scripts\irondocuments-cli.ps1 help
 
 # Bash (Unix/Linux/macOS)
-./scripts/agenticpdf-cli.sh help
+./scripts/irondocuments-cli.sh help
 ```
 
 ### Validate Workflows
@@ -104,8 +104,8 @@ node scripts/validate-workflows.cjs
 
 | Script                   | Language   | Purpose                       |
 | ------------------------ | ---------- | ----------------------------- |
-| `agenticpdf-cli.ps1`     | PowerShell | CLI testing wrapper (Windows) |
-| `agenticpdf-cli.sh`      | Bash       | CLI testing wrapper (Unix)    |
+| `irondocuments-cli.ps1`     | PowerShell | CLI testing wrapper (Windows) |
+| `irondocuments-cli.sh`      | Bash       | CLI testing wrapper (Unix)    |
 | `test-cli.js`            | Node.js    | Automated CLI tests           |
 | `run-examples.ts`        | TypeScript | Run all library examples      |
 | `run-examples-simple.ts` | TypeScript | Simple examples runner        |
@@ -119,7 +119,7 @@ node scripts/validate-workflows.cjs
 ```bash
 # 1. Make changes to cli.ts
 # 2. Test locally without installing
-.\scripts\agenticpdf-cli.ps1 info -i demos\sample.pdf
+.\scripts\irondocuments-cli.ps1 info -i demos\sample.pdf
 
 # 3. Run full test suite
 npm test

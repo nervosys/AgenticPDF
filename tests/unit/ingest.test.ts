@@ -7,19 +7,19 @@
  *   - Tool definitions, skill handlers, JSON schemas, and workflows
  */
 
-import { AgenticPDF } from '../../agenticpdf';
+import { IronDocuments } from '../../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const SAMPLE_PDF = path.join(__dirname, '..', '..', 'demos', 'sample.pdf');
 
 let pdfBuffer: ArrayBuffer;
-let pdf: AgenticPDF;
+let pdf: IronDocuments;
 
 beforeAll(async () => {
   const raw = fs.readFileSync(SAMPLE_PDF);
   pdfBuffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-  pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+  pdf = await IronDocuments.fromBuffer(pdfBuffer);
 });
 
 afterAll(() => {
@@ -174,27 +174,27 @@ describe('streamIngest()', () => {
 
 describe('Tool definitions and schemas', () => {
   test('getToolSchemas includes ingest tool', () => {
-    const tools = AgenticPDF.getToolSchemas('openai');
+    const tools = IronDocuments.getToolSchemas('openai');
     const ingestTool = tools.find((t: any) => t.function?.name === 'ingest');
     expect(ingestTool).toBeDefined();
     expect(ingestTool.function.parameters.properties).toBeDefined();
   });
 
   test('getToolSchemas includes streamIngest tool', () => {
-    const tools = AgenticPDF.getToolSchemas('openai');
+    const tools = IronDocuments.getToolSchemas('openai');
     const streamIngestTool = tools.find((t: any) => t.function?.name === 'streamIngest');
     expect(streamIngestTool).toBeDefined();
   });
 
   test('anthropic format includes ingest tool', () => {
-    const tools = AgenticPDF.getToolSchemas('anthropic');
+    const tools = IronDocuments.getToolSchemas('anthropic');
     const ingestTool = tools.find((t: any) => t.name === 'ingest');
     expect(ingestTool).toBeDefined();
     expect(ingestTool.input_schema).toBeDefined();
   });
 
   test('getMCPManifest includes ingest tool', () => {
-    const manifest = AgenticPDF.getMCPManifest();
+    const manifest = IronDocuments.getMCPManifest();
     const ingestTool = manifest.tools.find((t: any) => t.name === 'ingest');
     expect(ingestTool).toBeDefined();
   });
@@ -204,7 +204,7 @@ describe('Tool definitions and schemas', () => {
 
 describe('JSON schemas for ingestion types', () => {
   test('IngestOptions schema exists', () => {
-    const schemas = AgenticPDF.getJSONSchemas();
+    const schemas = IronDocuments.getJSONSchemas();
     expect(schemas.IngestOptions).toBeDefined();
     expect(schemas.IngestOptions.type).toBe('object');
     expect(schemas.IngestOptions.properties.strategy).toBeDefined();
@@ -212,7 +212,7 @@ describe('JSON schemas for ingestion types', () => {
   });
 
   test('IngestResult schema exists', () => {
-    const schemas = AgenticPDF.getJSONSchemas();
+    const schemas = IronDocuments.getJSONSchemas();
     expect(schemas.IngestResult).toBeDefined();
     expect(schemas.IngestResult.type).toBe('object');
     expect(schemas.IngestResult.required).toContain('chunks');
@@ -220,7 +220,7 @@ describe('JSON schemas for ingestion types', () => {
   });
 
   test('IngestChunk schema exists', () => {
-    const schemas = AgenticPDF.getJSONSchemas();
+    const schemas = IronDocuments.getJSONSchemas();
     expect(schemas.IngestChunk).toBeDefined();
     expect(schemas.IngestChunk.type).toBe('object');
     expect(schemas.IngestChunk.required).toContain('id');
@@ -232,7 +232,7 @@ describe('JSON schemas for ingestion types', () => {
 
 describe('Workflow templates', () => {
   test('agentic-ingest workflow exists', () => {
-    const workflows = AgenticPDF.getWorkflows();
+    const workflows = IronDocuments.getWorkflows();
     const ingestWf = workflows.find(w => w.id === 'agentic-ingest');
     expect(ingestWf).toBeDefined();
     expect(ingestWf!.name).toContain('Ingest');
@@ -240,7 +240,7 @@ describe('Workflow templates', () => {
   });
 
   test('agentic-ingest-streaming workflow exists', () => {
-    const workflows = AgenticPDF.getWorkflows();
+    const workflows = IronDocuments.getWorkflows();
     const streamWf = workflows.find(w => w.id === 'agentic-ingest-streaming');
     expect(streamWf).toBeDefined();
     expect(streamWf!.steps.some(s => s.method === 'streamIngest')).toBe(true);
@@ -262,12 +262,12 @@ describe('describeDocument', () => {
 
 describe('describeForAgent', () => {
   test('quickStart mentions ingest()', () => {
-    const info = AgenticPDF.describeForAgent();
+    const info = IronDocuments.describeForAgent();
     expect(info.agentGuidance.quickStart).toContain('ingest');
   });
 
   test('bestPractices mentions ingest and streamIngest', () => {
-    const info = AgenticPDF.describeForAgent();
+    const info = IronDocuments.describeForAgent();
     const practices = info.agentGuidance.bestPractices.join(' ');
     expect(practices).toContain('ingest()');
     expect(practices).toContain('streamIngest()');
@@ -278,7 +278,7 @@ describe('describeForAgent', () => {
 
 describe('Built-in skill: pdf-analysis ingest tool', () => {
   test('pdf-analysis skill has ingest tool', () => {
-    const skills = AgenticPDF.listSkills();
+    const skills = IronDocuments.listSkills();
     const analysis = skills.find(s => s.id === 'pdf-analysis');
     expect(analysis).toBeDefined();
     const ingestTool = analysis!.tools.find(t => t.name === 'ingest');

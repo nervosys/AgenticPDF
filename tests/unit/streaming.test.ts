@@ -3,7 +3,7 @@
  * Tests streaming APIs, progress tracking, and abort signals
  */
 
-import { AgenticPDF, StreamOptions, ProgressInfo } from '../../agenticpdf';
+import { IronDocuments, StreamOptions, ProgressInfo } from '../../irondocuments';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 

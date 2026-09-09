@@ -102,5 +102,5 @@ jobs:
         name: build-artifacts
         path: |
           dist/
-          AgenticPDF.ts
+          IronDocuments.ts
         retention-days: 7

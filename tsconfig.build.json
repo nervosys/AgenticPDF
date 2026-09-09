@@ -8,7 +8,7 @@
         "rootDir": "."
     },
     "include": [
-        "agenticpdf.ts",
+        "irondocuments.ts",
         "otel.ts"
     ],
     "exclude": [

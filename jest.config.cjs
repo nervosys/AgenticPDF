@@ -18,7 +18,7 @@ module.exports = {
         }]
     },
     collectCoverageFrom: [
-        'agenticpdf.ts',
+        'irondocuments.ts',
         '!**/*.d.ts',
         '!**/node_modules/**'
     ],

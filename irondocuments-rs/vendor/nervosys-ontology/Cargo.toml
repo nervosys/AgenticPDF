@@ -1,0 +1,26 @@
+# Vendored from nervosys/Ontology. Do not edit here.
+#
+# NS-ONTO-001 §7.1 has the obligations travel inside the vendored copy, so this
+# is the mechanism rather than a shortcut: re-vendoring delivers new normative
+# clauses as failing tests in this repository, which is the earliest they can be
+# learned without watching the hub.
+#
+# The workspace table and `hub/` are deliberately not copied. The hub reads what
+# projects emit; a project never sees the hub.
+
+[package]
+name = "nervosys-ontology"
+version = "0.1.0"
+edition = "2021"
+description = "A domain-free vocabulary for declaring what a system knows, what it can be asked, and how it refuses — so agents can learn it without reading source."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nervosys"
+publish = false
+
+[dependencies]
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints.clippy]
+all = "warn"

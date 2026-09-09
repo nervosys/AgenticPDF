@@ -8,7 +8,7 @@
  * - Streaming processing for memory efficiency
  */
 
-import AgenticPDF, { EmbeddingProvider, SemanticChunk, AIFeatures, ChunkType } from '../agenticpdf';
+import IronDocuments, { EmbeddingProvider, SemanticChunk, AIFeatures, ChunkType } from '../irondocuments';
 
 // Example custom embedding provider
 class OpenAIEmbeddingProvider implements EmbeddingProvider {
@@ -114,11 +114,11 @@ class MockEmbeddingProvider implements EmbeddingProvider {
 export async function aiIntegrationExample(file: File, apiKey?: string) {
     console.log('=== AI Integration Example ===\n');
 
-    let pdf: AgenticPDF | null = null;
+    let pdf: IronDocuments | null = null;
 
     try {
         // Load PDF with AI-optimized settings
-        pdf = await AgenticPDF.fromFile(file, {
+        pdf = await IronDocuments.fromFile(file, {
             lazyLoad: true,
             useWebWorkers: true, // Use workers for CPU-intensive AI operations
             maxMemoryUsage: 100 * 1024 * 1024 // 100MB limit
@@ -146,7 +146,7 @@ export async function aiIntegrationExample(file: File, apiKey?: string) {
     }
 }
 
-async function demonstrateSemanticChunking(pdf: AgenticPDF, embeddingProvider: EmbeddingProvider) {
+async function demonstrateSemanticChunking(pdf: IronDocuments, embeddingProvider: EmbeddingProvider) {
     console.log('\n--- Semantic Chunking Demo ---');
 
     try {
@@ -204,7 +204,7 @@ async function demonstrateSemanticChunking(pdf: AgenticPDF, embeddingProvider: E
     }
 }
 
-async function demonstrateDocumentAnalysis(pdf: AgenticPDF, embeddingProvider: EmbeddingProvider) {
+async function demonstrateDocumentAnalysis(pdf: IronDocuments, embeddingProvider: EmbeddingProvider) {
     console.log('\n--- Document Intelligence Analysis ---');
 
     try {
@@ -279,7 +279,7 @@ async function demonstrateDocumentAnalysis(pdf: AgenticPDF, embeddingProvider: E
     }
 }
 
-async function demonstrateStreamingProcessing(pdf: AgenticPDF) {
+async function demonstrateStreamingProcessing(pdf: IronDocuments) {
     console.log('\n--- Streaming Processing Demo ---');
 
     try {

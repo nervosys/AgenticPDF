@@ -9,7 +9,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### ADF — the Agentic Document Format (`agenticpdf-rs/src/adf/`)
+#### NS-ONTO-001 conformance (`irondocuments-rs/src/ontology.rs`)
+
+The engine now declares itself under the company capability standard, so what
+it does, what a caller must hold to ask, and whether an autonomous caller
+should are three stated facts rather than three inferences from a command name.
+
+- **A manifest** declaring 26 capabilities with effect, authority,
+  agent-safety, reversibility, refusals and evidence; the concepts they return;
+  the three surfaces they are reachable on; and `unmapped` naming what this
+  declaration leaves out — `.ods`/`.xls` cell reading, spreadsheet writing, VBA
+  execution, the deliberately small formula library, and the argument parser's
+  own `help`.
+- **Evidence is real here rather than nominal.** NS-ONTO-001 defines evidence
+  as the command that re-derives a claim independently, which is exactly what
+  `verify` is, so `search` and `chunk` declare it with the command that checks
+  their output.
+- **The vocabulary is vendored** at `irondocuments-rs/vendor/nervosys-ontology`
+  rather than depended on across repositories. NS-ONTO-001 §7.1 makes the copy
+  the delivery mechanism: re-vendoring brings new normative clauses in as
+  failing tests here, which is the earliest they can be learned without
+  watching the hub. A path dependency on a sibling checkout was tried and
+  removed — CI checks out this repository alone, so it built on a developer's
+  machine and nowhere else. `vendor/` is excluded from the workspace, so
+  `--workspace` does not lint or test a copy this project is held to rather
+  than maintains.
+- **A conformance test** (`tests/ontology.rs`) holding the declaration to the
+  running product in both directions: every declared invocation must be
+  reachable on the surface it claims, and every entry point the engine serves
+  must be declared or named in `unmapped`. It reads the command line from the
+  binary's own `--help` and the tools from the MCP tool table, so neither is a
+  list maintained beside the code.
+
+### Fixed
+
+- **`sheet` and `recalc` were unreachable over MCP.** They were added to the
+  command line and to the `describe` ontology and not to the tool table, which
+  is how agents actually reach this engine, so the entire spreadsheet surface
+  was invisible to them. Found by the conformance test above on its first run.
+- The command line and the MCP server now load a workbook through one function
+  (`agent_ops::workbook_of`) rather than two implementations of the same
+  question.
+
+
+#### ADF profiles, and the spreadsheet profile (`irondocuments-rs/src/sheet.rs`)
+
+ADF now says in its header what *kind* of document it holds, so one container
+and one extension cover the document types an office suite needs. Format
+version 1.2.
+
+- **`Profile` in the header** — `document` (the default, and what every file
+  written so far is) or `spreadsheet`. It occupies the word the v1.1 header
+  reserved, so existing files read back as `document` and a v1.1 reader opens a
+  v1.2 file with the chunks it does not know skipped. An unrecognised profile
+  from a future build is carried rather than rejected.
+- **A spreadsheet model** — sparse cells sorted by `(row, column)`, each with a
+  typed value (number, text, boolean or one of the seven spreadsheet errors),
+  the formula behind it *and* the result the source cached, its number format,
+  and its hyperlink. Plus merges, frozen panes, column widths and defined
+  names.
+- **Two chunk kinds** — `Workbook` (the directory: sheet names and defined
+  names) and `Sheet` (one worksheet's cells). Listing a workbook reads the
+  directory and nothing else; opening one sheet decodes one chunk.
+- **`.xlsx` imports as cells**, keeping what the text reader discards: the type
+  of every value, the `<f>` element it used to skip, and the number format that
+  is the only thing distinguishing a date from its serial number.
+- **`irondoc sheet <file>`** — read a spreadsheet as cells, in text or JSON,
+  whole or one sheet at a time. Reads `.xlsx` directly and `.adf` under the
+  spreadsheet profile. Listed in the `describe` ontology.
+- **`convert --to adf` imports a spreadsheet as cells** rather than as a table
+  of text, through the CLI and the MCP surface alike.
+- **Retrieval and provenance at row granularity** — a search hit names the
+  sheet and the row, and `verify` checks a quoted row against what was
+  imported, so a figure taken from a spreadsheet is as checkable as a sentence
+  quoted from a report.
+- **Hidden sheets, rows and columns are kept in the cells and kept out of the
+  text.** Dropping them would make a conversion silently lose part of the
+  workbook it read; rendering them would surface what the author concealed.
+
+#### Recalculation (`irondocuments-rs/src/calc.rs`)
+
+A formula evaluator, so a stored formula can be checked rather than only
+displayed.
+
+- **`irondoc recalc <file>`** reports cells whose stored result no longer
+  follows from their own formula. Nothing is written back — overwriting the
+  cached values would destroy the evidence that they had drifted. Listed in the
+  `describe` ontology.
+- **Dependencies decide evaluation order**, not position, so a total above its
+  inputs is as correct as one below them.
+- Arithmetic with the usual precedence (`^` right-associative), comparisons,
+  `&`, percentages, absolute and sheet-qualified references, ranges and defined
+  names; functions `SUM`, `PRODUCT`, `AVERAGE`, `MIN`, `MAX`, `COUNT`,
+  `COUNTA`, `IF`, `IFERROR`, `AND`, `OR`, `NOT`, `ABS`, `SQRT`, `INT`, `ROUND`,
+  `LEN`, `LEFT`, `RIGHT`, `MID`, `UPPER`, `LOWER`, `TRIM`, `CONCAT`, `NA`.
+- **Cycles are reported, not resolved**; the cell keeps its cached value. An
+  unknown function is `#NAME?` and the rest of the sheet still computes. A
+  formula that will not parse is reported rather than swallowed. Nesting past
+  64 deep is refused rather than overflowing the stack.
+- Numbers compare with a relative tolerance, so a workbook storing `0.3` for
+  `0.1 + 0.2` is not reported as drifted.
+
+Not implemented: `.ods` and `.xls` still take the text path rather than
+producing cells. Nothing writes `.xlsx` back out; ADF remains the only format
+this engine writes. The function library is small by design — anything outside
+it answers `#NAME?`.
+
+### Added
+
+#### ADF — the Agentic Document Format (`irondocuments-rs/src/adf/`)
 
 The engine's own binary format, and the only one it writes as well as reads.
 Designed for retrieval and agent editing rather than for a printer:
@@ -28,10 +136,10 @@ Designed for retrieval and agent editing rather than for a printer:
   Every operation records its author, including whether it was a model.
   Appending an edit to a large document writes the edit, not the document.
 
-Detection, `formats::parse` and the CLI all accept `.adf`; `apdf convert <file>
+Detection, `formats::parse` and the CLI all accept `.adf`; `irondoc convert <file>
 --to adf --output out.adf` writes it.
 
-#### The reader app (`agenticpdf-rs/apps/reader/`)
+#### The reader app (`irondocuments-rs/apps/reader/`)
 
 An agentic-first document reader and editor built on
 [Dewey](https://github.com/nervosys/Dewey), NERVOSYS's Rust GUI framework.
@@ -41,7 +149,7 @@ An agentic-first document reader and editor built on
   all call the same 12 actions through one `Session`. A capability cannot exist
   for one caller and not the others.
 - **Agent surface is an ontology**, not a chat box: Dewey's `OntologyRegistry`
-  plus `execute_action`, discoverable with `apdf-reader --capabilities`.
+  plus `execute_action`, discoverable with `irondoc-reader --capabilities`.
 - **Platforms.** Desktop (egui) and Android (JNI, three ABIs) run; mobile web
   runs as a wasm bundle; iOS compiles but has not been built or run — that
   needs macOS.
@@ -50,9 +158,9 @@ An agentic-first document reader and editor built on
 
 ### Changed
 
-- `Format` gained an `Adf` variant; `apdf convert` gained an `adf` target and
+- `Format` gained an `Adf` variant; `irondoc convert` gained an `adf` target and
   now writes bytes rather than text.
-- `agenticpdf-rs` is now a Cargo workspace, with the library as its root
+- `irondocuments-rs` is now a Cargo workspace, with the library as its root
   package and the app as a member.
 
 ### Security
@@ -63,7 +171,7 @@ CMMC 2.0 Level 2).
 - **MCP file access is confined to a set of roots.** The server previously read
   and wrote any path the process could reach while the *model* chose that path,
   and a document can carry text arguing for a particular one — a confused deputy
-  holding its operator's privileges. `apdf text <any file>` returned the bytes
+  holding its operator's privileges. `irondoc text <any file>` returned the bytes
   verbatim (ATT&CK **T1005**) and `convert --output` silently overwrote an
   existing file (**T1565.001**). The default root is now the working directory
   the operator chose to serve from; `APDF_MCP_ROOTS` sets the list and `*`
@@ -113,7 +221,7 @@ CMMC 2.0 Level 2).
 - The reader showed "Untitled" for documents that name themselves in container
   metadata, such as most PDFs.
 
-- **The `apdf` / `agenticpdf` CLI could not start when installed.** `cli.js`
+- **The `apdf` / `irondocuments` CLI could not start when installed.** `cli.js`
   launches `cli.ts` through `tsx`, but `tsx` was declared nowhere in
   `package.json` — it worked only where an extraneous copy happened to be
   present. It is now a real dependency. `cli.js` also resolves it through
@@ -141,7 +249,7 @@ application rather than only inspect it.
 
 ### Added
 
-#### Core Library (`agenticpdf.ts`)
+#### Core Library (`irondocuments.ts`)
 - **Streaming-First Architecture**: `streamText()`, `streamSemanticChunks()` for memory-efficient processing
 - **AI-Native Design**: Semantic chunking, structural analysis, embedding provider interface
 - **Canvas Rendering**: PDF-to-canvas with text, images, vector graphics, form XObjects
@@ -176,30 +284,30 @@ application rather than only inspect it.
 - Custom binary container: `%aPDF-1.1` magic, JSON metadata + PDF data
 - LZ77 compression with full round-trip fidelity
 - Security: 2GB size caps, bounded metadata, `JSON.parse` safety
-- CLI support: `apdf generate -i paper.pdf -o paper.apdf`
+- CLI support: `irondoc generate -i paper.pdf -o paper.apdf`
 
 #### Ontology & Agent Discovery
-- `AgenticPDF.describe()` returns full JSON-LD ontology
-- `AgenticPDF.getCapabilities()` organized by category
-- `AgenticPDF.getMethodSignatures()` for code generation
-- `AgenticPDF.getWorkflows()` — 16 pre-built workflow templates
+- `IronDocuments.describe()` returns full JSON-LD ontology
+- `IronDocuments.getCapabilities()` organized by category
+- `IronDocuments.getMethodSignatures()` for code generation
+- `IronDocuments.getWorkflows()` — 16 pre-built workflow templates
 - Instance-level `pdf.describeDocument()` for loaded documents
 
 #### Unified Agentic Ingestion
 - `pdf.ingest(options?)` — single call returns metadata, structure, semantic chunks, and stats
 - `pdf.streamIngest(options?)` — streaming NDJSON variant (header → chunks → footer)
-- `AgenticPDF.describeForAgent(format?)` — full introspection payload (ontology + tools + schemas + guidance)
-- `AgenticPDF.getToolSchemas(format)` — OpenAI, Anthropic, and generic function-calling schemas
-- `AgenticPDF.getMCPManifest()` — MCP server manifest for MCP-compatible agents
-- `AgenticPDF.getJSONSchemas()` — JSON schemas for all library types
-- CLI `apdf ingest` command with `--ndjson`, `--include-text`, `--chunk-size` flags
-- CLI `apdf tool-schema` command with `--tool-schema openai|anthropic|generic|mcp`
+- `IronDocuments.describeForAgent(format?)` — full introspection payload (ontology + tools + schemas + guidance)
+- `IronDocuments.getToolSchemas(format)` — OpenAI, Anthropic, and generic function-calling schemas
+- `IronDocuments.getMCPManifest()` — MCP server manifest for MCP-compatible agents
+- `IronDocuments.getJSONSchemas()` — JSON schemas for all library types
+- CLI `irondoc ingest` command with `--ndjson`, `--include-text`, `--chunk-size` flags
+- CLI `irondoc tool-schema` command with `--tool-schema openai|anthropic|generic|mcp`
 - 34 tool definitions, 43 JSON schemas, skill handler for agentic workflows
 
-#### Rust CLI (`agenticpdf-rs/`)
+#### Rust CLI (`irondocuments-rs/`)
 - Native `apdf` binary (801 KB release build, opt-level "z", LTO, stripped)
 - 10 commands: `text`, `meta`, `annotations`, `outline`, `images`, `chunk`, `all`, `describe`, `info`, `generate`
-- `apdf describe` outputs full JSON-LD ontology (673 lines)
+- `irondoc describe` outputs full JSON-LD ontology (673 lines)
 - Parser: annotation extraction, recursive outline parsing, font name detection
 - 10 Rust tests, zero warnings
 
@@ -228,7 +336,7 @@ application rather than only inspect it.
 - API explorer with interactive examples
 
 #### Developer Experience
-- CLI: `apdf` / `agenticpdf` commands via npm bin
+- CLI: `apdf` / `irondocuments` commands via npm bin
 - TypeScript examples in `examples/` (8 scenarios)
 - Jest test suite: **950 tests** across 25 suites — all passing
 - GitHub Actions CI on Node 18/20/22
@@ -276,9 +384,9 @@ Three comprehensive security audit passes (25+ total fixes):
 - **TypeScript**: 5.9.3
 - **Tests**: 950 across 25 suites
 - **License**: AGPL-3.0-or-later
-- **Architecture**: Single file (`agenticpdf.ts`), optional `otel.ts` module
+- **Architecture**: Single file (`irondocuments.ts`), optional `otel.ts` module
 - **Browser Support**: ES2022+
 
 ---
 
-For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/AgenticPDF/releases).
+For more details about any release, please see the [GitHub releases page](https://github.com/nervosys/IronDocuments/releases).

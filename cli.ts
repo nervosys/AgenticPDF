@@ -4,13 +4,13 @@
 // commercial license; see LICENSE and LICENSE-AGPL.txt.
 
 /**
- * AgenticPDF CLI - Command-line interface for PDF processing
+ * IronDocuments CLI - Command-line interface for PDF processing
  * 
- * Provides access to core AgenticPDF functionality from the terminal
+ * Provides access to core IronDocuments functionality from the terminal
  * including text extraction, metadata reading, AI features, and more.
  */
 
-import AgenticPDF from './agenticpdf';
+import IronDocuments from './irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -274,12 +274,12 @@ function parseArgs(args: string[]): CLIOptions {
  */
 function displayHelp(): void {
     console.log(`
-${colors.bright}${colors.cyan}AgenticPDF CLI v${CLI_VERSION}${colors.reset}
+${colors.bright}${colors.cyan}IronDocuments CLI v${CLI_VERSION}${colors.reset}
 ${colors.dim}Production-ready PDF processing from the command line${colors.reset}
 
 ${colors.bright}USAGE:${colors.reset}
-  apdf <command> [options]
-  agenticpdf <command> [options]
+  irondoc <command> [options]
+  idoc <command> [options]
 
 ${colors.bright}COMMANDS:${colors.reset}
   ${colors.green}info${colors.reset}       Display PDF information and metadata
@@ -331,79 +331,79 @@ ${colors.bright}OPTIONS:${colors.reset}
 
 ${colors.bright}EXAMPLES:${colors.reset}
   ${colors.dim}# Display PDF information${colors.reset}
-  apdf info document.pdf
+  irondoc info document.pdf
 
   ${colors.dim}# Extract text to file${colors.reset}
-  apdf extract -i document.pdf -o output.txt
+  irondoc extract -i document.pdf -o output.txt
 
   ${colors.dim}# Extract specific pages with metadata${colors.reset}
-  apdf extract -i document.pdf -p 1-5 -m
+  irondoc extract -i document.pdf -p 1-5 -m
 
   ${colors.dim}# Convert to JSON with tables${colors.reset}
-  apdf convert -i document.pdf -f json --tables --pretty
+  irondoc convert -i document.pdf -f json --tables --pretty
 
   ${colors.dim}# Export as aPDF metadata (agentic AI envelope)${colors.reset}
-  apdf convert -i paper.pdf -f apdf -o paper.apdf.json
+  irondoc convert -i paper.pdf -f irondoc -o paper.apdf.json
 
   ${colors.dim}# AI-powered analysis${colors.reset}
-  apdf analyze -i document.pdf --ai
+  irondoc analyze -i document.pdf --ai
 
   ${colors.dim}# Generate semantic chunks for RAG${colors.reset}
-  apdf chunk -i document.pdf --chunk-size 1000 -o chunks.json
+  irondoc chunk -i document.pdf --chunk-size 1000 -o chunks.json
 
   ${colors.dim}# Extract images${colors.reset}
-  apdf images -i document.pdf -o ./images/
+  irondoc images -i document.pdf -o ./images/
 
   ${colors.dim}# Stream large PDF${colors.reset}
-  apdf extract -i large.pdf --stream
+  irondoc extract -i large.pdf --stream
 
   ${colors.dim}# Generate aPDF metadata envelope${colors.reset}
-  apdf metadata -i paper.pdf -o paper.apdf.json
+  irondoc metadata -i paper.pdf -o paper.apdf.json
 
   ${colors.dim}# Generate aPDF binary container (PDF + metadata)${colors.reset}
-  apdf generate -i paper.pdf -o paper.apdf
+  irondoc generate -i paper.pdf -o paper.apdf
 
   ${colors.dim}# Generate encrypted aPDF binary container${colors.reset}
-  apdf generate -i paper.pdf -o paper.apdf --encrypt --password mySecret
+  irondoc generate -i paper.pdf -o paper.apdf --encrypt --password mySecret
 
   ${colors.dim}# Generate CSS from aPDF display hints${colors.reset}
-  apdf typeset -i paper.pdf --css -o styles.css
+  irondoc typeset -i paper.pdf --css -o styles.css
 
   ${colors.dim}# Generate responsive HTML article${colors.reset}
-  apdf typeset -i paper.pdf -o article.html
+  irondoc typeset -i paper.pdf -o article.html
 
   ${colors.dim}# Generate accessible reading view${colors.reset}
-  apdf typeset -i paper.pdf --accessible -o readable.html
+  irondoc typeset -i paper.pdf --accessible -o readable.html
 
   ${colors.dim}# Generate print-ready stylesheet${colors.reset}
-  apdf typeset -i paper.pdf --print-css -o print.css
+  irondoc typeset -i paper.pdf --print-css -o print.css
 
   ${colors.dim}# Generate social sharing meta tags${colors.reset}
-  apdf typeset -i paper.pdf --social-meta --page-url https://example.com/paper
+  irondoc typeset -i paper.pdf --social-meta --page-url https://example.com/paper
 
   ${colors.dim}# Unified AI ingestion (single JSON output)${colors.reset}
-  apdf ingest -i document.pdf -o ingested.json
+  irondoc ingest -i document.pdf -o ingested.json
 
   ${colors.dim}# Streaming AI ingestion (NDJSON to stdout)${colors.reset}
-  apdf ingest -i document.pdf --ndjson
+  irondoc ingest -i document.pdf --ndjson
 
   ${colors.dim}# Ingest with custom chunk size and per-page text${colors.reset}
-  apdf ingest -i document.pdf --chunk-size 500 --include-text -o result.json
+  irondoc ingest -i document.pdf --chunk-size 500 --include-text -o result.json
 
   ${colors.dim}# Output OpenAI function-calling schemas${colors.reset}
-  apdf tool-schema --tool-schema openai
+  irondoc tool-schema --tool-schema openai
 
   ${colors.dim}# Output MCP manifest${colors.reset}
-  apdf tool-schema --tool-schema mcp
+  irondoc tool-schema --tool-schema mcp
 
 ${colors.bright}INSTALLATION:${colors.reset}
-  ${colors.dim}# Install globally to use 'apdf' command anywhere${colors.reset}
-  npm install -g agenticpdf
+  ${colors.dim}# Install globally to use 'irondoc' or 'idoc' command anywhere${colors.reset}
+  npm install -g irondocuments
   
   ${colors.dim}# See INSTALL.md for detailed installation instructions${colors.reset}
 
 ${colors.bright}DOCUMENTATION:${colors.reset}
-  ${colors.cyan}https://github.com/nervosys/agenticpdf${colors.reset}
+  ${colors.cyan}https://github.com/nervosys/IronDocuments${colors.reset}
 `);
 }
 
@@ -411,7 +411,7 @@ ${colors.bright}DOCUMENTATION:${colors.reset}
  * Display version information
  */
 function displayVersion(): void {
-    console.log(`AgenticPDF CLI v${CLI_VERSION}`);
+    console.log(`IronDocuments CLI v${CLI_VERSION}`);
 }
 
 /**
@@ -432,7 +432,7 @@ function parsePageRange(rangeStr: string): { start?: number; end?: number } | nu
 /**
  * Load PDF from file
  */
-async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticPDF> {
+async function loadPDF(inputPath: string, options: CLIOptions): Promise<IronDocuments> {
     if (!inputPath) {
         throw new Error('Input file is required. Use -i or --input to specify the PDF file.');
     }
@@ -485,7 +485,7 @@ async function loadPDF(inputPath: string, options: CLIOptions): Promise<AgenticP
 
     // Handle PDF loading errors
     try {
-        const pdf = await AgenticPDF.fromBuffer(arrayBuffer, {
+        const pdf = await IronDocuments.fromBuffer(arrayBuffer, {
             lazyLoad: true,
             maxMemoryUsage: DEFAULT_MEMORY_LIMIT,
         });
@@ -1485,10 +1485,10 @@ async function commandToolSchema(options: CLIOptions): Promise<void> {
 
     let output: string;
     if (format === 'mcp') {
-        const manifest = AgenticPDF.getMCPManifest();
+        const manifest = IronDocuments.getMCPManifest();
         output = options.pretty ? JSON.stringify(manifest, null, 2) : JSON.stringify(manifest);
     } else {
-        const schemas = AgenticPDF.getToolSchemas(format as any);
+        const schemas = IronDocuments.getToolSchemas(format as any);
         output = options.pretty ? JSON.stringify(schemas, null, 2) : JSON.stringify(schemas);
     }
 
@@ -1590,7 +1590,7 @@ async function main(): Promise<void> {
                 break;
             default:
                 log.error(`Unknown command: ${options.command}`);
-                log.info('Run "apdf help" for usage information');
+                log.info('Run "irondoc help" for usage information');
                 process.exit(1);
         }
     } catch (error) {

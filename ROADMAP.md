@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# AgenticPDF — Roadmap
+# IronDocuments — Roadmap
 
 > **Last updated:** 2026-09-01
-> **Direction:** the Rust crate `agenticpdf-rs/` is the engine; new capability
+> **Direction:** the Rust crate `irondocuments-rs/` is the engine; new capability
 > goes there.
 
 This file says where the work is going and what it is measured against. What
@@ -35,8 +35,8 @@ distinction is kept deliberately.
 
 ## Direction
 
-**One engine, in Rust.** `agenticpdf-rs/` is the single source of truth. The
-24k-line `agenticpdf.ts` is the legacy reference implementation: it is
+**One engine, in Rust.** `irondocuments-rs/` is the single source of truth. The
+24k-line `irondocuments.ts` is the legacy reference implementation: it is
 maintained and shipped, but capability is not added to it, and long term the
 npm package should be backed by Rust compiled to WASM.
 
@@ -245,7 +245,7 @@ These are the owner's, not the engine's.
 
       ```bash
       # Minimal: prevent history rewrites and accidental deletion.
-      gh api -X PUT repos/nervosys/AgenticPDF/branches/master/protection \
+      gh api -X PUT repos/nervosys/IronDocuments/branches/master/protection \
         -F required_status_checks=null \
         -F enforce_admins=false \
         -F required_pull_request_reviews=null \
@@ -264,10 +264,10 @@ These are the owner's, not the engine's.
 
 ## Constraints worth knowing
 
-- **`agenticpdf.ts` is one file by design**, with CRLF line endings; use `.cjs`
+- **`irondocuments.ts` is one file by design**, with CRLF line endings; use `.cjs`
   helper scripts for programmatic edits, since `package.json` sets
   `"type": "module"`.
-- **Real Office fixtures are gitignored** at `agenticpdf-rs/tests/fixtures/`,
+- **Real Office fixtures are gitignored** at `irondocuments-rs/tests/fixtures/`,
   because Office stamps the author's name into every file it writes. Tests that
   use them skip when they are absent — which means an empty directory looks
   exactly like a passing suite. Regenerate them with Office COM automation when

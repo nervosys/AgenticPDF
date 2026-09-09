@@ -53,15 +53,15 @@ jobs:
           ## Installation
           
           ```bash
-          npm install AgenticPDF@${{ github.ref_name }}
+          npm install IronDocuments@${{ github.ref_name }}
           ```
           
           Or copy the single file:
           ```bash
-          curl -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/AgenticPDF.ts
+          curl -O https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/IronDocuments.ts
           ```
         files: |
-          AgenticPDF.ts
+          IronDocuments.ts
           dist/*
         draft: false
         prerelease: ${{ contains(github.ref_name, '-') }}

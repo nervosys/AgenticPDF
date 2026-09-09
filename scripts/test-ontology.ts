@@ -1,12 +1,12 @@
 /**
- * Validate the complete AgenticPDF ontology.
+ * Validate the complete IronDocuments ontology.
  */
-import { AgenticPDF } from '../agenticpdf.js';
+import { IronDocuments } from '../irondocuments.js';
 
-console.log('=== AgenticPDF Ontology Validation ===\n');
+console.log('=== IronDocuments Ontology Validation ===\n');
 
 // 1. Full ontology
-const ontology = AgenticPDF.describe();
+const ontology = IronDocuments.describe();
 console.log(`Ontology: ${ontology.name} v${ontology.version}`);
 console.log(`  @context: ${ontology['@context']}`);
 console.log(`  @type: ${ontology['@type']}`);
@@ -40,26 +40,26 @@ for (const [name, values] of Object.entries(ontology.enums)) {
 }
 
 // 6. Method signatures
-const methods = AgenticPDF.getMethodSignatures();
+const methods = IronDocuments.getMethodSignatures();
 console.log(`\nTotal method signatures: ${methods.length}`);
 
 // 7. Tool schemas
-const openaiTools = AgenticPDF.getToolSchemas('openai');
-const anthropicTools = AgenticPDF.getToolSchemas('anthropic');
-const genericTools = AgenticPDF.getToolSchemas('generic');
+const openaiTools = IronDocuments.getToolSchemas('openai');
+const anthropicTools = IronDocuments.getToolSchemas('anthropic');
+const genericTools = IronDocuments.getToolSchemas('generic');
 console.log(`Tool schemas: OpenAI=${openaiTools.length}, Anthropic=${anthropicTools.length}, Generic=${genericTools.length}`);
 
 // 8. MCP manifest
-const mcp = AgenticPDF.getMCPManifest();
+const mcp = IronDocuments.getMCPManifest();
 console.log(`MCP manifest: ${mcp.tools.length} tools, ${mcp.resources.length} resources`);
 
 // 9. JSON schemas
-const schemas = AgenticPDF.getJSONSchemas();
+const schemas = IronDocuments.getJSONSchemas();
 console.log(`JSON schemas: ${Object.keys(schemas).length}`);
 console.log(`  Types: ${Object.keys(schemas).join(', ')}`);
 
 // 10. describeForAgent
-const agentInfo = AgenticPDF.describeForAgent('openai');
+const agentInfo = IronDocuments.describeForAgent('openai');
 console.log(`\ndescribeForAgent:`);
 console.log(`  tools: ${agentInfo.tools.length}`);
 console.log(`  schemas: ${Object.keys(agentInfo.schemas).length}`);

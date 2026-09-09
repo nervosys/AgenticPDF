@@ -3,7 +3,7 @@
 /**
  * PDF-to-aPDF Generator
  *
- * Reads a PDF file, generates rich aPDF metadata via AgenticPDF,
+ * Reads a PDF file, generates rich aPDF metadata via IronDocuments,
  * and writes a binary .apdf container that packages the original
  * PDF bytes together with the metadata envelope.
  *
@@ -16,7 +16,7 @@
  * If no output path is given, replaces the .pdf extension with .apdf.
  */
 
-import AgenticPDF from '../agenticpdf';
+import IronDocuments from '../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     fileBuffer.byteOffset + fileBuffer.byteLength
   ) as ArrayBuffer;
 
-  const pdf = await AgenticPDF.fromBuffer(arrayBuffer, { lazyLoad: true });
+  const pdf = await IronDocuments.fromBuffer(arrayBuffer, { lazyLoad: true });
 
   try {
     console.log('🔍 Analyzing document structure...');

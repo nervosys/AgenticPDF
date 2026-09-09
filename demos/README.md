@@ -1,6 +1,6 @@
-# AgenticPDF Demos
+# IronDocuments Demos
 
-This directory contains interactive demonstrations and examples showcasing the features and capabilities of AgenticPDF.
+This directory contains interactive demonstrations and examples showcasing the features and capabilities of IronDocuments.
 
 ## 🚀 Quick Start
 
@@ -9,10 +9,10 @@ To run the demos, simply open any HTML file in your web browser. All demos are s
 ## 📋 Available Demos
 
 ### 1. 🎯 PDF Viewer (`pdf-viewer.html`)
-**Full-featured PDF viewer using native AgenticPDF implementation**
+**Full-featured PDF viewer using native IronDocuments implementation**
 
 - **Features:**
-  - **Native AgenticPDF**: Uses `agenticpdf-browser.js` (no external dependencies)
+  - **Native IronDocuments**: Uses `irondocuments-browser.js` (no external dependencies)
   - Dark/Light mode toggle with persistence
   - Fit-to-width with aspect ratio preservation
   - High DPI rendering for sharp text
@@ -24,22 +24,22 @@ To run the demos, simply open any HTML file in your web browser. All demos are s
 - **Usage:** Open `pdf-viewer.html` in your browser
 - **Sample File:** Uses `sample.pdf` for demonstration
 - **Key Innovations:** 
-  - This viewer demonstrates the optimal configuration built into AgenticPDF
-  - Native AgenticPDF implementation
-  - Showcases real AgenticPDF capabilities and API patterns
+  - This viewer demonstrates the optimal configuration built into IronDocuments
+  - Native IronDocuments implementation
+  - Showcases real IronDocuments capabilities and API patterns
 
 ### 2. 🌐 Simple Demo (`simple-demo.html`)
-**Basic AgenticPDF integration example**
+**Basic IronDocuments integration example**
 
 - **Features:**
   - File upload interface
   - Drag and drop support
   - Mock PDF processing demonstration
-  - Educational content about AgenticPDF features
+  - Educational content about IronDocuments features
   - Interactive feedback system
 
 - **Usage:** Open `simple-demo.html` in your browser
-- **Purpose:** Great starting point for understanding AgenticPDF basics
+- **Purpose:** Great starting point for understanding IronDocuments basics
 
 ### 3. 🧪 Configuration Test (`test-optimal-config.html`)
 **Test suite for optimal viewer configuration**
@@ -78,7 +78,7 @@ To run the demos, simply open any HTML file in your web browser. All demos are s
   - Copy-paste ready code snippets
 
 - **Usage:** Open `examples-demo.html` for hands-on API exploration
-- **Purpose:** Learn AgenticPDF API through interactive examples
+- **Purpose:** Learn IronDocuments API through interactive examples
 
 ## 🛠️ Development Tools
 
@@ -106,7 +106,7 @@ npm run examples:help
 1. **Clone the repository**
    ```bash
    git clone [repository-url]
-   cd AgenticPDF
+   cd IronDocuments
    ```
 
 2. **Install dependencies**
@@ -123,7 +123,7 @@ npm run examples:help
 ## 🎯 Demo Features Showcase
 
 ### Theme Toggle Integration
-All demos demonstrate the new theme toggle functionality that's now built into AgenticPDF:
+All demos demonstrate the new theme toggle functionality that's now built into IronDocuments:
 
 - **Dark Mode (Default):** Professional dark theme with optimal contrast
 - **Light Mode:** Clean light theme for bright environments
@@ -132,7 +132,7 @@ All demos demonstrate the new theme toggle functionality that's now built into A
 - **Smooth Transitions:** CSS animations for theme changes
 
 ### Optimal Configuration
-The demos showcase the optimal viewer configuration that's now the default for AgenticPDF:
+The demos showcase the optimal viewer configuration that's now the default for IronDocuments:
 
 ```typescript
 {
@@ -146,7 +146,7 @@ The demos showcase the optimal viewer configuration that's now the default for A
   enableThemeToggle: true,       // Theme switching enabled
   persistTheme: true,            // Save theme preference
   defaultTheme: 'dark',          // Start with dark mode
-  themeStorageKey: 'agenticpdf-theme'
+  themeStorageKey: 'irondocuments-theme'
 }
 ```
 
@@ -159,12 +159,12 @@ The demos showcase the optimal viewer configuration that's now the default for A
 ## 📚 Implementation Documentation
 
 ### Configuration Implementation
-- **`OPTIMAL_CONFIG_IMPLEMENTATION.md`** - Details on how the optimal configuration was integrated into AgenticPDF
+- **`OPTIMAL_CONFIG_IMPLEMENTATION.md`** - Details on how the optimal configuration was integrated into IronDocuments
 - **`THEME_TOGGLE_IMPLEMENTATION.md`** - Complete guide to the theme toggle system
 
 ### API Reference
 Each demo includes inline documentation and comments explaining:
-- AgenticPDF API usage
+- IronDocuments API usage
 - Configuration options
 - Event handling
 - Error management
@@ -181,7 +181,7 @@ Each demo includes inline documentation and comments explaining:
 
 ### Example Custom Configuration
 ```typescript
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   renderOptions: {
     // Override defaults
     defaultTheme: 'light',
@@ -223,7 +223,7 @@ body.light-mode .pdf-viewer {
 
 ## 🚀 Production Usage
 
-The demos show how AgenticPDF works out of the box with optimal settings. For production use:
+The demos show how IronDocuments works out of the box with optimal settings. For production use:
 
 1. **Use the default configuration** - it includes all optimal settings
 2. **Add theme CSS** for light mode support
@@ -265,8 +265,8 @@ After exploring the demos:
 1. **Read the main README** for full API documentation
 2. **Check the implementation docs** for detailed technical information
 3. **Run the test suite** to understand the codebase
-4. **Start building** with AgenticPDF in your own projects
+4. **Start building** with IronDocuments in your own projects
 
 ---
 
-**Note:** All demos are designed to work offline and don't require any external dependencies beyond the included AgenticPDF library.
+**Note:** All demos are designed to work offline and don't require any external dependencies beyond the included IronDocuments library.

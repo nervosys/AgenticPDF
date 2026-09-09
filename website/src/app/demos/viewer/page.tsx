@@ -6,7 +6,7 @@ import { DemoShell, CodeBlock, Tabs } from "@/components/ui";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare global {
   interface Window {
-    AgenticPDF: any;
+    IronDocuments: any;
   }
 }
 
@@ -51,14 +51,14 @@ export default function ViewerDemoPage() {
       try {
         // Fetch script and PDF in parallel
         const [, resp] = await Promise.all([
-          loadScript("/agenticpdf-browser.js"),
+          loadScript("/irondocuments-browser.js"),
           fetch("/shannon1948.pdf"),
         ]);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const buf = await resp.arrayBuffer();
         if (cancelled) return;
 
-        const pdf = await window.AgenticPDF.fromBuffer(buf, { lazyLoad: false });
+        const pdf = await window.IronDocuments.fromBuffer(buf, { lazyLoad: false });
         if (cancelled) { pdf.close(); return; }
 
         pdfRef.current = pdf;
@@ -344,7 +344,7 @@ export default function ViewerDemoPage() {
   return (
     <DemoShell
       title="PDF Viewer Demo"
-      description="Shannon's 1948 paper rendered by the AgenticPDF engine — real PDF parsing, canvas rendering, and continuous scrolling."
+      description="Shannon's 1948 paper rendered by the IronDocuments engine — real PDF parsing, canvas rendering, and continuous scrolling."
     >
       <Tabs
         tabs={[
@@ -613,10 +613,10 @@ export default function ViewerDemoPage() {
             content: (
               <CodeBlock
                 filename="viewer.ts"
-                code={`import { AgenticPDF } from 'agenticpdf';
+                code={`import { IronDocuments } from 'irondocuments';
 
 // Load Shannon's 1948 paper
-const pdf = await AgenticPDF.fromUrl('/shannon1948.pdf');
+const pdf = await IronDocuments.fromUrl('/shannon1948.pdf');
 const container = document.getElementById('viewer');
 
 // Create full-featured viewer

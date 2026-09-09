@@ -26,7 +26,7 @@
 
 ## Overview
 
-The AgenticPDF library implements comprehensive performance optimizations that significantly improve processing speed and memory efficiency for large PDF documents. These optimizations include:
+The IronDocuments library implements comprehensive performance optimizations that significantly improve processing speed and memory efficiency for large PDF documents. These optimizations include:
 
 - **Parser Caching**: Reuse parsed content stream operations
 - **Color Space Caching**: Cache parsed color space objects
@@ -52,7 +52,7 @@ The AgenticPDF library implements comprehensive performance optimizations that s
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      AgenticPDF                               │
+│                      IronDocuments                               │
 ├─────────────────────────────────────────────────────────────┤
 │  Performance Optimizations                                   │
 │  ┌─────────────────────────────────────────────────────┐   │
@@ -289,7 +289,7 @@ Comprehensive APIs for managing cache memory and resource cleanup.
 ### API Methods
 
 ```typescript
-class AgenticPDF {
+class IronDocuments {
   /**
    * Clear all caches (parser + color space + conversions)
    */
@@ -429,10 +429,10 @@ class PerformanceMonitor {
 }
 ```
 
-### AgenticPDF Integration
+### IronDocuments Integration
 
 ```typescript
-class AgenticPDF {
+class IronDocuments {
   // Enable monitoring
   static enablePerformanceMonitoring(): void {
     PerformanceMonitor.enable();
@@ -561,7 +561,7 @@ Progressive loading (lazy page loading) is already supported via the `lazyLoad` 
 ### Configuration
 
 ```typescript
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   lazyLoad: true, // Load pages on demand
   maxMemoryUsage: 100 * 1024 * 1024 // 100MB limit
 });
@@ -581,14 +581,14 @@ const pdf = await AgenticPDF.fromFile(file, {
 
 ```typescript
 // Cache Management
-AgenticPDF.clearAllCaches(): void
+IronDocuments.clearAllCaches(): void
 
 // Performance Monitoring
-AgenticPDF.enablePerformanceMonitoring(): void
-AgenticPDF.disablePerformanceMonitoring(): void
-AgenticPDF.getPerformanceMetrics(): PerformanceMetrics[]
-AgenticPDF.getPerformanceSummary(): Record<string, { count: number; avgDuration: number; totalDuration: number }>
-AgenticPDF.clearPerformanceMetrics(): void
+IronDocuments.enablePerformanceMonitoring(): void
+IronDocuments.disablePerformanceMonitoring(): void
+IronDocuments.getPerformanceMetrics(): PerformanceMetrics[]
+IronDocuments.getPerformanceSummary(): Record<string, { count: number; avgDuration: number; totalDuration: number }>
+IronDocuments.clearPerformanceMetrics(): void
 ```
 
 ### Instance Methods
@@ -629,17 +629,17 @@ interface PerformanceMetrics {
 ### Example 1: Enable Performance Monitoring
 
 ```typescript
-import { AgenticPDF } from 'agenticpdf';
+import { IronDocuments } from 'irondocuments';
 
 // Enable monitoring
-AgenticPDF.enablePerformanceMonitoring();
+IronDocuments.enablePerformanceMonitoring();
 
 // Process PDF
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const text = await pdf.extractText();
 
 // Get performance summary
-const summary = AgenticPDF.getPerformanceSummary();
+const summary = IronDocuments.getPerformanceSummary();
 console.log('Performance Summary:', summary);
 
 // Output:
@@ -649,7 +649,7 @@ console.log('Performance Summary:', summary);
 // }
 
 // Disable monitoring
-AgenticPDF.disablePerformanceMonitoring();
+IronDocuments.disablePerformanceMonitoring();
 ```
 
 ### Example 2: Memory Management for Batch Processing
@@ -657,7 +657,7 @@ AgenticPDF.disablePerformanceMonitoring();
 ```typescript
 async function processPDFBatch(files: File[]) {
   for (const file of files) {
-    const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+    const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
     
     // Process PDF
     const text = await pdf.extractText();
@@ -668,7 +668,7 @@ async function processPDFBatch(files: File[]) {
     
     // Clear caches if memory high
     if (stats.parserCacheSize > 80) {
-      AgenticPDF.clearAllCaches();
+      IronDocuments.clearAllCaches();
     }
     
     // Cleanup
@@ -680,7 +680,7 @@ async function processPDFBatch(files: File[]) {
 ### Example 3: Selective Page Unloading
 
 ```typescript
-const pdf = await AgenticPDF.fromFile(largeFile, { lazyLoad: true });
+const pdf = await IronDocuments.fromFile(largeFile, { lazyLoad: true });
 
 // Process pages 1-100
 for (let i = 1; i <= 100; i++) {
@@ -701,7 +701,7 @@ for (let i = 101; i <= 200; i++) {
 ### Example 4: Memory Pool for Hot Path
 
 ```typescript
-import { MemoryPool } from 'agenticpdf';
+import { MemoryPool } from 'irondocuments';
 
 // Create pool for temporary buffers
 const bufferPool = new MemoryPool(
@@ -727,7 +727,7 @@ function processContent(data: Uint8Array) {
 ### Example 5: Custom Performance Tracking
 
 ```typescript
-import { PerformanceMonitor } from 'agenticpdf';
+import { PerformanceMonitor } from 'irondocuments';
 
 PerformanceMonitor.enable();
 
@@ -786,10 +786,10 @@ Tested on 50-page PDF (5MB) with mixed content (text, images, tables):
 
 ```typescript
 // Good: Lazy load for large PDFs
-const pdf = await AgenticPDF.fromFile(largeFile, { lazyLoad: true });
+const pdf = await IronDocuments.fromFile(largeFile, { lazyLoad: true });
 
 // Bad: Load all pages upfront
-const pdf = await AgenticPDF.fromFile(largeFile, { lazyLoad: false });
+const pdf = await IronDocuments.fromFile(largeFile, { lazyLoad: false });
 ```
 
 ### 2. Clear Caches Periodically
@@ -801,7 +801,7 @@ for (let i = 0; i < 100; i++) {
   
   // Clear every 10 PDFs
   if (i % 10 === 0) {
-    AgenticPDF.clearAllCaches();
+    IronDocuments.clearAllCaches();
   }
 }
 ```
@@ -811,11 +811,11 @@ for (let i = 0; i < 100; i++) {
 ```typescript
 // Enable in development
 if (process.env.NODE_ENV === 'development') {
-  AgenticPDF.enablePerformanceMonitoring();
+  IronDocuments.enablePerformanceMonitoring();
 }
 
 // Analyze bottlenecks
-const summary = AgenticPDF.getPerformanceSummary();
+const summary = IronDocuments.getPerformanceSummary();
 console.log('Slowest operations:', 
   Object.entries(summary)
     .sort((a, b) => b[1].avgDuration - a[1].avgDuration)
@@ -826,7 +826,7 @@ console.log('Slowest operations:',
 ### 4. Monitor Memory Usage
 
 ```typescript
-async function processWithMonitoring(pdf: AgenticPDF) {
+async function processWithMonitoring(pdf: IronDocuments) {
   const stats = pdf.getMemoryStats();
   
   // Warn if caches are full
@@ -845,7 +845,7 @@ async function processWithMonitoring(pdf: AgenticPDF) {
 
 ```typescript
 // Set memory limits for constrained environments
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   lazyLoad: true,
   maxMemoryUsage: 50 * 1024 * 1024 // 50MB limit
 });
@@ -855,9 +855,9 @@ const pdf = await AgenticPDF.fromFile(file, {
 
 ```typescript
 // Identify hot paths with profiling
-AgenticPDF.enablePerformanceMonitoring();
+IronDocuments.enablePerformanceMonitoring();
 // ... run application ...
-const summary = AgenticPDF.getPerformanceSummary();
+const summary = IronDocuments.getPerformanceSummary();
 
 // Create pools for frequently allocated objects
 const pool = new MemoryPool(() => new Float32Array(6), 50);
@@ -893,7 +893,7 @@ const pool = new MemoryPool(() => new Float32Array(6), 50);
 
 ## Conclusion
 
-The AgenticPDF performance optimizations provide a **2-3x performance improvement** for large PDF processing while maintaining a clean, configurable API. The combination of parser caching, color space optimization, memory management, and performance monitoring enables efficient processing of PDFs of any size.
+The IronDocuments performance optimizations provide a **2-3x performance improvement** for large PDF processing while maintaining a clean, configurable API. The combination of parser caching, color space optimization, memory management, and performance monitoring enables efficient processing of PDFs of any size.
 
 **Key Takeaways:**
 - ✅ 53 comprehensive tests (100% passing)

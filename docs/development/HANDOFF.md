@@ -5,7 +5,7 @@ Written 2026-08-26, revised the same day. This is the state of the render-correc
 everything a person needs to pick it up: what is done, how to reproduce every
 measurement, what is open, and what needs a human decision.
 
-The living render-correctness report is the artifact *AgenticPDF Render Status*;
+The living render-correctness report is the artifact *IronDocuments Render Status*;
 it goes into the **findings** in detail. This file is about the **work** — the
 harnesses, the branch, the traps. For *why the engine is built the way it is* —
 the display list, the painter's limits, and what those cost against PDF.js —
@@ -45,7 +45,7 @@ difference visible.
 
 ## Reproducing the measurements
 
-Everything below runs from `agenticpdf-rs/`.
+Everything below runs from `irondocuments-rs/`.
 
 **Capture PDF.js references.** One Firefox instance for the whole corpus; each
 page is saved as a PPM beside a `source.txt` naming the document.
@@ -64,7 +64,7 @@ one.
 
 ```bash
 APDF_CORPUS=<refs-dir> APDF_SHARD=k/6 \
-  cargo test --release --lib -p apdf-reader -- --ignored compare_corpus --nocapture
+  cargo test --release --lib -p irondoc-reader -- --ignored compare_corpus --nocapture
 ```
 
 Six shards side by side finish in a few minutes. Each prints its own
@@ -118,8 +118,8 @@ build that target and not only arm64:
 ```bash
 export ANDROID_NDK_HOME="$LOCALAPPDATA/Android/Sdk/ndk/27.2.12479018"
 export PATH="$PATH:$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/windows-x86_64/bin"
-cargo build --release -p apdf-reader --lib --target x86_64-linux-android
-cp target/x86_64-linux-android/release/libapdf_reader.so \
+cargo build --release -p irondoc-reader --lib --target x86_64-linux-android
+cp target/x86_64-linux-android/release/libirondoc_reader.so \
    apps/reader/android/app/src/main/jniLibs/x86_64/
 
 cd apps/reader/android

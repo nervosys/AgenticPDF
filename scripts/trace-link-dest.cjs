@@ -2,8 +2,8 @@ const ts = require('typescript');
 const fs = require('fs');
 const path = require('path');
 
-let source = fs.readFileSync(path.join(__dirname, '..', 'agenticpdf.ts'), 'utf-8');
-source += '\n(globalThis).AgenticPDF = AgenticPDF;\n';
+let source = fs.readFileSync(path.join(__dirname, '..', 'irondocuments.ts'), 'utf-8');
+source += '\n(globalThis).IronDocuments = IronDocuments;\n';
 
 const result = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.CommonJS, esModuleInterop: true, strict: false }
@@ -12,11 +12,11 @@ const result = ts.transpileModule(source, {
 const tempPath = path.join(__dirname, '_temp_annot_trace.cjs');
 fs.writeFileSync(tempPath, result.outputText);
 require(tempPath);
-const AgenticPDF = globalThis.AgenticPDF;
+const IronDocuments = globalThis.IronDocuments;
 
 (async () => {
   const buf = fs.readFileSync(path.join(__dirname, '..', 'demos', 'sample.pdf'));
-  const pdf = await AgenticPDF.fromBuffer(buf.buffer);
+  const pdf = await IronDocuments.fromBuffer(buf.buffer);
 
   for (let p = 1; p <= 8; p++) {
     const annots = await pdf.getAnnotations(p);

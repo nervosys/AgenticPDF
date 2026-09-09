@@ -40,7 +40,7 @@ export default function DocsPage() {
           Documentation
         </h1>
         <p className="text-lg mb-10 leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          AgenticPDF is a comprehensive, production-ready PDF processing library with
+          IronDocuments is a comprehensive, production-ready PDF processing library with
           first-class support for streaming and AI systems. Everything is in a single
           TypeScript file with zero runtime dependencies.
         </p>
@@ -50,13 +50,13 @@ export default function DocsPage() {
           <h2 className="text-2xl font-bold mb-4" style={{ color: "var(--text)" }}>
             Installation
           </h2>
-          <HighlightedCode code="npm install agenticpdf" language="bash" />
+          <HighlightedCode code="npm install irondocuments" language="bash" />
 
           <p className="mt-4 text-sm" style={{ color: "var(--text-muted)" }}>
             Or include the browser bundle directly:
           </p>
           <HighlightedCode
-            code={`<script src="https://unpkg.com/agenticpdf/agenticpdf-browser.js"></script>`}
+            code={`<script src="https://unpkg.com/irondocuments/irondocuments-browser.js"></script>`}
             language="html"
           />
         </section>
@@ -71,19 +71,19 @@ export default function DocsPage() {
             Load a PDF
           </h3>
           <HighlightedCode
-            code={`import { AgenticPDF } from 'agenticpdf';
+            code={`import { IronDocuments } from 'irondocuments';
 
 // From file (browser)
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 
 // From URL
-const pdf = await AgenticPDF.fromUrl('https://example.com/doc.pdf');
+const pdf = await IronDocuments.fromUrl('https://example.com/doc.pdf');
 
 // From buffer (Node.js)
-const pdf = await AgenticPDF.fromBuffer(buffer);
+const pdf = await IronDocuments.fromBuffer(buffer);
 
 // From stream
-const pdf = AgenticPDF.fromStream(readableStream);`}
+const pdf = IronDocuments.fromStream(readableStream);`}
             filename="loading.ts"
           />
 
@@ -177,7 +177,7 @@ const viewer = pdf.createOptimalViewer(container, {
             Memory Management
           </h3>
           <HighlightedCode
-            code={`const pdf = await AgenticPDF.fromFile(file, {
+            code={`const pdf = await IronDocuments.fromFile(file, {
   lazyLoad: true,
   maxMemoryUsage: 100 * 1024 * 1024 // 100MB
 });
@@ -197,7 +197,7 @@ try {
             Architecture
           </h2>
           <p className="mb-4" style={{ color: "var(--text-muted)" }}>
-            AgenticPDF processes PDFs through a layered pipeline:
+            IronDocuments processes PDFs through a layered pipeline:
           </p>
           <div
             className="rounded-xl p-6 font-mono text-sm leading-loose"

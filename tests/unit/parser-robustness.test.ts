@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
 
-// Access ContentStreamParser through AgenticPDF internals
+// Access ContentStreamParser through IronDocuments internals
 // Note: ContentStreamParser is not exported, so we test it indirectly through PDF operations
 
 // Helper to create a test PDF with specific content stream

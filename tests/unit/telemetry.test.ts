@@ -4,10 +4,10 @@
  * configuration, queue limits, and retry/backoff behavior
  */
 
-import { Telemetry, TelemetryEventType, TelemetryConfig } from '../../agenticpdf';
+import { Telemetry, TelemetryEventType, TelemetryConfig } from '../../irondocuments';
 
 describe('Telemetry', () => {
-  const originalEnv = process.env.AGENTICPDF_NO_TELEMETRY;
+  const originalEnv = process.env.IRONDOCUMENTS_NO_TELEMETRY;
 
   beforeEach(() => {
     // Reset telemetry state between tests
@@ -16,11 +16,11 @@ describe('Telemetry', () => {
 
   afterEach(() => {
     Telemetry.disable();
-    process.env.AGENTICPDF_NO_TELEMETRY = originalEnv;
+    process.env.IRONDOCUMENTS_NO_TELEMETRY = originalEnv;
   });
 
   describe('Opt-out mechanisms', () => {
-    test('should be disabled when AGENTICPDF_NO_TELEMETRY=1', () => {
+    test('should be disabled when IRONDOCUMENTS_NO_TELEMETRY=1', () => {
       // Env var is set in setup.ts, so isEnabled checks during init
       expect(Telemetry.isEnabled()).toBe(false);
     });

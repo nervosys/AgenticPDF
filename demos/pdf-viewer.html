@@ -4,11 +4,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Viewer - sample.pdf (AgenticPDF)</title>
+    <title>PDF Viewer - sample.pdf (IronDocuments)</title>
     <!-- Pako for ZLIB/FlateDecode decompression (required for most PDFs) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
-    <!-- Using AgenticPDF - Our TypeScript PDF library -->
-    <script src="agenticpdf-browser.js"></script>
+    <!-- Using IronDocuments - Our TypeScript PDF library -->
+    <script src="irondocuments-browser.js"></script>
     <style>
         * {
             margin: 0;
@@ -311,7 +311,7 @@
     </div>
 
     <script>
-        // AgenticPDF will be available as window.AgenticPDF after loading agenticpdf-browser.js
+        // IronDocuments will be available as window.IronDocuments after loading irondocuments-browser.js
 
         class PDFViewer {
             constructor() {
@@ -382,16 +382,16 @@
 
             async loadPDF() {
                 try {
-                    console.log('=== Starting PDF load with AgenticPDF ===');
+                    console.log('=== Starting PDF load with IronDocuments ===');
 
-                    // Check if AgenticPDF is available
-                    if (typeof AgenticPDF === 'undefined') {
-                        console.error('AgenticPDF is not defined!');
-                        throw new Error('AgenticPDF library not loaded. Make sure agenticpdf-browser.js is included.');
+                    // Check if IronDocuments is available
+                    if (typeof IronDocuments === 'undefined') {
+                        console.error('IronDocuments is not defined!');
+                        throw new Error('IronDocuments library not loaded. Make sure irondocuments-browser.js is included.');
                     }
 
-                    console.log('AgenticPDF library is available');
-                    console.log('AgenticPDF.fromBuffer:', typeof AgenticPDF.fromBuffer);
+                    console.log('IronDocuments library is available');
+                    console.log('IronDocuments.fromBuffer:', typeof IronDocuments.fromBuffer);
 
                     // Fetch the PDF file
                     const response = await fetch('./sample.pdf');
@@ -400,17 +400,17 @@
                     }
 
                     const arrayBuffer = await response.arrayBuffer();
-                    console.log(`PDF file fetched (${arrayBuffer.byteLength} bytes), loading with AgenticPDF...`);
+                    console.log(`PDF file fetched (${arrayBuffer.byteLength} bytes), loading with IronDocuments...`);
 
-                    // Load PDF using AgenticPDF
-                    this.pdfDocument = await AgenticPDF.fromBuffer(arrayBuffer, {
+                    // Load PDF using IronDocuments
+                    this.pdfDocument = await IronDocuments.fromBuffer(arrayBuffer, {
                         lazyLoad: false,
                         enableWorkers: false
                     });
 
-                    console.log('AgenticPDF.fromBuffer completed, pdfDocument:', this.pdfDocument);
+                    console.log('IronDocuments.fromBuffer completed, pdfDocument:', this.pdfDocument);
 
-                    console.log('PDF loaded successfully with AgenticPDF');
+                    console.log('PDF loaded successfully with IronDocuments');
 
                     const metadata = this.pdfDocument.getMetadata();  // Not async
                     console.log('Metadata:', metadata);
@@ -466,7 +466,7 @@
                 try {
                     console.log(`Rendering page ${pageNumber}...`);
 
-                    // Use AgenticPDF's renderPage method
+                    // Use IronDocuments's renderPage method
                     await this.pdfDocument.renderPage(pageNumber, canvas, {
                         scale: this.zoomLevel,
                         renderScale: this.renderScale,
@@ -558,7 +558,7 @@
                 }
 
                 try {
-                    // Get page dimensions from AgenticPDF
+                    // Get page dimensions from IronDocuments
                     const pages = await this.pdfDocument.getAllPages();
                     if (pages && pages.length > 0) {
                         const firstPage = pages[0];
@@ -566,7 +566,7 @@
                         const viewerWidth = this.viewer.clientWidth - 40;
                         // Calculate zoom level to fit page width to viewer width
                         this.zoomLevel = viewerWidth / pageWidth;
-                        console.log(`AgenticPDF fit-to-width: viewer=${viewerWidth}, page=${pageWidth}, zoom=${this.zoomLevel}`);
+                        console.log(`IronDocuments fit-to-width: viewer=${viewerWidth}, page=${pageWidth}, zoom=${this.zoomLevel}`);
                         this.rerenderPages();
                         this.updateUI();
                     } else {

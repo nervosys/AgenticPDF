@@ -14,14 +14,14 @@ const extractor = new TextExtractor(pdfDocument);
 It failed with: `❌ Error: TextExtractor is not defined`
 
 ## Root Cause
-**Only AgenticPDF class was exported to global scope**
+**Only IronDocuments class was exported to global scope**
 
-The browser bundle wrapper (in `scripts/build-browser.cjs`) was only exporting the main `AgenticPDF` class:
+The browser bundle wrapper (in `scripts/build-browser.cjs`) was only exporting the main `IronDocuments` class:
 
 ```javascript
 // Before fix
 if (typeof window !== 'undefined') {
-    window.AgenticPDF = AgenticPDF;  // Only this!
+    window.IronDocuments = IronDocuments;  // Only this!
 }
 ```
 
@@ -35,14 +35,14 @@ Updated `scripts/build-browser.cjs` to export all necessary classes:
 ```javascript
 // After fix
 if (typeof window !== 'undefined') {
-    window.AgenticPDF = AgenticPDF;
+    window.IronDocuments = IronDocuments;
     window.TextExtractor = TextExtractor;
     window.ImageExtractor = ImageExtractor;
     window.FormExtractor = FormExtractor;
     window.AnnotationExtractor = AnnotationExtractor;
 }
 if (typeof global !== 'undefined') {
-    global.AgenticPDF = AgenticPDF;
+    global.IronDocuments = IronDocuments;
     global.TextExtractor = TextExtractor;
     global.ImageExtractor = ImageExtractor;
     global.FormExtractor = FormExtractor;
@@ -54,8 +54,8 @@ if (typeof global !== 'undefined') {
 
 ### Internal vs External Usage
 
-**Internal usage** (within AgenticPDF):
-- AgenticPDF class internally uses TextExtractor
+**Internal usage** (within IronDocuments):
+- IronDocuments class internally uses TextExtractor
 - Works fine because they're in the same scope
 
 **External usage** (in browser tests):
@@ -88,7 +88,7 @@ const textContent = await extractor.extractPageText(currentPage);
 ## Exported Classes
 
 Now available in browser:
-- `window.AgenticPDF` - Main PDF class
+- `window.IronDocuments` - Main PDF class
 - `window.TextExtractor` - Text extraction
 - `window.ImageExtractor` - Image extraction
 - `window.FormExtractor` - Form handling
@@ -98,7 +98,7 @@ Now available in browser:
 
 ```javascript
 // In browser console or HTML
-const pdf = await AgenticPDF.fromUrl('sample.pdf');
+const pdf = await IronDocuments.fromUrl('sample.pdf');
 
 // Can now use helper classes directly
 const textExtractor = new TextExtractor(pdf);

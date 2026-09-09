@@ -1,6 +1,6 @@
-# AgenticPDF CLI - Quick Start Guide
+# IronDocuments CLI - Quick Start Guide
 
-Get started with the AgenticPDF command-line interface in under 5 minutes!
+Get started with the IronDocuments command-line interface in under 5 minutes!
 
 ## Installation
 
@@ -89,7 +89,7 @@ npm run cli -- chunk -i demos/sample.pdf --chunk-size 1000 -o chunks.json
 npm run cli -- extract -i demos/sample.pdf
 
 # Or use the PowerShell wrapper
-.\agenticpdf-cli.ps1 extract -Input demos/sample.pdf -Verbose
+.\irondocuments-cli.ps1 extract -Input demos/sample.pdf -Verbose
 
 # Batch process all PDFs
 Get-ChildItem *.pdf | ForEach-Object {
@@ -104,7 +104,7 @@ Get-ChildItem *.pdf | ForEach-Object {
 npm run cli -- extract -i demos/sample.pdf
 
 # Or use the bash wrapper
-./agenticpdf-cli.sh extract -i demos/sample.pdf -v
+./irondocuments-cli.sh extract -i demos/sample.pdf -v
 
 # Batch process all PDFs
 for pdf in *.pdf; do
@@ -247,8 +247,8 @@ npm run cli -- extract -i file.pdf -v
 ## Support
 
 - 📖 [Full CLI Documentation](./CLI.md)
-- 🐛 [Report Issues](https://github.com/nervosys/agenticpdf/issues)
-- 💡 [Request Features](https://github.com/nervosys/agenticpdf/issues/new)
+- 🐛 [Report Issues](https://github.com/nervosys/IronDocuments/issues)
+- 💡 [Request Features](https://github.com/nervosys/IronDocuments/issues/new)
 
 ---
 

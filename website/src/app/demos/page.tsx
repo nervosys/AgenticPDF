@@ -34,7 +34,7 @@ export default function DemosPage() {
         Interactive Demos
       </h1>
       <p className="mb-10" style={{ color: "var(--text-muted)" }}>
-        Explore AgenticPDF capabilities with live, interactive demonstrations — powered by Shannon&apos;s
+        Explore IronDocuments capabilities with live, interactive demonstrations — powered by Shannon&apos;s
         1948 paper <em>&quot;A Mathematical Theory of Communication.&quot;</em>
       </p>
 

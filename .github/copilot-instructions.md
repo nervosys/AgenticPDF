@@ -1,13 +1,13 @@
-# AgenticPDF AI Agent Instructions
+# IronDocuments AI Agent Instructions
 
 ## Project Overview
 
-AgenticPDF is a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems. This is a **single-file TypeScript library** (`AgenticPDF.ts`) containing a complete PDF processing implementation optimized for modern applications.
+IronDocuments is a comprehensive, production-ready PDF processing library with first-class support for streaming and AI systems. This is a **single-file TypeScript library** (`IronDocuments.ts`) containing a complete PDF processing implementation optimized for modern applications.
 
 ## Architecture & Core Components
 
 ### Main Class Structure
-- **`AgenticPDF`** - Primary API class with factory methods (`fromFile()`, `fromUrl()`, `fromBuffer()`, `fromStream()`)
+- **`IronDocuments`** - Primary API class with factory methods (`fromFile()`, `fromUrl()`, `fromBuffer()`, `fromStream()`)
 - **Core Parsers**: `PDFParser`, `StreamingPDFParser`, `ContentStreamParser` for handling PDF structure
 - **Extraction Classes**: `TextExtractor`, `ImageExtractor`, `FormExtractor`, `AnnotationExtractor`
 - **AI-Specific**: `AIAnalyzer`, `SemanticChunker` for intelligent content analysis
@@ -24,9 +24,9 @@ AgenticPDF is a comprehensive, production-ready PDF processing library with firs
 ### Loading Documents
 ```typescript
 // Factory methods for different sources
-const pdf = await AgenticPDF.fromFile(file, options);
-const pdf = await AgenticPDF.fromUrl(url, streamOptions);
-const pdf = AgenticPDF.fromStream(stream, options);
+const pdf = await IronDocuments.fromFile(file, options);
+const pdf = await IronDocuments.fromUrl(url, streamOptions);
+const pdf = IronDocuments.fromStream(stream, options);
 ```
 
 ### Streaming Operations
@@ -133,7 +133,7 @@ for await (const chunk of pdf.streamSemanticChunks()) {
 async function processPDFBatch(files: File[]) {
   const results = await Promise.allSettled(
     files.map(async (file) => {
-      const pdf = await AgenticPDF.fromFile(file, { 
+      const pdf = await IronDocuments.fromFile(file, { 
         lazyLoad: true,
         maxMemoryUsage: 100 * 1024 * 1024 // 100MB limit
       });
@@ -157,7 +157,7 @@ async function processPDFBatch(files: File[]) {
 ### Worker Thread Integration
 ```typescript
 // Use with Web Workers for CPU-intensive operations
-const pdf = await AgenticPDF.fromFile(file, {
+const pdf = await IronDocuments.fromFile(file, {
   useWebWorkers: true,
   workerUrl: '/pdf-worker.js'
 });
@@ -203,7 +203,7 @@ for await (const chunk of pdf.streamSemanticChunks({
 ### Streaming PDF Content to LLMs
 ```typescript
 // Stream semantic chunks directly to an LLM for analysis
-async function streamToLLM(pdf: AgenticPDF, llmEndpoint: string) {
+async function streamToLLM(pdf: IronDocuments, llmEndpoint: string) {
   const chunks: string[] = [];
   
   for await (const chunk of pdf.streamSemanticChunks({
@@ -229,7 +229,7 @@ async function streamToLLM(pdf: AgenticPDF, llmEndpoint: string) {
 
 ### Real-time Processing with Progress Tracking
 ```typescript
-const pdf = await AgenticPDF.fromUrl(url, {
+const pdf = await IronDocuments.fromUrl(url, {
   streamOptions: {
     chunkSize: 1024 * 1024, // 1MB chunks
     progressCallback: (progress) => {
@@ -314,25 +314,25 @@ const jsonStream = await pdf.exportAs('json', {
 
 ## Ontology & AI Agent Discovery
 
-AgenticPDF includes a built-in ontology and introspection API that allows AI agents to programmatically discover capabilities, understand the type system, and generate code.
+IronDocuments includes a built-in ontology and introspection API that allows AI agents to programmatically discover capabilities, understand the type system, and generate code.
 
 ### Discovery API
 
 ```typescript
 // Get full machine-readable ontology (JSON-LD style)
-const ontology = AgenticPDF.describe();
+const ontology = IronDocuments.describe();
 // Returns: LibraryOntology with concepts, capabilities, workflows, enums
 
 // Get capability map organized by category
-const capabilities = AgenticPDF.getCapabilities();
+const capabilities = IronDocuments.getCapabilities();
 // Returns: Capability[] with methods, input/output types, streaming support
 
 // Get all method signatures for code generation
-const methods = AgenticPDF.getMethodSignatures();
+const methods = IronDocuments.getMethodSignatures();
 // Returns: MethodDescriptor[] with parameters, return types, examples
 
 // Get pre-built workflow templates
-const workflows = AgenticPDF.getWorkflows();
+const workflows = IronDocuments.getWorkflows();
 // Returns: Workflow[] with step-by-step instructions and code examples
 
 // Instance-level: describe what's possible with the loaded document
@@ -359,7 +359,7 @@ Capabilities are organized into: loading, extraction, rendering, analysis, searc
 
 ## Project-Specific Conventions
 
-- **Single File Design**: All functionality in one `AgenticPDF.ts` file
+- **Single File Design**: All functionality in one `IronDocuments.ts` file
 - **Streaming by Default**: Always prefer streaming APIs for production usage
 - **AI-Ready**: Built-in support for embeddings, chunking, and structural analysis
 - **TypeScript Native**: Full type safety without runtime dependencies

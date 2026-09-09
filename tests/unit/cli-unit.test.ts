@@ -1,5 +1,5 @@
 /**
- * AgenticPDF CLI Unit Tests
+ * IronDocuments CLI Unit Tests
  * 
  * Unit tests for CLI helper functions and argument parsing
  */

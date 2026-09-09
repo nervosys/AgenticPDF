@@ -4,7 +4,7 @@
  * clearAllCaches, static methods, export edge cases, error paths.
  */
 
-import { AgenticPDF, Telemetry, AnnotationType } from '../../agenticpdf';
+import { IronDocuments, Telemetry, AnnotationType } from '../../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -23,36 +23,36 @@ beforeAll(() => {
 
 describe('Performance monitoring', () => {
   test('enablePerformanceMonitoring should not throw', () => {
-    expect(() => AgenticPDF.enablePerformanceMonitoring()).not.toThrow();
+    expect(() => IronDocuments.enablePerformanceMonitoring()).not.toThrow();
   });
 
   test('getPerformanceMetrics should return array', () => {
-    const metrics = AgenticPDF.getPerformanceMetrics();
+    const metrics = IronDocuments.getPerformanceMetrics();
     expect(Array.isArray(metrics)).toBe(true);
   });
 
   test('getPerformanceSummary should return object', () => {
-    const summary = AgenticPDF.getPerformanceSummary();
+    const summary = IronDocuments.getPerformanceSummary();
     expect(typeof summary).toBe('object');
   });
 
   test('clearPerformanceMetrics should not throw', () => {
-    expect(() => AgenticPDF.clearPerformanceMetrics()).not.toThrow();
+    expect(() => IronDocuments.clearPerformanceMetrics()).not.toThrow();
   });
 
   test('disablePerformanceMonitoring should not throw', () => {
-    expect(() => AgenticPDF.disablePerformanceMonitoring()).not.toThrow();
+    expect(() => IronDocuments.disablePerformanceMonitoring()).not.toThrow();
   });
 
   test('metrics should accumulate during operations', async () => {
-    AgenticPDF.enablePerformanceMonitoring();
-    AgenticPDF.clearPerformanceMetrics();
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    IronDocuments.enablePerformanceMonitoring();
+    IronDocuments.clearPerformanceMetrics();
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     await pdf.extractText();
-    const metrics = AgenticPDF.getPerformanceMetrics();
+    const metrics = IronDocuments.getPerformanceMetrics();
     // Performance monitoring may or may not produce metrics depending on internals
     expect(Array.isArray(metrics)).toBe(true);
-    AgenticPDF.disablePerformanceMonitoring();
+    IronDocuments.disablePerformanceMonitoring();
     pdf.close();
   });
 });
@@ -63,13 +63,13 @@ describe('Performance monitoring', () => {
 
 describe('Static cache and utility methods', () => {
   test('clearAllCaches should not throw', () => {
-    expect(() => AgenticPDF.clearAllCaches()).not.toThrow();
+    expect(() => IronDocuments.clearAllCaches()).not.toThrow();
   });
 
   test('clearAllCaches after loading document', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     await pdf.extractText();
-    expect(() => AgenticPDF.clearAllCaches()).not.toThrow();
+    expect(() => IronDocuments.clearAllCaches()).not.toThrow();
     pdf.close();
   });
 });
@@ -80,7 +80,7 @@ describe('Static cache and utility methods', () => {
 
 describe('addAnnotation', () => {
   test('should add an annotation and return id', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     const id = await pdf.addAnnotation({
       type: AnnotationType.Text,
       pageNumber: 1,
@@ -93,7 +93,7 @@ describe('addAnnotation', () => {
   });
 
   test('should add highlight annotation', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     const id = await pdf.addAnnotation({
       type: AnnotationType.Highlight,
       pageNumber: 1,
@@ -110,9 +110,9 @@ describe('addAnnotation', () => {
 
 describe('Multiple instance lifecycle', () => {
   test('create and close multiple instances', async () => {
-    const instances: AgenticPDF[] = [];
+    const instances: IronDocuments[] = [];
     for (let i = 0; i < 3; i++) {
-      instances.push(await AgenticPDF.fromBuffer(pdfBuffer));
+      instances.push(await IronDocuments.fromBuffer(pdfBuffer));
     }
     for (const inst of instances) {
       expect(inst.getPageCount()).toBe(8);
@@ -121,7 +121,7 @@ describe('Multiple instance lifecycle', () => {
   });
 
   test('getPageCount should change after close', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     expect(pdf.getPageCount()).toBe(8);
     pdf.close();
     // After close, internal state is cleared
@@ -135,10 +135,10 @@ describe('Multiple instance lifecycle', () => {
 // ============================================================================
 
 describe('Export edge cases', () => {
-  let pdf: AgenticPDF;
+  let pdf: IronDocuments;
 
   beforeAll(async () => {
-    pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    pdf = await IronDocuments.fromBuffer(pdfBuffer);
   });
 
   afterAll(() => {
@@ -175,10 +175,10 @@ describe('Export edge cases', () => {
 // ============================================================================
 
 describe('Streaming text options', () => {
-  let pdf: AgenticPDF;
+  let pdf: IronDocuments;
 
   beforeAll(async () => {
-    pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    pdf = await IronDocuments.fromBuffer(pdfBuffer);
   });
 
   afterAll(() => {
@@ -251,10 +251,10 @@ describe('Telemetry API', () => {
 // ============================================================================
 
 describe('describeDocument deeper paths', () => {
-  let pdf: AgenticPDF;
+  let pdf: IronDocuments;
 
   beforeAll(async () => {
-    pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    pdf = await IronDocuments.fromBuffer(pdfBuffer);
   });
 
   afterAll(() => {
@@ -294,13 +294,13 @@ describe('describeDocument deeper paths', () => {
 
 describe('Loading with options', () => {
   test('fromBuffer with lazyLoad option', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer, { lazyLoad: true });
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer, { lazyLoad: true });
     expect(pdf.getPageCount()).toBe(8);
     pdf.close();
   });
 
   test('fromBuffer with maxMemoryUsage', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer, { maxMemoryUsage: 50 * 1024 * 1024 });
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer, { maxMemoryUsage: 50 * 1024 * 1024 });
     expect(pdf.getPageCount()).toBe(8);
     pdf.close();
   });
@@ -312,16 +312,16 @@ describe('Loading with options', () => {
 
 describe('Error paths', () => {
   test('fromBuffer with empty buffer should throw', async () => {
-    await expect(AgenticPDF.fromBuffer(new ArrayBuffer(0))).rejects.toThrow();
+    await expect(IronDocuments.fromBuffer(new ArrayBuffer(0))).rejects.toThrow();
   });
 
   test('fromBuffer with invalid data should throw', async () => {
     const bad = new TextEncoder().encode('Not a PDF file at all');
-    await expect(AgenticPDF.fromBuffer(bad.buffer as ArrayBuffer)).rejects.toThrow();
+    await expect(IronDocuments.fromBuffer(bad.buffer as ArrayBuffer)).rejects.toThrow();
   });
 
   test('search on closed instance should handle gracefully', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     pdf.close();
     // After close, data is cleared — search may throw or return empty
     try {
@@ -339,20 +339,20 @@ describe('Error paths', () => {
 
 describe('Ontology method details', () => {
   test('describe returns valid structure', () => {
-    const ontology = AgenticPDF.describe();
+    const ontology = IronDocuments.describe();
     expect(ontology['@context']).toBeDefined();
     expect(ontology.concepts).toBeDefined();
     expect(ontology.capabilities).toBeDefined();
   });
 
   test('getCapabilities returns categorized items', () => {
-    const caps = AgenticPDF.getCapabilities();
+    const caps = IronDocuments.getCapabilities();
     const categories = new Set(caps.map(c => c.category));
     expect(categories.size).toBeGreaterThan(3);
   });
 
   test('getMethodSignatures has return types', () => {
-    const methods = AgenticPDF.getMethodSignatures();
+    const methods = IronDocuments.getMethodSignatures();
     for (const method of methods) {
       expect(method.name).toBeDefined();
       expect(method.returnType).toBeDefined();
@@ -360,7 +360,7 @@ describe('Ontology method details', () => {
   });
 
   test('getWorkflows have steps', () => {
-    const workflows = AgenticPDF.getWorkflows();
+    const workflows = IronDocuments.getWorkflows();
     for (const wf of workflows) {
       expect(wf.name).toBeDefined();
       expect(wf.steps.length).toBeGreaterThan(0);
@@ -374,7 +374,7 @@ describe('Ontology method details', () => {
 
 describe('Unlock on non-encrypted PDF', () => {
   test('unlock should return false on non-encrypted PDF', async () => {
-    const pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf = await IronDocuments.fromBuffer(pdfBuffer);
     const result = await pdf.unlock('password');
     expect(result).toBe(false);
     pdf.close();

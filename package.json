@@ -1,13 +1,13 @@
 {
-  "name": "agenticpdf",
+  "name": "irondocuments",
   "version": "1.0.0",
   "description": "Modern, TypeScript-native PDF processing library with streaming, AI integration, and performance optimizations. Production-ready with comprehensive features.",
-  "main": "dist/agenticpdf.js",
-  "types": "dist/agenticpdf.d.ts",
+  "main": "dist/irondocuments.js",
+  "types": "dist/irondocuments.d.ts",
   "type": "module",
   "bin": {
-    "apdf": "./cli.js",
-    "agenticpdf": "./cli.js"
+    "irondoc": "./cli.js",
+    "idoc": "./cli.js"
   },
   "scripts": {
     "cli": "npx tsx cli.ts",
@@ -21,8 +21,8 @@
     "test:integration": "jest tests/integration",
     "test:verbose": "jest --verbose",
     "test:silent": "jest --silent",
-    "lint": "eslint agenticpdf.ts",
-    "lint:fix": "eslint agenticpdf.ts --fix",
+    "lint": "eslint irondocuments.ts",
+    "lint:fix": "eslint irondocuments.ts --fix",
     "typecheck": "tsc --noEmit",
     "dev": "npm run test:watch",
     "ci": "npm run typecheck && npm run lint && npm run test:coverage",
@@ -71,12 +71,12 @@
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nervosys/AgenticPDF.git"
+    "url": "https://github.com/nervosys/IronDocuments.git"
   },
   "bugs": {
-    "url": "https://github.com/nervosys/AgenticPDF/issues"
+    "url": "https://github.com/nervosys/IronDocuments/issues"
   },
-  "homepage": "https://github.com/nervosys/AgenticPDF#readme",
+  "homepage": "https://github.com/nervosys/IronDocuments#readme",
   "funding": [
     {
       "type": "github",
@@ -130,8 +130,8 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/agenticpdf.d.ts",
-      "import": "./dist/agenticpdf.js"
+      "types": "./dist/irondocuments.d.ts",
+      "import": "./dist/irondocuments.js"
     },
     "./otel": {
       "types": "./dist/otel.d.ts",
@@ -142,7 +142,7 @@
     "dist",
     "cli.js",
     "cli.ts",
-    "agenticpdf.ts",
+    "irondocuments.ts",
     "otel.ts",
     ".env.example",
     "scripts/setup-env.cjs",

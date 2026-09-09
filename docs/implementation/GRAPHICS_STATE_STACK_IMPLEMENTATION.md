@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the enhanced graphics state stack management in AgenticPDF. The implementation ensures proper save/restore of all graphics state parameters including transformation matrices, line styles, colors, and text state through the PDF `q` and `Q` operators.
+This document describes the enhanced graphics state stack management in IronDocuments. The implementation ensures proper save/restore of all graphics state parameters including transformation matrices, line styles, colors, and text state through the PDF `q` and `Q` operators.
 
 ## Problem Statement
 
@@ -67,7 +67,7 @@ Q                    % Restore to black, 1pt
 
 ### GraphicsState Interface
 
-**Location**: `agenticpdf.ts` ~line 4490
+**Location**: `irondocuments.ts` ~line 4490
 
 ```typescript
 interface GraphicsState {
@@ -107,7 +107,7 @@ interface GraphicsState {
 
 ### State Storage in PDFGraphicsExecutor
 
-**Location**: `agenticpdf.ts` ~line 4525
+**Location**: `irondocuments.ts` ~line 4525
 
 ```typescript
 class PDFGraphicsExecutor {
@@ -137,7 +137,7 @@ class PDFGraphicsExecutor {
 
 ### Save Graphics State (q operator)
 
-**Location**: `agenticpdf.ts` ~line 4653
+**Location**: `irondocuments.ts` ~line 4653
 
 **Implementation**:
 
@@ -194,7 +194,7 @@ private saveGraphicsState(): void {
 
 ### Restore Graphics State (Q operator)
 
-**Location**: `agenticpdf.ts` ~line 4686
+**Location**: `irondocuments.ts` ~line 4686
 
 **Implementation**:
 
@@ -330,7 +330,7 @@ private setFillRGB(operands: number[]): void {
 
 **Enhanced cm operator**:
 
-**Location**: `agenticpdf.ts` ~line 4728
+**Location**: `irondocuments.ts` ~line 4728
 
 ```typescript
 private concatMatrix(operands: number[]): void {
@@ -695,7 +695,7 @@ private restoreGraphicsState(): void {
 ### Basic Usage
 
 ```typescript
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const page = await pdf.getPage(1);
 
 // Rendering automatically handles graphics state

@@ -5,10 +5,10 @@ const guides = [
     id: "rag-pipeline",
     title: "Building a RAG Pipeline",
     desc: "Ingest PDFs into a vector database for retrieval-augmented generation.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    code: `import { IronDocuments } from 'irondocuments';
 
 async function ingestPDF(file: File, vectorStore: VectorStore) {
-  const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+  const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 
   try {
     for await (const chunk of pdf.streamSemanticChunks({
@@ -40,8 +40,8 @@ async function ingestPDF(file: File, vectorStore: VectorStore) {
   {
     id: "custom-embeddings",
     title: "Custom Embedding Provider",
-    desc: "Integrate your own embedding model with AgenticPDF's AI features.",
-    code: `import { AgenticPDF, EmbeddingProvider } from 'agenticpdf';
+    desc: "Integrate your own embedding model with IronDocuments's AI features.",
+    code: `import { IronDocuments, EmbeddingProvider } from 'irondocuments';
 
 class OpenAIEmbeddings implements EmbeddingProvider {
   model = 'text-embedding-3-small';
@@ -84,10 +84,10 @@ const ai = await pdf.getAIFeatures({
     id: "streaming-large",
     title: "Streaming Large Documents",
     desc: "Process PDFs of any size with constant memory using async generators.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    code: `import { IronDocuments } from 'irondocuments';
 
 async function processLargeDocument(url: string) {
-  const pdf = await AgenticPDF.fromUrl(url, {
+  const pdf = await IronDocuments.fromUrl(url, {
     lazyLoad: true,
     maxMemoryUsage: 100 * 1024 * 1024,
     streamOptions: {
@@ -115,10 +115,10 @@ async function processLargeDocument(url: string) {
     id: "form-processing",
     title: "Form Processing",
     desc: "Extract form fields, fill them programmatically, and save the result.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    code: `import { IronDocuments } from 'irondocuments';
 
 async function processForm(file: File) {
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   // Read existing form data
   const fields = await pdf.getFormFields();
@@ -145,10 +145,10 @@ async function processForm(file: File) {
     id: "multi-format-export",
     title: "Multi-Format Export",
     desc: "Export a single PDF to multiple formats for different consumers.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    code: `import { IronDocuments } from 'irondocuments';
 
 async function exportAll(file: File) {
-  const pdf = await AgenticPDF.fromFile(file);
+  const pdf = await IronDocuments.fromFile(file);
 
   // Plain text for search indexing
   const text = await pdf.exportAs('text', {
@@ -180,10 +180,10 @@ async function exportAll(file: File) {
     id: "agentic-ingestion",
     title: "Agentic Ingestion",
     desc: "Use the unified ingestion API to extract metadata, structure, and semantic chunks in a single call — ideal for LLM pipelines and function-calling agents.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    code: `import { IronDocuments } from 'irondocuments';
 
 // Single-call ingestion — everything in one object
-const pdf = await AgenticPDF.fromFile(file, { lazyLoad: true });
+const pdf = await IronDocuments.fromFile(file, { lazyLoad: true });
 const result = await pdf.ingest({
   chunkSize: 1000,
   includeText: true,
@@ -202,7 +202,7 @@ for (const chunk of result.chunks) {
 pdf.close();
 
 // Or stream as NDJSON for real-time processing
-const pdf2 = await AgenticPDF.fromFile(file);
+const pdf2 = await IronDocuments.fromFile(file);
 for await (const line of pdf2.streamIngest({ chunkSize: 1000 })) {
   const record = JSON.parse(line);
   if (record.type === 'chunk') {
@@ -214,24 +214,24 @@ pdf2.close();`,
   {
     id: "agent-discovery",
     title: "AI Agent Discovery",
-    desc: "Let AI agents programmatically discover AgenticPDF's capabilities.",
-    code: `import { AgenticPDF } from 'agenticpdf';
+    desc: "Let AI agents programmatically discover IronDocuments's capabilities.",
+    code: `import { IronDocuments } from 'irondocuments';
 
 // Full ontology for agent systems
-const ontology = AgenticPDF.describe();
+const ontology = IronDocuments.describe();
 console.log(ontology['@context']); // JSON-LD context
 
 // Capability map
-const caps = AgenticPDF.getCapabilities();
+const caps = IronDocuments.getCapabilities();
 for (const cap of caps) {
   console.log(\`[\${cap.category}] \${cap.name}: \${cap.description}\`);
 }
 
 // Method signatures for code generation
-const methods = AgenticPDF.getMethodSignatures();
+const methods = IronDocuments.getMethodSignatures();
 
 // Pre-built workflow templates
-const workflows = AgenticPDF.getWorkflows();
+const workflows = IronDocuments.getWorkflows();
 for (const wf of workflows) {
   console.log(\`Workflow: \${wf.name}\`);
   for (const step of wf.steps) {
@@ -240,7 +240,7 @@ for (const wf of workflows) {
 }
 
 // Tool schemas for function-calling LLMs
-const tools = AgenticPDF.getToolSchemas('openai');
+const tools = IronDocuments.getToolSchemas('openai');
 // Pass directly to OpenAI chat completions API`,
   },
 ];
@@ -252,7 +252,7 @@ export default function GuidesPage() {
         Guides
       </h1>
       <p className="mb-10" style={{ color: "var(--text-muted)" }}>
-        Step-by-step guides for common AgenticPDF use cases.
+        Step-by-step guides for common IronDocuments use cases.
       </p>
 
       <nav className="mb-12">

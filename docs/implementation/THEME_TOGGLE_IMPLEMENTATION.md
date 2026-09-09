@@ -1,7 +1,7 @@
-# AgenticPDF Theme Toggle Configuration Implementation
+# IronDocuments Theme Toggle Configuration Implementation
 
 ## Overview
-Successfully integrated theme toggle functionality as the default configuration for the AgenticPDF library. The implementation includes a comprehensive ThemeManager class and enhanced rendering options.
+Successfully integrated theme toggle functionality as the default configuration for the IronDocuments library. The implementation includes a comprehensive ThemeManager class and enhanced rendering options.
 
 ## Key Enhancements Made
 
@@ -46,8 +46,8 @@ Updated the PDFRenderer class with theme-aware functionality:
 - **`configureOptimalViewer()`**: Integrates with ThemeManager for automatic theme handling
 - **`createOptimalViewer()`**: Creates complete viewer with theme toggle button
 
-### 4. AgenticPDF Integration
-Added convenience methods to the main AgenticPDF class:
+### 4. IronDocuments Integration
+Added convenience methods to the main IronDocuments class:
 
 #### New Methods:
 - **`createOptimalViewer(container, options)`**: Create complete themed viewer
@@ -75,7 +75,7 @@ The default configuration now automatically includes:
   enableThemeToggle: true,       // Enable theme switching
   persistTheme: true,            // Save preferences
   defaultTheme: 'dark',          // Start with dark theme
-  themeStorageKey: 'agenticpdf-theme'  // Storage key
+  themeStorageKey: 'irondocuments-theme'  // Storage key
 }
 ```
 
@@ -84,13 +84,13 @@ The default configuration now automatically includes:
 ### 1. Automatic (Zero Configuration)
 ```typescript
 // Theme toggle is automatically enabled
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 // Includes theme toggle functionality by default!
 ```
 
 ### 2. Complete Themed Viewer
 ```typescript
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const container = document.getElementById('pdf-container');
 
 const viewer = pdf.createOptimalViewer(container, {
@@ -105,7 +105,7 @@ viewer.themeManager.toggleTheme();
 ### 3. Manual Theme Management
 ```typescript
 // Initialize theme globally
-const themeManager = AgenticPDF.initializeTheme({
+const themeManager = IronDocuments.initializeTheme({
   defaultTheme: 'auto',
   persistTheme: true
 });
@@ -126,7 +126,7 @@ const themeButton = ThemeManager.createThemeToggleButton({
 ### 4. Custom Theme Integration
 ```typescript
 // Get theme manager instance
-const themeManager = AgenticPDF.getThemeManager();
+const themeManager = IronDocuments.getThemeManager();
 
 // Programmatically control theme
 themeManager.setTheme('light');
@@ -187,7 +187,7 @@ const button = ThemeManager.createThemeToggleButton({
 ### System Theme Detection
 ```typescript
 // Automatically detect system preference
-const themeManager = AgenticPDF.initializeTheme({
+const themeManager = IronDocuments.initializeTheme({
   defaultTheme: 'auto'  // Respects prefers-color-scheme
 });
 ```
@@ -202,7 +202,7 @@ const viewer = pdf.createOptimalViewer(container, {
 
 ### Theme Change Observers
 ```typescript
-const themeManager = AgenticPDF.getThemeManager();
+const themeManager = IronDocuments.getThemeManager();
 
 // Add multiple observers
 themeManager.addObserver(updateNavbar);
@@ -254,4 +254,4 @@ themeManager.removeObserver(updateNavbar);
 4. **Testing Covered** - Comprehensive test coverage maintained
 
 ## Conclusion
-The AgenticPDF library now includes production-ready theme toggle functionality as part of its optimal configuration. Users get professional dark/light mode switching by default, with extensive customization options available for advanced use cases. The implementation maintains full backward compatibility while providing a modern, accessible user experience.
+The IronDocuments library now includes production-ready theme toggle functionality as part of its optimal configuration. Users get professional dark/light mode switching by default, with extensive customization options available for advanced use cases. The implementation maintains full backward compatibility while providing a modern, accessible user experience.

@@ -1,9 +1,9 @@
 /**
  * Unit tests for core PDF parsing functionality
- * Tests the AgenticPDF library's parsing capabilities through the public API
+ * Tests the IronDocuments library's parsing capabilities through the public API
  */
 
-import { AgenticPDF, PDFOptions } from '../../agenticpdf';
+import { IronDocuments, PDFOptions } from '../../irondocuments';
 import { Mocks } from '../mocks';
 import { TestFixtures } from '../fixtures';
 
@@ -214,12 +214,12 @@ describe('PDF Parser Core Functionality', () => {
     });
 });
 
-describe('AgenticPDF API Integration Tests', () => {
-    test('should create AgenticPDF instance from buffer', async () => {
+describe('IronDocuments API Integration Tests', () => {
+    test('should create IronDocuments instance from buffer', async () => {
         const pdfData = Mocks.PDFGenerator.createSimplePDF();
 
         try {
-            const pdf = await AgenticPDF.fromBuffer(pdfData.buffer as ArrayBuffer);
+            const pdf = await IronDocuments.fromBuffer(pdfData.buffer as ArrayBuffer);
             expect(pdf).toBeDefined();
 
             // Test basic functionality

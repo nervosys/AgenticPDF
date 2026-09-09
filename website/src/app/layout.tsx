@@ -8,7 +8,7 @@ const inter = Inter({ subsets: ["latin"], display: "swap", variable: "--font-int
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], display: "swap", variable: "--font-jetbrains-mono" });
 
 export const metadata: Metadata = {
-  title: "AgenticPDF — AI-Native PDF Processing for TypeScript",
+  title: "IronDocuments — AI-Native PDF Processing for TypeScript",
   description:
     "Streaming-first, AI-native PDF library with semantic chunking, canvas rendering, and zero runtime dependencies. Built for modern applications.",
   keywords: [
@@ -22,7 +22,7 @@ export const metadata: Metadata = {
     "text extraction",
   ],
   openGraph: {
-    title: "AgenticPDF",
+    title: "IronDocuments",
     description: "AI-Native PDF Processing for TypeScript",
     type: "website",
   },

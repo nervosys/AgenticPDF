@@ -7,19 +7,19 @@
  * sample.pdf: "Inverting Trojans in LLMs" — 8-page academic paper, PDF 1.7
  */
 
-import { AgenticPDF } from '../../agenticpdf';
+import { IronDocuments } from '../../irondocuments';
 import * as fs from 'fs';
 import * as path from 'path';
 
 const SAMPLE_PDF = path.join(__dirname, '..', '..', 'demos', 'sample.pdf');
 
 let pdfBuffer: ArrayBuffer;
-let pdf: AgenticPDF;
+let pdf: IronDocuments;
 
 beforeAll(async () => {
   const raw = fs.readFileSync(SAMPLE_PDF);
   pdfBuffer = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-  pdf = await AgenticPDF.fromBuffer(pdfBuffer);
+  pdf = await IronDocuments.fromBuffer(pdfBuffer);
 });
 
 afterAll(() => {
@@ -163,22 +163,22 @@ describe('Real PDF: Named Destinations', () => {
 
 describe('Real PDF: Ontology & Discovery', () => {
   test('should return ontology with concepts', () => {
-    const ontology = AgenticPDF.describe();
+    const ontology = IronDocuments.describe();
     expect(ontology.concepts.length).toBe(21);
   });
 
   test('should return capabilities', () => {
-    const caps = AgenticPDF.getCapabilities();
+    const caps = IronDocuments.getCapabilities();
     expect(caps.length).toBe(14);
   });
 
   test('should return method signatures', () => {
-    const methods = AgenticPDF.getMethodSignatures();
+    const methods = IronDocuments.getMethodSignatures();
     expect(methods.length).toBeGreaterThanOrEqual(26);
   });
 
   test('should return workflow templates', () => {
-    const workflows = AgenticPDF.getWorkflows();
+    const workflows = IronDocuments.getWorkflows();
     expect(workflows.length).toBe(16);
   });
 
@@ -282,7 +282,7 @@ describe('Real PDF: Export', () => {
 
 describe('Real PDF: Second Instance from Buffer', () => {
   test('should create independent instance', async () => {
-    const pdf2 = await AgenticPDF.fromBuffer(pdfBuffer);
+    const pdf2 = await IronDocuments.fromBuffer(pdfBuffer);
     expect(pdf2.getPageCount()).toBe(8);
     const meta = pdf2.getMetadata();
     expect(meta).toBeDefined();

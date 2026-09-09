@@ -8,7 +8,7 @@
  * - Multiple LLM provider integrations
  */
 
-import AgenticPDF, { SemanticChunk } from '../agenticpdf';
+import IronDocuments, { SemanticChunk } from '../irondocuments';
 
 interface LLMMessage {
     role: 'system' | 'user' | 'assistant';
@@ -128,11 +128,11 @@ class MockLLMProvider extends LLMProvider {
 export async function streamToLLMExample(file: File, apiKey?: string) {
     console.log('=== Streaming PDF to LLM Example ===\n');
 
-    let pdf: AgenticPDF | null = null;
+    let pdf: IronDocuments | null = null;
 
     try {
         // Load PDF with streaming optimizations
-        pdf = await AgenticPDF.fromFile(file, {
+        pdf = await IronDocuments.fromFile(file, {
             lazyLoad: true,
             maxMemoryUsage: 50 * 1024 * 1024, // 50MB limit
             streamOptions: {
@@ -169,7 +169,7 @@ export async function streamToLLMExample(file: File, apiKey?: string) {
     }
 }
 
-async function demonstrateBasicStreaming(pdf: AgenticPDF, llmProvider: LLMProvider) {
+async function demonstrateBasicStreaming(pdf: IronDocuments, llmProvider: LLMProvider) {
     console.log('--- Basic Streaming to LLM ---');
 
     try {
@@ -246,7 +246,7 @@ async function demonstrateBasicStreaming(pdf: AgenticPDF, llmProvider: LLMProvid
     }
 }
 
-async function demonstrateContextAwareStreaming(pdf: AgenticPDF, llmProvider: LLMProvider) {
+async function demonstrateContextAwareStreaming(pdf: IronDocuments, llmProvider: LLMProvider) {
     console.log('\n--- Context-Aware Streaming ---');
 
     try {
@@ -339,7 +339,7 @@ async function demonstrateContextAwareStreaming(pdf: AgenticPDF, llmProvider: LL
     }
 }
 
-async function demonstrateInteractiveAnalysis(pdf: AgenticPDF, llmProvider: LLMProvider) {
+async function demonstrateInteractiveAnalysis(pdf: IronDocuments, llmProvider: LLMProvider) {
     console.log('\n--- Interactive Document Analysis ---');
 
     try {

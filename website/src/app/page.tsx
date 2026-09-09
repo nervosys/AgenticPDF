@@ -85,11 +85,11 @@ const features = [
   },
 ];
 
-const installCode = "npm install agenticpdf";
+const installCode = "npm install irondocuments";
 
-const quickCode = `import { AgenticPDF } from 'agenticpdf';
+const quickCode = `import { IronDocuments } from 'irondocuments';
 
-const pdf = await AgenticPDF.fromFile(file);
+const pdf = await IronDocuments.fromFile(file);
 const text = await pdf.extractText({ preserveFormatting: true });
 console.log(text[0].text);
 
@@ -246,7 +246,7 @@ export default function HomePage() {
             COMPARISON
           </span>
           <h2 className="font-tactical text-3xl mb-4" style={{ color: "var(--text)" }}>
-            AgenticPDF vs Others
+            IronDocuments vs Others
           </h2>
           <p style={{ color: "var(--text-muted)" }}>
             Purpose-built for agentic AI workflows — not retrofitted.
@@ -269,7 +269,7 @@ export default function HomePage() {
                   className="text-center px-5 py-3 font-mono text-xs uppercase tracking-[0.1em] font-semibold"
                   style={{ color: "var(--accent)", borderBottom: "1px solid var(--border)" }}
                 >
-                  AgenticPDF
+                  IronDocuments
                 </th>
                 <th
                   className="text-center px-5 py-3 font-mono text-xs uppercase tracking-[0.1em] font-semibold"
@@ -349,7 +349,7 @@ export default function HomePage() {
             Interactive Demos
           </h2>
           <p className="mb-8 text-sm" style={{ color: "var(--text-muted)" }}>
-            See AgenticPDF in action — agentic AI pipelines, real-time
+            See IronDocuments in action — agentic AI pipelines, real-time
             streaming, PDF rendering, and precision text layout.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

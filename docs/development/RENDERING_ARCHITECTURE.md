@@ -52,7 +52,7 @@ outline, so its `/CharProcs` run as nested operator lists.
 
 ## How this engine does it
 
-`agenticpdf-rs/src/engine.rs` interprets content streams into a `Vec<RenderOp>`.
+`irondocuments-rs/src/engine.rs` interprets content streams into a `Vec<RenderOp>`.
 That is an operator list by another name, and the resemblance is not accidental:
 
 ```rust

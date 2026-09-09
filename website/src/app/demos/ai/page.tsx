@@ -115,7 +115,7 @@ export default function AiDemoPage() {
   return (
     <DemoShell
       title="Agentic AI Demo"
-      description="Interactive demonstration of AgenticPDF's AI features: semantic chunking, structural analysis, entity extraction, and RAG pipeline preparation."
+      description="Interactive demonstration of IronDocuments's AI features: semantic chunking, structural analysis, entity extraction, and RAG pipeline preparation."
     >
       {/* Controls */}
       <div className="flex gap-3 mb-8">
@@ -235,10 +235,10 @@ export default function AiDemoPage() {
             content: (
               <CodeBlock
                 filename="ai-pipeline.ts"
-                code={`import { AgenticPDF, EmbeddingProvider } from 'agenticpdf';
+                code={`import { IronDocuments, EmbeddingProvider } from 'irondocuments';
 
 // 1. Load Shannon's 1948 paper
-const pdf = await AgenticPDF.fromUrl('/shannon1948.pdf', {
+const pdf = await IronDocuments.fromUrl('/shannon1948.pdf', {
   lazyLoad: true,
   maxMemoryUsage: 100 * 1024 * 1024
 });

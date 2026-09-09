@@ -6,12 +6,12 @@ export function Footer() {
     >
       <div className="mx-auto max-w-7xl px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
         <p className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-          &copy; {new Date().getFullYear()} NERVOSYS. AgenticPDF is
+          &copy; {new Date().getFullYear()} NERVOSYS. IronDocuments is
           AGPL-3.0-or-later licensed.
         </p>
         <div className="flex gap-6 font-mono text-xs" style={{ color: "var(--text-muted)" }}>
           <a
-            href="https://github.com/nervosys/AgenticPDF"
+            href="https://github.com/nervosys/IronDocuments"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:underline"
@@ -19,7 +19,7 @@ export function Footer() {
             GitHub
           </a>
           <a
-            href="https://www.npmjs.com/package/agenticpdf"
+            href="https://www.npmjs.com/package/irondocuments"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:underline"

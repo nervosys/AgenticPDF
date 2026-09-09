@@ -1,5 +1,5 @@
 /**
- * AgenticPDF CLI Tests
+ * IronDocuments CLI Tests
  * 
  * Comprehensive test suite for the command-line interface
  */
@@ -65,7 +65,7 @@ describe('CLI - Basic Commands', () => {
     it('should display version', async () => {
         const result = await runCLI(['version']);
         expect(result.exitCode).toBe(0);
-        expect(result.stdout).toContain('AgenticPDF CLI');
+        expect(result.stdout).toContain('IronDocuments CLI');
         expect(result.stdout).toMatch(/v\d+\.\d+\.\d+/);
     });
 
@@ -88,7 +88,7 @@ describe('CLI - Basic Commands', () => {
     it('should show version with --version flag', async () => {
         const result = await runCLI(['--version']);
         expect(result.exitCode).toBe(0);
-        expect(result.stdout).toContain('AgenticPDF CLI');
+        expect(result.stdout).toContain('IronDocuments CLI');
     });
 });
 
