@@ -1617,7 +1617,15 @@ fn html_run(run: &Run) -> String {
     if run.text.is_empty() {
         return String::new();
     }
-    let mut body = crate::xml::escape(&run.text);
+    // A line break inside a run is a break the document states, and HTML
+    // collapses a bare newline to a space -- so a cell holding two lines came
+    // back as one when the HTML was read again.
+    // A spreadsheet writes an in-cell break as CRLF, so the pair is replaced
+    // before either half is, or the carriage return is left behind to be read
+    // back as an ordinary space.
+    let mut body = crate::xml::escape(&run.text)
+        .replace("\r\n", "<br>")
+        .replace(['\n', '\r'], "<br>");
     let style = &run.style;
 
     if style.code {

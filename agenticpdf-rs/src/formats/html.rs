@@ -27,7 +27,8 @@
 //! [`Stylesheet`] — for that and for the emphasis a class states.
 
 use crate::doc::{
-    Align, Block, Cell, ImageRef, Inline, List, ListItem, Row, Run, SemanticDoc, Table, TextStyle,
+    Align, Block, Cell, ImageRef, Inline, List, ListItem, Row, Run, Section, SemanticDoc, Table,
+    TextStyle,
 };
 use crate::xml::decode_entities;
 
@@ -263,12 +264,67 @@ pub fn parse_html_with_styles(data: &[u8], linked: &[String]) -> SemanticDoc {
         title: None,
         assets: Vec::new(),
         sheet,
+        footnotes: Vec::new(),
+        sections: Vec::new(),
+        pending_notes: Vec::new(),
     };
     let blocks = parser.parse_blocks(&[], &[]);
 
     let mut doc = SemanticDoc::new();
     doc.title = parser.title.clone();
-    doc.body().blocks = blocks;
+    doc.footnotes = std::mem::take(&mut parser.footnotes);
+
+    // The divisions are the document only when they *are* the document: a page
+    // whose sections hold everything but the rules between them. A page that
+    // merely uses `<section>` somewhere keeps its one section, because
+    // splitting it would report a structure its author did not state.
+    let ranges = std::mem::take(&mut parser.sections);
+    let mut inside = vec![false; blocks.len()];
+    for (start, len, _) in &ranges {
+        for flag in inside.iter_mut().skip(*start).take(*len) {
+            *flag = true;
+        }
+    }
+    let loose = blocks.iter().enumerate().any(|(at, block)| {
+        !inside[at] && !matches!(block, Block::Divider | Block::PageBreak)
+    });
+
+    if ranges.is_empty() || loose {
+        doc.body().blocks = blocks;
+        return doc;
+    }
+
+    // Taken from the end so the earlier ranges keep their positions. What
+    // follows a division and precedes the next is the rule between them.
+    let mut rest = blocks;
+    let mut sections: Vec<Section> = Vec::with_capacity(ranges.len());
+    for (start, len, notes) in ranges.into_iter().rev() {
+        let mut taken = rest.split_off(start);
+        taken.truncate(len);
+        sections.push(Section {
+            blocks: taken,
+            notes,
+            ..Section::default()
+        });
+    }
+    sections.reverse();
+
+    // The heading a division opens with names it -- but only where there are
+    // divisions to tell apart. In a document of one section the first heading
+    // is the document's own, and taking it for a title moves it out of the
+    // body.
+    if sections.len() > 1 {
+        for section in &mut sections {
+            if let Some(Block::Heading { content, .. }) = section.blocks.first() {
+                let text = crate::doc::inline_text(content);
+                if !text.trim().is_empty() {
+                    section.title = Some(text);
+                    section.blocks.remove(0);
+                }
+            }
+        }
+    }
+    doc.sections = sections;
     doc
 }
 
@@ -745,6 +801,14 @@ struct Parser {
     assets: Vec<String>,
     /// What the document's own `<style>` blocks say about its classes and tags.
     sheet: Stylesheet,
+    /// Notes gathered from the list this writer puts after the body.
+    footnotes: Vec<crate::doc::Footnote>,
+    /// Where each `<section>` began and ended in the top-level blocks, and
+    /// the notes written beside it. The blocks themselves stay in place, so
+    /// deciding not to divide the document cannot lose what a division held.
+    sections: Vec<(usize, usize, Vec<Block>)>,
+    /// Notes read from an `<aside>`, waiting for the section holding them.
+    pending_notes: Vec<Block>,
 }
 
 impl Parser {
@@ -768,7 +832,7 @@ impl Parser {
         // Inline content accumulates until a block-level tag forces a flush.
         macro_rules! flush {
             () => {
-                if !crate::doc::inline_text(&pending).trim().is_empty() {
+                if !crate::doc::inlines_are_empty(&pending) {
                     blocks.push(Block::Paragraph {
                         content: std::mem::take(&mut pending),
                         align: Align::Left,
@@ -818,7 +882,10 @@ impl Parser {
                             flush!();
                             self.at += 1;
                             let content = self.parse_inlines("p", element_style.clone());
-                            if !crate::doc::inline_text(&content).trim().is_empty() {
+                            // A paragraph holding only a picture has no text in
+                            // it, and dropping it dropped the picture -- which
+                            // is the shape any standalone figure takes.
+                            if !crate::doc::inlines_are_empty(&content) {
                                 match word_list_class(&attrs) {
                                     // Word's HTML export writes list items as
                                     // paragraphs, and says so in the class.
@@ -841,6 +908,18 @@ impl Parser {
                                     }),
                                 }
                             }
+                        }
+                        // The list of footnote bodies this writer puts after
+                        // the body. Read as a list it came back as an ordinary
+                        // numbered list at the end of the document, and the
+                        // references above it pointed at nothing.
+                        "ol"
+                            if attribute(&attrs, "class")
+                                .is_some_and(|class| class.split_whitespace().any(|c| c == "footnotes")) =>
+                        {
+                            flush!();
+                            self.at += 1;
+                            self.read_footnote_list();
                         }
                         "ul" | "ol" => {
                             flush!();
@@ -875,12 +954,19 @@ impl Parser {
                             self.at += 1;
                             blocks.push(Block::Divider);
                         }
+                        // A picture with a caption beside it. Flattening the
+                        // element lost the pairing, so a figure came back as a
+                        // paragraph holding a picture and another holding the
+                        // words that describe it.
                         "figure" => {
                             flush!();
                             self.at += 1;
                             let inner = self.parse_blocks(&["figure"], &[]);
                             self.at += 1;
-                            blocks.extend(inner);
+                            match figure_of(&inner) {
+                                Some(figure) => blocks.push(figure),
+                                None => blocks.extend(inner),
+                            }
                         }
                         "img" => {
                             self.at += 1;
@@ -897,7 +983,64 @@ impl Parser {
                         // hidden its whole subtree is, so that case recurses to
                         // carry the flag down; the common visible case stays
                         // flat and cheap.
-                        "div" | "section" | "article" | "main" | "body" | "html" | "header"
+                        // An explicit page break is written as an empty
+                        // division with a class saying so, which read as a
+                        // division is nothing at all -- so a document that went
+                        // out as HTML came back without its breaks.
+                        "div"
+                            if attribute(&attrs, "class")
+                                .is_some_and(|class| class.split_whitespace().any(|c| c == "page-break")) =>
+                        {
+                            flush!();
+                            self.at += 1;
+                            let _ = self.parse_blocks(&["div"], &[]);
+                            if matches!(self.tokens.get(self.at), Some(Token::Close(n)) if n == "div")
+                            {
+                                self.at += 1;
+                            }
+                            blocks.push(Block::PageBreak);
+                        }
+                        // A division of the document. Read as plain
+                        // grouping, a workbook or a deck converted to HTML came
+                        // back as one undivided run of blocks, and the notes
+                        // beside a slide came back as part of it.
+                        "section" => {
+                            flush!();
+                            self.at += 1;
+                            let inner = self.parse_blocks(&["section"], &[]);
+                            if matches!(self.tokens.get(self.at), Some(Token::Close(n)) if n == "section")
+                            {
+                                self.at += 1;
+                            }
+                            let start = blocks.len();
+                            blocks.extend(inner);
+                            // Only the outermost divisions divide the document;
+                            // one nested inside another element is part of it.
+                            if close_stop.is_empty() {
+                                self.sections.push((
+                                    start,
+                                    blocks.len() - start,
+                                    std::mem::take(&mut self.pending_notes),
+                                ));
+                            }
+                        }
+                        // What a presentation says beside a slide rather than
+                        // on it. Read as body content it became part of the
+                        // slide, which is not where it belongs or what it is.
+                        "aside"
+                            if attribute(&attrs, "class").is_some_and(|class| {
+                                class.split_whitespace().any(|c| c == "speaker-notes")
+                            }) =>
+                        {
+                            flush!();
+                            self.at += 1;
+                            self.pending_notes = self.parse_blocks(&["aside"], &[]);
+                            if matches!(self.tokens.get(self.at), Some(Token::Close(n)) if n == "aside")
+                            {
+                                self.at += 1;
+                            }
+                        }
+                        "div" | "article" | "main" | "body" | "html" | "header"
                         | "footer" | "nav" | "aside" | "figcaption" => {
                             flush!();
                             self.at += 1;
@@ -995,11 +1138,77 @@ impl Parser {
         content
     }
 
+    /// Read `<ol class="footnotes">` into the document's notes.
+    ///
+    /// Each `<li>` is one note, in the order the references number them.
+    fn read_footnote_list(&mut self) {
+        loop {
+            match self.tokens.get(self.at) {
+                Some(Token::Close(name)) if name == "ol" => {
+                    self.at += 1;
+                    break;
+                }
+                Some(Token::Open { name, .. }) if name == "li" => {
+                    self.at += 1;
+                    let blocks = self.parse_blocks(&["li", "ol"], &["li"]);
+                    if matches!(self.tokens.get(self.at), Some(Token::Close(n)) if n == "li") {
+                        self.at += 1;
+                    }
+                    self.footnotes.push(crate::doc::Footnote {
+                        label: None,
+                        blocks,
+                    });
+                }
+                None => break,
+                _ => self.at += 1,
+            }
+        }
+    }
+
+    /// The note a `<sup>` refers to, if that is what it is.
+    ///
+    /// The shape is `<sup><a href="#fnN">N</a></sup>`, and nothing else in a
+    /// document points at a fragment named that way.
+    fn footnote_reference(&mut self) -> Option<usize> {
+        let Some(Token::Open { name, attrs }) = self.tokens.get(self.at) else {
+            return None;
+        };
+        if name != "a" {
+            return None;
+        }
+        let number: usize = attribute(attrs, "href")?.strip_prefix("#fn")?.parse().ok()?;
+        let index = number.checked_sub(1)?;
+
+        // Consume the anchor and the `</sup>` around it.
+        let mut at = self.at + 1;
+        while !matches!(self.tokens.get(at), Some(Token::Close(n)) if n == "a") {
+            at += 1;
+            if at > self.tokens.len() {
+                return None;
+            }
+        }
+        at += 1;
+        if matches!(self.tokens.get(at), Some(Token::Close(n)) if n == "sup") {
+            at += 1;
+        }
+        self.at = at;
+        Some(index)
+    }
+
     /// Handle one inline element, applying its style to the nested content.
     fn parse_inline_element(&mut self, name: &str, attrs: &[(String, String)]) -> Vec<Inline> {
         self.at += 1;
         if self.at > self.tokens.len() {
             return Vec::new();
+        }
+
+        // A reference to a note, which this writer marks by pointing at the
+        // note's own id. Read as an anchor it became a link to a fragment, and
+        // re-rendering nested the two the other way round.
+        if name == "sup"
+            && let Some(index) = self.footnote_reference()
+        {
+            return vec![Inline::FootnoteRef { index }];
         }
 
         let outer = self.style.clone();
@@ -1443,6 +1652,46 @@ fn split_marker(text: &str, ordered: bool) -> Option<&str> {
     }
 }
 
+/// A `<figure>`'s blocks as a figure, when that is what they are.
+///
+/// One picture, and at most one run of words to caption it. Anything else is
+/// markup this reader has no better name for than the blocks it holds.
+fn figure_of(blocks: &[Block]) -> Option<Block> {
+    let mut image: Option<ImageRef> = None;
+    let mut caption: Option<String> = None;
+
+    for block in blocks {
+        match block {
+            Block::Figure {
+                image: found,
+                caption: None,
+            } => image = Some(found.clone()),
+            Block::Paragraph { content, .. } => {
+                let mut images = content.iter().filter_map(|inline| match inline {
+                    Inline::Image(found) => Some(found),
+                    _ => None,
+                });
+                match images.next() {
+                    Some(found) if image.is_none() => image = Some(found.clone()),
+                    Some(_) => return None,
+                    None => {
+                        let text = crate::doc::inline_text(content);
+                        match caption.is_none() && !text.trim().is_empty() {
+                            true => caption = Some(text.trim().to_string()),
+                            false => return None,
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(Block::Figure {
+        image: image?,
+        caption,
+    })
+}
+
 fn alignment(attrs: &[(String, String)]) -> Align {
     let style = attribute(attrs, "style").unwrap_or("").to_ascii_lowercase();
     let align = attribute(attrs, "align").unwrap_or("").to_ascii_lowercase();
@@ -1570,6 +1819,106 @@ mod tests {
 
     fn markdown_of(html: &str) -> String {
         to_markdown(&parse_html(html.as_bytes()))
+    }
+
+    fn html_of(document: &SemanticDoc) -> String {
+        crate::doc::to_html(document)
+    }
+
+    /// A paragraph holding only a picture is not an empty paragraph.
+    ///
+    /// Dropping it dropped the picture, which is the shape any standalone
+    /// figure takes -- the same rule that had already cost the .docx, .doc,
+    /// .rtf and .odt readers their figures, with this reader left behind.
+    #[test]
+    fn keeps_a_paragraph_that_holds_only_a_picture() {
+        let markdown = markdown_of("<p>before</p><p><img src=\"pic.png\"></p><p>after</p>");
+        assert_eq!(markdown, "before\n\n![](pic.png)\n\nafter\n");
+    }
+
+    /// A footnote is a note, not a numbered list at the end of the document.
+    #[test]
+    fn reads_footnotes_back_out_of_the_markup_it_writes() {
+        let document = parse_html(
+            br##"<p>Body<sup><a href="#fn1" id="fnref1">1</a></sup>.</p>
+                <ol class="footnotes"><li><p>The note.</p></li></ol>"##,
+        );
+        assert_eq!(document.footnotes.len(), 1);
+        let markdown = to_markdown(&document);
+        assert!(markdown.contains("Body[^1]."), "{markdown}");
+        assert!(markdown.contains("[^1]: The note."), "{markdown}");
+    }
+
+    /// `<section>` divides a document, and an `<aside>` beside one is not in it.
+    #[test]
+    fn reads_sections_and_the_notes_beside_them() {
+        let document = parse_html(
+            br#"<section><h2>One</h2><p>Body of one.</p>
+                  <aside class="speaker-notes"><p>Say this aloud.</p></aside></section>
+                <hr>
+                <section><h2>Two</h2><p>Body of two.</p></section>"#,
+        );
+        assert_eq!(document.sections.len(), 2);
+        assert_eq!(document.sections[0].title.as_deref(), Some("One"));
+        assert_eq!(document.sections[1].title.as_deref(), Some("Two"));
+        // The notes belong beside the slide, not in it.
+        assert_eq!(document.sections[0].blocks.len(), 1);
+        assert!(!document.sections[0].notes.is_empty());
+    }
+
+    /// One division is not a division: its heading is the document's own.
+    ///
+    /// Taking the first heading of a lone section for its title moved that
+    /// heading out of the body, and a document written as HTML and read back
+    /// lost its `<h1>`.
+    #[test]
+    fn a_document_of_one_section_keeps_its_first_heading() {
+        let document = parse_html(b"<section><h1>Title</h1><p>Body.</p></section>");
+        assert_eq!(document.sections.len(), 1);
+        assert_eq!(document.sections[0].title, None);
+        assert_eq!(to_markdown(&document), "# Title\n\nBody.\n");
+    }
+
+    /// A page that merely uses `<section>` somewhere is not divided by it.
+    #[test]
+    fn loose_content_beside_a_section_leaves_the_document_whole() {
+        let document = parse_html(b"<p>Loose.</p><section><p>Inside.</p></section>");
+        assert_eq!(document.sections.len(), 1);
+        assert!(document.text().contains("Loose."), "{}", document.text());
+        assert!(document.text().contains("Inside."), "{}", document.text());
+    }
+
+    /// A figure is a picture and the words that describe it, together.
+    #[test]
+    fn reads_a_figure_with_its_caption() {
+        let document = parse_html(
+            br#"<figure><img src="pic.png"><figcaption>Figure 1.</figcaption></figure>"#,
+        );
+        let Some(Block::Figure { caption, .. }) = document.sections[0].blocks.first() else {
+            panic!("expected a figure: {:?}", document.sections[0].blocks)
+        };
+        assert_eq!(caption.as_deref(), Some("Figure 1."));
+    }
+
+    /// Rendering to HTML, reading it back and rendering again is idempotent.
+    ///
+    /// The property that found every fix above: whatever the writer emits, the
+    /// reader has to understand, or a document loses something by passing
+    /// through the form a caller asked for.
+    #[test]
+    fn rendering_html_is_idempotent() {
+        let source = concat!(
+            "<section><h2>One</h2><p>Body<sup><a href=\"#fn1\" id=\"fnref1\">1</a></sup> here.</p>",
+            "<figure><img src=\"pic.png\"><figcaption>Figure 1.</figcaption></figure>",
+            "<table><tr><td>first<br>second</td></tr></table>",
+            "<div class=\"page-break\"></div>",
+            "<aside class=\"speaker-notes\"><p>Aside.</p></aside></section>",
+            "<hr><section><h2>Two</h2><p>More.</p></section>",
+            "<ol class=\"footnotes\"><li><p>The note.</p></li></ol>",
+        );
+        let once = html_of(&parse_html(source.as_bytes()));
+        let twice = html_of(&parse_html(once.as_bytes()));
+        assert_eq!(once, twice, "left is the first rendering");
     }
 
     #[test]
