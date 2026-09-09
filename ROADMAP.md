@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 810 Rust, 950 TypeScript |
+| Tests | 812 Rust, 950 TypeScript |
 | Hostile input | 371 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -118,6 +118,16 @@ were footnotes, `<section>` divisions, the `<aside>` beside a slide, a
 `<figure>`'s pairing of picture and caption, and an explicit page break: all
 written by this tool and none read by it. 110 of 111 files now survive that
 round trip.
+
+Applied to the two remaining surfaces it gave one clean result and one defect.
+Every one of the 111 documents comes back from **ADF** identical in both
+renderings and in its assets, which is the answer an archival format wants;
+the check is kept as a test over the corpus rather than over a hand-built
+document, since the constructs nobody thinks to hand-build are the ones real
+producers write. **JSON** failed on the first document: the block model is an
+internally tagged enum, which has nowhere to put a sequence with no name, so a
+document containing a quotation could not be serialised at all — and every
+consumer of the model as JSON would have hit that.
 
 **Agreement is not correctness.** A differential between readers is blind to
 anything they all get wrong together, and no amount of extra formats or extra
