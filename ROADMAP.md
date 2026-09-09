@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 818 Rust, 950 TypeScript |
+| Tests | 819 Rust, 950 TypeScript |
 | Hostile input | 3,739 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -169,17 +169,22 @@ because the paragraph holding one has no text in it, a merged cell's blank
 padded onto the end of its row instead of the column it covers, and a picture's
 bytes left behind a header nobody followed.
 
-**Known limit of the injection scan: white-on-white in Office formats.** Text
-concealed by colour is caught in HTML, where a document can state a background
-alongside a colour and the test requires both. It is not caught in `.docx`,
-`.odt`, `.rtf` or `.doc`, because whether white text is concealed or ordinary
-depends on what is behind it and the model carries no background: the white
-text of a payload and the white text of a table header Word styled itself are
-the same run, and flagging both would report every such table as an injection.
-Closing this means reading cell and run shading into the model and then
-applying the rule HTML already uses. Until then the limit is stated rather than
-implied — a defence that claims a cover it does not have is worse than one that
-says nothing.
+**Injection scan: white-on-white is caught in `.docx` and HTML, not yet in the
+rest.** The question is never "is this white" but "is this the colour of what it
+sits on", so a reader has to follow shading — the run, its paragraph, its cell,
+and the table style behind that — and then say what it found, including that
+there was none and the page is white. `.docx` does; HTML has always required a
+document to state both. `.odt`, `.rtf`, `.doc` and `.odp` state nothing, and a
+reader that cannot see a fill must not conclude there is none: their colours
+are left unjudged rather than guessed at. Each is separate work of the same
+shape.
+
+The second half is the harder one and the reason this went slowly. Missing a
+payload leaves the commonest injection uncaught; calling a table header an
+attack is worse, because a warning nobody can trust is a warning nobody reads.
+An early version of the `.docx` rule read an absent background as "the page"
+and reported six ordinary documents' headers as injections before that was
+caught.
 
 ### Render engine
 
