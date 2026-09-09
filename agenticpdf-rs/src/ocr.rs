@@ -645,6 +645,7 @@ mod tests {
             height: 792.0,
             text_content: (0..50)
                 .map(|i| TextBlock {
+                    reference: false,
                     text: "lots of words here ".into(),
                     x: 72.0,
                     y: 700.0 - i as f64,

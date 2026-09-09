@@ -611,9 +611,17 @@ pub fn inline_text(content: &[Inline]) -> String {
                 }
             }
             Inline::Break => out.push(' '),
+            // A picture stands between the words around it, so its alt text
+            // does too. Run together, `F` and an image described `Shape1` made
+            // the word `FShape1`, which is in neither the document nor any
+            // other rendering of it.
             Inline::Image(image) => {
-                if let Some(alt) = &image.alt {
-                    out.push_str(alt);
+                if let Some(alt) = &image.alt.as_ref().filter(|alt| !alt.trim().is_empty()) {
+                    if !out.ends_with(char::is_whitespace) && !out.is_empty() {
+                        out.push(' ');
+                    }
+                    out.push_str(alt.trim());
+                    out.push(' ');
                 }
             }
             Inline::FootnoteRef { .. } => {}

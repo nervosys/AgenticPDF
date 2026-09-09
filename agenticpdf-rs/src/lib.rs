@@ -70,6 +70,12 @@ pub struct PdfPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextBlock {
     pub text: String,
+    /// A marker pointing at something rather than saying it: the raised `1` of
+    /// a footnote reference. Drawn like any other text and laid out with it,
+    /// but not content -- so retrieval leaves it out, where a subscript or an
+    /// exponent, which look exactly the same on the page, stays.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reference: bool,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -244,11 +250,14 @@ impl PdfDocument {
 
     /// Generate semantic chunks for RAG processing.
     pub fn generate_chunks(&self, max_chunk_size: usize, overlap: usize) -> Vec<SemanticChunk> {
-        let fragments: Vec<(usize, &str)> = self
+        // A reference marker points at content rather than being it, and a
+        // chunk holding `[1]` retrieves nothing while gluing the marker to the
+        // word before it costs that word instead.
+        let fragments: Vec<&TextBlock> = self
             .pages
             .iter()
             .flat_map(|page| page.text_content.iter())
-            .map(|block| (block.page_number, block.text.as_str()))
+            .filter(|block| !block.reference)
             .collect();
         chunk_fragments(&fragments, max_chunk_size, overlap)
     }
@@ -320,8 +329,31 @@ impl PdfDocument {
 /// Each fragment is `(page number, text)`. Shared by the geometric path (one
 /// fragment per positioned text block) and the semantic path (one per block of
 /// authored content), so both formats chunk identically.
+/// Whether two fragments sit against each other on the page.
+///
+/// A page states where its words are, so it also states where the spaces
+/// between them are: two fragments on the same line with nothing between them
+/// are one word cut in two by a change of style, and a space put there is a
+/// space the document does not have. `H`, `2` and `O` are three fragments
+/// because the middle one is a subscript, and joining them with spaces made
+/// `H2O` unfindable in every chunk it appeared in.
+fn touching(previous: &TextBlock, next: &TextBlock) -> bool {
+    // Two pages are never the same line, however well their coordinates
+    // agree: the last words of one slide joined onto the first of the next,
+    // because both sit near the top of their own page.
+    if previous.page_number != next.page_number {
+        return false;
+    }
+    // A line is the same line while the baselines agree to within a fraction
+    // of the type size; anything further apart is a new line, and a new line
+    // is a space at least.
+    let same_line = (previous.y - next.y).abs() < previous.font_size.max(1.0) * 0.5;
+    let gap = next.x - (previous.x + previous.width);
+    same_line && gap < previous.font_size.max(1.0) * 0.25
+}
+
 pub(crate) fn chunk_fragments(
-    fragments: &[(usize, &str)],
+    fragments: &[&TextBlock],
     max_chunk_size: usize,
     overlap: usize,
 ) -> Vec<SemanticChunk> {
@@ -336,7 +368,9 @@ pub(crate) fn chunk_fragments(
     // against 24 milliseconds to extract the same text.
     let mut current_words = 0usize;
 
-    for (page_number, text) in fragments {
+    let mut previous: Option<&TextBlock> = None;
+    for block in fragments {
+        let (page_number, text) = (&block.page_number, &block.text);
         let incoming = text.split_whitespace().count();
 
         if current_words + incoming > max_chunk_size && !current_text.is_empty() {
@@ -366,11 +400,25 @@ pub(crate) fn chunk_fragments(
             current_pages.clear();
         }
 
-        if !current_text.is_empty() {
-            current_text.push(' ');
+        // A fragment that continues the one before it joins onto it; the
+        // word count is then whatever the joined text comes to, since two
+        // halves of one word are one word.
+        let joins = previous.is_some_and(|previous| touching(previous, block));
+        match joins && !current_text.is_empty() {
+            true => {
+                let before = current_text.split_whitespace().count();
+                current_text.push_str(text);
+                current_words += current_text.split_whitespace().count() - before;
+            }
+            false => {
+                if !current_text.is_empty() {
+                    current_text.push(' ');
+                }
+                current_text.push_str(text);
+                current_words += incoming;
+            }
         }
-        current_text.push_str(text);
-        current_words += incoming;
+        previous = Some(block);
 
         if !current_pages.contains(page_number) {
             current_pages.push(*page_number);
@@ -1365,6 +1413,7 @@ mod tests {
                 height: 792.0,
                 text_content: vec![
                     TextBlock {
+                        reference: false,
                         text: "Hello world this is a test document with several words".to_string(),
                         x: 0.0,
                         y: 0.0,
@@ -1375,6 +1424,7 @@ mod tests {
                         page_number: 1,
                     },
                     TextBlock {
+                        reference: false,
                         text: "Second paragraph with more content for chunking".to_string(),
                         x: 0.0,
                         y: 20.0,
@@ -1407,6 +1457,7 @@ mod tests {
                 width: 612.0,
                 height: 792.0,
                 text_content: vec![TextBlock {
+                    reference: false,
                     text: "Hello world this is content".into(),
                     x: 72.0,
                     y: 700.0,
@@ -1438,6 +1489,7 @@ mod tests {
                 width: 612.0,
                 height: 792.0,
                 text_content: vec![TextBlock {
+                    reference: false,
                     text: "Test content".to_string(),
                     x: 0.0,
                     y: 0.0,

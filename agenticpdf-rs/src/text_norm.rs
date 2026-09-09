@@ -406,6 +406,7 @@ mod tests {
 
     fn tb(text: &str, x: f64, y: f64, w: f64, size: f64) -> crate::TextBlock {
         crate::TextBlock {
+            reference: false,
             text: text.into(),
             x,
             y,

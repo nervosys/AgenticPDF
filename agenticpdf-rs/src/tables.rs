@@ -527,6 +527,7 @@ mod tests {
 
     fn mk(t: &str, x: f64, y: f64) -> TextBlock {
         TextBlock {
+            reference: false,
             text: t.into(),
             x,
             y,

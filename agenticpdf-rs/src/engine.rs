@@ -7607,6 +7607,7 @@ fn push_block(
     };
     let text = crate::text_norm::normalize_diacritics(text);
     blocks.push(TextBlock {
+        reference: false,
         text: text.clone(),
         x,
         y,

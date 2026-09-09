@@ -126,12 +126,16 @@ pub fn typeset(document: &SemanticDoc) -> Typeset {
         let geometry = section.page_size.unwrap_or_default();
         let mut flow = Flow::new(document, geometry.content_width());
 
-        // A slide or sheet title is the page's heading; a flow section's title
-        // is metadata that has already been used elsewhere.
-        if section.kind != SectionKind::Flow
-            && let Some(title) = &section.title
-            && !title.trim().is_empty()
-        {
+        // A slide or sheet title is the page's heading. A flow section's
+        // usually repeats a heading the body already carries -- a .docx names
+        // its section after its own `<h1>` -- but not always: an EPUB chapter's
+        // title is taken *out* of the body, so leaving it out here left it on
+        // no page at all, readable in the Markdown and retrievable from
+        // nothing.
+        if let Some(title) = &section.title.as_ref().filter(|title| {
+            !title.trim().is_empty()
+                && (section.kind != SectionKind::Flow || !opens_with_heading(&section.blocks, title))
+        }) {
             flow.heading(2, title);
         }
         flow.blocks(&section.blocks, 0.0);
@@ -148,6 +152,26 @@ pub fn typeset(document: &SemanticDoc) -> Typeset {
         paginate(items, geometry, single_page, document, &mut output);
     }
 
+    // The notes come after the body, as they do in every rendering of it.
+    // Left out, a footnote's text reached no page: it could be read from the
+    // Markdown and not from a chunk, so a caveat or a citation was there for a
+    // person and missing for anything retrieving from the document.
+    if !document.footnotes.is_empty() {
+        let geometry = PageSize::default();
+        let mut flow = Flow::new(document, geometry.content_width());
+        flow.gap(BODY_SIZE);
+        flow.heading(3, "Notes");
+        for (index, footnote) in document.footnotes.iter().enumerate() {
+            let label = footnote
+                .label
+                .clone()
+                .unwrap_or_else(|| (index + 1).to_string());
+            flow.heading(4, &label);
+            flow.blocks(&footnote.blocks, QUOTE_INDENT);
+        }
+        paginate(flow.finish(), geometry, false, document, &mut output);
+    }
+
     // A document with no content still has one page, so page counts and
     // renderers have something coherent to work with.
     if output.pages.is_empty() {
@@ -161,6 +185,36 @@ pub fn typeset(document: &SemanticDoc) -> Typeset {
 // ============================================================================
 // Flowed items
 // ============================================================================
+
+/// Whether a section's body already opens with the heading it is named after.
+fn opens_with_heading(blocks: &[Block], title: &str) -> bool {
+    let Some(Block::Heading { content, .. }) = blocks.first() else {
+        return false;
+    };
+    crate::doc::inline_text(content).trim() == title.trim()
+}
+
+/// Every line in a run of items, including those inside a nested table.
+///
+/// A nested table is not laid out as a table within its cell -- there is no
+/// width left to give it -- but its words are still the document's words.
+fn flatten_lines(items: Vec<Item>) -> Vec<Line> {
+    let mut lines = Vec::new();
+    for item in items {
+        match item {
+            Item::Line(line) => lines.push(line),
+            Item::Table(table) => {
+                for row in table.rows {
+                    for cell in row.cells {
+                        lines.extend(cell.lines);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    lines
+}
 
 /// One laid-out line of text.
 #[derive(Debug, Clone)]
@@ -188,6 +242,8 @@ struct Piece {
     /// Hidden runs are laid out but not painted, so a sanitised and an
     /// unsanitised render of the same document share their geometry.
     hidden: bool,
+    /// A marker pointing at something rather than saying it.
+    reference: bool,
     link: Option<String>,
 }
 
@@ -201,6 +257,8 @@ enum Item {
     Rule,
     Image {
         asset_id: String,
+        /// The words the picture has, which are the only ones it has.
+        alt: Option<String>,
         width: f64,
         height: f64,
     },
@@ -439,6 +497,7 @@ impl<'a> Flow<'a> {
                         underline: false,
                         strikethrough: false,
                         hidden: false,
+                        reference: false,
                         link: None,
                     },
                 );
@@ -467,6 +526,7 @@ impl<'a> Flow<'a> {
                 underline: false,
                 strikethrough: false,
                 hidden: false,
+                reference: false,
                 link: None,
             };
             self.items.push(Item::Line(Line {
@@ -502,6 +562,7 @@ impl<'a> Flow<'a> {
 
         self.items.push(Item::Image {
             asset_id: image.asset_id.clone(),
+            alt: image.alt.clone(),
             width,
             height,
         });
@@ -557,14 +618,13 @@ impl<'a> Flow<'a> {
                 // column, not to the page.
                 let mut inner = Flow::new(self.document, cell_width);
                 inner.blocks(&cell.blocks, 0.0);
-                let lines: Vec<Line> = inner
-                    .finish()
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Item::Line(line) => Some(line),
-                        _ => None,
-                    })
-                    .collect();
+                // A table inside a cell is content of the cell. Keeping
+                // only the lines threw the inner table away, so the words in
+                // it reached no page and therefore no chunk -- unreadable and
+                // unretrievable both, while the .doc and .rtf of the same
+                // document, which flatten such a table into the cell as they
+                // read it, kept them.
+                let lines = flatten_lines(inner.finish());
 
                 let content_height: f64 = lines.iter().map(|line| line.height).sum();
                 tallest = tallest.max(content_height);
@@ -623,7 +683,7 @@ impl<'a> Flow<'a> {
                             ..TextStyle::default()
                         },
                     );
-                    push_run_tokens(&run, style, None, &mut tokens);
+                    push_run_tokens_marked(&run, style, None, true, &mut tokens);
                 }
             }
         }
@@ -674,6 +734,10 @@ struct Token {
     strikethrough: bool,
     hidden: bool,
     link: Option<String>,
+    /// A marker pointing at something rather than saying it. Set here because
+    /// the page cannot tell one from an exponent: both are small, raised and
+    /// hard against the word before them.
+    reference: bool,
     /// Whitespace: collapsible at a line break, and the elastic part of a
     /// justified line.
     is_space: bool,
@@ -692,6 +756,7 @@ impl Token {
             underline: false,
             strikethrough: false,
             hidden: false,
+            reference: false,
             link: None,
             is_space: false,
             is_break: true,
@@ -704,6 +769,16 @@ fn push_run_tokens(
     run: &Run,
     paragraph: &ParagraphStyle,
     link: Option<&str>,
+    into: &mut Vec<Token>,
+) {
+    push_run_tokens_marked(run, paragraph, link, false, into)
+}
+
+fn push_run_tokens_marked(
+    run: &Run,
+    paragraph: &ParagraphStyle,
+    link: Option<&str>,
+    reference: bool,
     into: &mut Vec<Token>,
 ) {
     if run.text.is_empty() {
@@ -736,6 +811,7 @@ fn push_run_tokens(
             underline: style.underline,
             strikethrough: style.strikethrough,
             hidden: style.hidden,
+            reference,
             link: link.map(str::to_string),
             is_space,
             is_break: false,
@@ -874,6 +950,7 @@ fn assemble(tokens: &[Token], width: f64, align: Align, last_line: bool) -> Line
                 underline: token.underline,
                 strikethrough: token.strikethrough,
                 hidden: token.hidden,
+                reference: token.reference,
                 link: token.link.clone(),
             });
         }
@@ -1123,6 +1200,7 @@ fn emit_page(page: Page, document: &SemanticDoc, output: &mut Typeset) {
             }
             Item::Image {
                 asset_id,
+                alt,
                 width,
                 height,
             } => {
@@ -1145,6 +1223,24 @@ fn emit_page(page: Page, document: &SemanticDoc, output: &mut Typeset) {
                     && !images.iter().any(|existing| existing.name == image.name)
                 {
                     images.push(image);
+                }
+                // The words a picture has. They are not painted -- the picture
+                // is -- but this list is what a reader extracts from, and
+                // without them the only description of a figure reached the
+                // Markdown and no chunk, so the figure could be read about and
+                // not retrieved.
+                if let Some(alt) = alt.as_ref().filter(|alt| !alt.trim().is_empty()) {
+                    text_content.push(TextBlock {
+                        reference: false,
+                        text: alt.clone(),
+                        x,
+                        y,
+                        width: *width,
+                        height: *height,
+                        font_size: BODY_SIZE,
+                        font_name: String::new(),
+                        page_number,
+                    });
                 }
             }
             Item::Table(table) => emit_table(
@@ -1204,6 +1300,7 @@ fn emit_line(
         // The text block is emitted even for hidden runs: that is what lets
         // `sanitize` see them and what keeps extracted text complete.
         text_content.push(TextBlock {
+            reference: piece.reference,
             text: piece.text.clone(),
             x,
             y: baseline,

@@ -770,6 +770,7 @@ mod tests {
 
     fn frag(text: &str, x: f64, y: f64, size: f64, font: &str) -> TextBlock {
         TextBlock {
+            reference: false,
             text: text.into(),
             x,
             y,
