@@ -762,6 +762,21 @@ mod hyperlink_tests {
         assert_eq!(hlink_range(&body), vec![(10, 1)]);
     }
 
+    /// A length reaching past the record gives no URL rather than a panic.
+    ///
+    /// The length is the record's own claim about itself, and a damaged or
+    /// hostile file is free to claim anything.
+    #[test]
+    fn a_url_length_past_the_end_of_the_record_is_refused() {
+        let mut body = hlink("https://example.invalid/cell");
+        // The length sits directly after the class identifier, which is how
+        // the reader finds it too.
+        let guid = &body[8 + 24..8 + 24 + 16].to_vec();
+        let at = body.windows(16).position(|window| window == guid).unwrap() + 16;
+        body[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(hyperlink_target(&body), None);
+    }
+
     /// A record with no moniker in it points nowhere.
     #[test]
     fn a_record_without_a_url_moniker_is_not_a_link() {

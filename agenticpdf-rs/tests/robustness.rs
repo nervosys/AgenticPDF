@@ -60,7 +60,10 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
 
     // Whatever real files happen to be present, which is where the shapes that
     // matter come from. Absent is fine; the seeds above stand alone.
-    if let Ok(entries) = std::fs::read_dir("tests/fixtures") {
+    for directory in ["tests/fixtures", "tests/fixtures/lo"] {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
@@ -114,6 +117,20 @@ fn damage(seed: &[u8]) -> Vec<(String, Vec<u8>)> {
             let mut huge = seed.to_vec();
             huge[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
             out.push((format!("u32::MAX written at {at}"), huge));
+        }
+    }
+
+    // The same, swept across the whole file rather than at the three offsets a
+    // header happens to use. The structures a reader follows deepest into a
+    // document -- a picture's location, a hyperlink's length, a record's size
+    // -- are nowhere near its head, and a sweep is the cheapest way to reach
+    // them without writing a strategy per format.
+    for k in 1..16 {
+        let at = len * k / 16;
+        if at + 4 <= len {
+            let mut huge = seed.to_vec();
+            huge[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            out.push((format!("u32::MAX written at {k}/16"), huge));
         }
     }
 
