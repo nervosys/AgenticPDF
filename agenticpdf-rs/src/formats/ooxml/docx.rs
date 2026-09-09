@@ -851,7 +851,7 @@ fn push_paragraph(blocks: &mut Vec<Block>, paragraph: Paragraph) {
     };
 
     if properties.quote {
-        blocks.push(Block::Quote(vec![block]));
+        blocks.push(Block::Quote { blocks: vec![block] });
         return;
     }
 

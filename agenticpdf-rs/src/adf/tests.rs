@@ -80,7 +80,7 @@ fn rich_document() -> SemanticDoc {
                         ],
                     }],
                 }),
-                Block::Quote(vec![Block::paragraph("Best quarter on record.")]),
+                Block::Quote { blocks: vec![Block::paragraph("Best quarter on record.")] },
                 Block::Code {
                     language: Some("rust".into()),
                     text: "fn main() {}".into(),
@@ -280,7 +280,7 @@ fn deeply_nested_blocks_are_rejected_rather_than_overflowing_the_stack() {
     // Build nesting past the decoder's limit by hand: quotes wrapping quotes.
     let mut block = Block::paragraph("deep");
     for _ in 0..500 {
-        block = Block::Quote(vec![block]);
+        block = Block::Quote { blocks: vec![block] };
     }
     let encoded = super::codec::encode_block_standalone(&block);
 

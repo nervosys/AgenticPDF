@@ -1225,7 +1225,7 @@ impl Assembler {
         };
 
         if style.quote {
-            blocks.push(Block::Quote(vec![paragraph]));
+            blocks.push(Block::Quote { blocks: vec![paragraph] });
             return;
         }
         if style.code

@@ -400,7 +400,7 @@ fn visit_blocks(blocks: &mut [Block], remap: &dyn Fn(&mut ImageRef)) {
                     }
                 }
             }
-            Block::Quote(inner) => visit_blocks(inner, remap),
+            Block::Quote { blocks: inner } => visit_blocks(inner, remap),
             _ => {}
         }
     }

@@ -335,7 +335,7 @@ impl<'a> Flow<'a> {
                     self.gap(BODY_SIZE * 0.5);
                 }
             }
-            Block::Quote(inner) => {
+            Block::Quote { blocks: inner } => {
                 self.blocks(inner, indent + QUOTE_INDENT);
             }
             Block::Code { text, .. } => {

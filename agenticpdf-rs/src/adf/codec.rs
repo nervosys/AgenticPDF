@@ -434,7 +434,7 @@ fn write_block(out: &mut Writer, block: &Block, table: &mut StringTable) {
                 }
             }
         }
-        Block::Quote(blocks) => {
+        Block::Quote { blocks } => {
             out.u8(tag::QUOTE);
             write_blocks(out, blocks, table);
         }
@@ -526,7 +526,7 @@ fn read_block(
                 column_widths,
             }))
         }
-        tag::QUOTE => Ok(Block::Quote(read_blocks_at(reader, heap, next)?)),
+        tag::QUOTE => Ok(Block::Quote { blocks: read_blocks_at(reader, heap, next)? }),
         tag::CODE => Ok(Block::Code {
             language: read_opt_str(reader, heap)?,
             text: heap.owned(reader.u32()?)?,

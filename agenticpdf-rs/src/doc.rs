@@ -130,7 +130,12 @@ pub enum Block {
     List(List),
     Table(Table),
     /// A block quote, which may contain any nested blocks.
-    Quote(Vec<Block>),
+    ///
+    /// A named field rather than a bare `Vec`: an internally tagged enum has
+    /// nowhere to put a sequence that has no name, so serialising a document
+    /// holding a quotation failed outright, and every consumer of the model as
+    /// JSON hit it on the first document with one in it.
+    Quote { blocks: Vec<Block> },
     /// Preformatted text, preserved verbatim.
     Code {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,7 +208,7 @@ pub(crate) fn walk_runs_mut(blocks: &mut [Block], visit: &mut impl FnMut(&mut Ru
             Block::Heading { content: c, .. } | Block::Paragraph { content: c, .. } => {
                 content(c, visit)
             }
-            Block::Quote(inner) => walk_runs_mut(inner, visit),
+            Block::Quote { blocks: inner } => walk_runs_mut(inner, visit),
             Block::List(list) => {
                 for item in &mut list.items {
                     walk_runs_mut(&mut item.blocks, visit);
@@ -468,7 +473,7 @@ impl Block {
             Block::Paragraph { content, .. } => inline_text(content).trim().is_empty(),
             Block::List(list) => list.items.is_empty(),
             Block::Table(table) => table.rows.is_empty(),
-            Block::Quote(blocks) => blocks.iter().all(Block::is_empty),
+            Block::Quote { blocks } => blocks.iter().all(Block::is_empty),
             Block::Code { text, .. } => text.trim().is_empty(),
             Block::Figure { .. } | Block::Divider | Block::PageBreak => false,
         }
@@ -664,7 +669,7 @@ fn strip_hidden_blocks(blocks: &mut Vec<Block>) {
                     }
                 }
             }
-            Block::Quote(inner) => strip_hidden_blocks(inner),
+            Block::Quote { blocks: inner } => strip_hidden_blocks(inner),
             _ => {}
         }
     }
@@ -727,7 +732,7 @@ fn block_text(block: &Block, out: &mut String) {
                 out.push('\n');
             }
         }
-        Block::Quote(blocks) => {
+        Block::Quote { blocks } => {
             for block in blocks {
                 block_text(block, out);
             }
@@ -783,7 +788,7 @@ fn collect_hidden(block: &Block, section: usize, found: &mut Vec<(usize, String)
                 }
             }
         }
-        Block::Quote(blocks) => {
+        Block::Quote { blocks } => {
             for block in blocks {
                 collect_hidden(block, section, found);
             }
@@ -807,7 +812,7 @@ fn struct_node(block: &Block, page: usize) -> StructNode {
         Block::Divider => leaf("Separator", None),
         Block::PageBreak => leaf("PageBreak", None),
         Block::Figure { caption, .. } => leaf("Figure", caption.clone()),
-        Block::Quote(blocks) => StructNode {
+        Block::Quote { blocks } => StructNode {
             kind: "BlockQuote".to_string(),
             text: None,
             page_number: Some(page),
@@ -1006,7 +1011,7 @@ fn render_block(block: &Block, indent: usize, out: &mut String) {
             }
         }
         Block::Table(table) => render_table(table, out),
-        Block::Quote(blocks) => {
+        Block::Quote { blocks } => {
             let mut body = String::new();
             render_blocks(blocks, 0, &mut body);
             for line in body.trim_end().lines() {
@@ -1548,7 +1553,7 @@ fn html_block(block: &Block, out: &mut String) {
             }
             out.push_str("</table>\n");
         }
-        Block::Quote(blocks) => {
+        Block::Quote { blocks } => {
             out.push_str("<blockquote>\n");
             html_blocks(blocks, out);
             out.push_str("</blockquote>\n");
@@ -1741,6 +1746,30 @@ mod tests {
     /// `H2O` and `5m<sup>2</sup>` into `5m2` — and every reader dropped them
     /// together, so no comparison between formats could have shown it. The
     /// HTML writer had carried them all along.
+    /// The model can be written as JSON and read back.
+    ///
+    /// An internally tagged enum has nowhere to put a sequence with no name,
+    /// so `Quote(Vec<Block>)` could not be serialised at all: a document with
+    /// a quotation in it failed outright, and every consumer of the model as
+    /// JSON hit that on the first such document. A named field settles it, and
+    /// this pins the property rather than the one variant, since the next
+    /// bare-sequence variant would fail the same way.
+    #[test]
+    fn the_model_survives_a_round_trip_through_json() {
+        let doc = doc_with(vec![
+            Block::heading(1, "Title"),
+            para("Body text."),
+            Block::Quote {
+                blocks: vec![para("Quoted."), Block::Quote { blocks: vec![para("Deeper.")] }],
+            },
+            Block::Divider,
+            Block::PageBreak,
+        ]);
+        let json = serde_json::to_string(&doc).expect("the model serialises");
+        let restored: SemanticDoc = serde_json::from_str(&json).expect("and reads back");
+        assert_eq!(to_markdown(&restored), to_markdown(&doc));
+    }
+
     #[test]
     fn renders_subscript_and_superscript_as_inline_html() {
         let lifted = |text: &str, up: bool| {
@@ -2050,7 +2079,7 @@ mod tests {
 
     #[test]
     fn renders_block_quotes() {
-        let doc = doc_with(vec![Block::Quote(vec![para("quoted line")])]);
+        let doc = doc_with(vec![Block::Quote { blocks: vec![para("quoted line")] }]);
         assert_eq!(to_markdown(&doc), "> quoted line\n");
     }
 

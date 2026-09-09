@@ -895,11 +895,11 @@ impl Parser {
                                     // A block quotation, likewise: no
                                     // `<blockquote>`, only the class.
                                     None if is_word_quote_class(&attrs) => {
-                                        blocks.push(Block::Quote(vec![Block::Paragraph {
+                                        blocks.push(Block::Quote { blocks: vec![Block::Paragraph {
                                             content,
                                             align: alignment(&attrs),
                                             indent: 0.0,
-                                        }]));
+                                        }] });
                                     }
                                     None => blocks.push(Block::Paragraph {
                                         content,
@@ -938,7 +938,7 @@ impl Parser {
                             self.at += 1;
                             let inner = self.parse_blocks(&["blockquote"], &[]);
                             self.at += 1;
-                            blocks.push(Block::Quote(inner));
+                            blocks.push(Block::Quote { blocks: inner });
                         }
                         "pre" => {
                             flush!();

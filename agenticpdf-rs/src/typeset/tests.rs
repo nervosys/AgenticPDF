@@ -409,7 +409,7 @@ fn nested_lists_indent_further_than_their_parent() {
 fn quotes_indent_their_content() {
     let plain = typeset(&doc_with(vec![para("text")])).pages[0].text_content[0].x;
     let quoted =
-        typeset(&doc_with(vec![Block::Quote(vec![para("text")])])).pages[0].text_content[0].x;
+        typeset(&doc_with(vec![Block::Quote { blocks: vec![para("text")] }])).pages[0].text_content[0].x;
     assert!(quoted > plain, "quote is not indented");
 }
 

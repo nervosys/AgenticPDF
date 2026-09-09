@@ -545,7 +545,7 @@ fn collect_tables(block: &doc::Block, page_number: usize, out: &mut Vec<tables::
                 cells: grid,
             });
         }
-        doc::Block::Quote(blocks) => {
+        doc::Block::Quote { blocks } => {
             for block in blocks {
                 collect_tables(block, page_number, out);
             }

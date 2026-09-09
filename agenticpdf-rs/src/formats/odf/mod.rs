@@ -566,11 +566,11 @@ fn read_blocks(
                             content,
                         }),
                         None if package.styles.is_quote(&style) => {
-                            blocks.push(Block::Quote(vec![Block::Paragraph {
+                            blocks.push(Block::Quote { blocks: vec![Block::Paragraph {
                                 content,
                                 align: package.styles.alignment(&style),
                                 indent: 0.0,
-                            }]))
+                            }] })
                         }
                         None => blocks.push(Block::Paragraph {
                             content,

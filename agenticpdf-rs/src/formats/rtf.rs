@@ -1011,7 +1011,7 @@ impl<'a> Parser<'a> {
                 indent: (self.state.indent as f64 / 20.0).max(0.0),
             };
             match quoted {
-                true => Block::Quote(vec![paragraph]),
+                true => Block::Quote { blocks: vec![paragraph] },
                 false => paragraph,
             }
         };

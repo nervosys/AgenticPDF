@@ -352,7 +352,7 @@ fn parse_blocks(lines: &[&str], depth: usize, notes: &Notes) -> Vec<Block> {
                 inner.push(stripped);
                 at += 1;
             }
-            blocks.push(Block::Quote(parse_blocks(&inner, depth + 1, notes)));
+            blocks.push(Block::Quote { blocks: parse_blocks(&inner, depth + 1, notes) });
             continue;
         }
 
@@ -1255,7 +1255,7 @@ mod tests {
     fn markdown_block_quotes_round_trip_and_nest() {
         assert_eq!(markdown_of("> quoted\n"), "> quoted\n");
         let doc = parse_markdown(b"> # heading in quote\n");
-        let Block::Quote(inner) = &doc.sections[0].blocks[0] else {
+        let Block::Quote { blocks: inner } = &doc.sections[0].blocks[0] else {
             panic!("expected quote")
         };
         assert!(matches!(inner[0], Block::Heading { level: 1, .. }));
