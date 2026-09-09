@@ -21,7 +21,7 @@ the harnesses, reproduction steps and known traps are in
 | --- | --- |
 | Render agreement with PDF.js | **681 of 681** comparable pages, across 285 reference sets |
 | Document formats read | **17** — PDF, OOXML, legacy Office, OpenDocument, EPUB, HTML, Markdown, CSV, RTF, text, ADF |
-| Tests | 813 Rust, 950 TypeScript |
+| Tests | 814 Rust, 950 TypeScript |
 | Hostile input | 3,739 damage cases and 10 structural attacks, none panicking or exceeding budget |
 | Hosts | desktop, headless image buffer, browser, Android, iOS *(iOS never built — needs macOS)* |
 | Advisories | 0 npm; 2 Rust, both triaged and unreachable from document input |
@@ -128,6 +128,18 @@ producers write. **JSON** failed on the first document: the block model is an
 internally tagged enum, which has nowhere to put a sequence with no name, so a
 document containing a quotation could not be serialised at all — and every
 consumer of the model as JSON would have hit that.
+
+**A fourth oracle: conservation.** A retrieval pipeline never sees the
+document, only the chunks, so a word that falls between two of them cannot be
+retrieved, cited or quoted — and nothing downstream can tell it is missing.
+Asserting that every word of every corpus document lands in some chunk, at four
+chunk sizes, found five defects in the path between the model and the page:
+fragments joined with a space that broke `H2O` into `H 2 O` and made it
+unfindable, that same join running across a page boundary, a table inside a
+cell laid out and then discarded, footnote text on no page at all, and a
+picture's alt text — the only words a picture has — in the extracted text and
+nowhere else. None was visible from any comparison of readers, because they all
+sit downstream of reading.
 
 **Agreement is not correctness.** A differential between readers is blind to
 anything they all get wrong together, and no amount of extra formats or extra
